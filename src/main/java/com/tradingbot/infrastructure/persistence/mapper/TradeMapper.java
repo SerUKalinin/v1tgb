@@ -1,0 +1,1 @@
+package com.tradingbot.infrastructure.persistence.mapper;
