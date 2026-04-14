@@ -14,7 +14,7 @@ import java.time.Instant;
 import java.util.List;
 
 @Component
-@Profile("backtest")
+@Profile({"backtest", "test"})
 @Slf4j
 public class FakeExecutionEngine implements ExecutionEngine {
 
