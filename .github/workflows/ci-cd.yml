@@ -1,4 +1,4 @@
-name: Trading Bot CI/CD
+name: Trading Bot CI/CD (Gradle)
 
 on:
   pull_request:
@@ -18,43 +18,48 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
-          cache: maven
+          cache: gradle
 
-      - name: Cache Maven packages
+      - name: Cache Gradle packages
         uses: actions/cache@v4
         with:
-          path: ~/.m2
-          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-          restore-keys: ${{ runner.os }}-m2
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
 
-      - name: Maven Compile
-        run: ./mvnw clean compile -B
+      - name: Gradle Wrapper Validation
+        run: ./gradlew --version
 
-      - name: Maven Test (Unit + Risk Engine tests)
-        run: ./mvnw test -B
+      - name: Gradle Build & Compile
+        run: ./gradlew clean build -x test --no-daemon
 
-      - name: Risk Gate (проверка критических классов)
+      - name: Gradle Test (Unit + Risk Gate)
+        run: ./gradlew test --no-daemon
+
+      - name: Risk Gate
         run: |
           echo "=== RISK GATE ==="
-          ./mvnw test -Dtest=AdvancedRiskManagerTest,RiskDecisionTest --quiet
+          ./gradlew test --tests "*AdvancedRiskManagerTest" --tests "*RiskDecisionTest" --quiet
           echo "Risk engine tests passed ✓"
 
-      - name: Backtest Gate (симуляция 24h backtest)
+      - name: Backtest Gate
         run: |
           echo "=== BACKTEST GATE ==="
-          ./mvnw test -Dtest=TradingPipelineBacktestTest --quiet
+          ./gradlew test --tests "*TradingPipelineBacktestTest" --quiet
           echo "Backtest sanity check passed ✓"
 
-      - name: Security Scan (ищем API-ключи и секреты)
+      - name: Security Scan (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build JAR
-        run: ./mvnw package -DskipTests -B
+      - name: Build BootJar
+        run: ./gradlew bootJar --no-daemon
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: trading-bot-jar
-          path: target/trading-bot-1.0.0.jar
+          path: build/libs/trading-bot-1.0.0.jar
