@@ -8,9 +8,9 @@ spring:
   jpa:
     database-platform: org.hibernate.dialect.H2Dialect
     hibernate:
-      ddl-auto: create-drop
+      ddl-auto: none
     show-sql: false
 
-  sql:
-    init:
-      mode: always
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
