@@ -9,33 +9,27 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Детектор перехода свечи в закрытое состояние.
+ * <p>
  * Гарантирует, что каждая свеча будет обработана ровно один раз.
- * <p>
- * Использует атомарный {@link ConcurrentHashMap#compute} для предотвращения
- * race condition при одновременных вызовах из нескольких потоков.
- * <p>
- * Поддерживает заглушку для будущей персистентной проверки (БД/Redis).
+ * Использует {@link ConcurrentHashMap#compute} для потокобезопасности.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class CandleTransitionDetector {
 
-    // In-memory хранилище для отслеживания обработанных свечей
     private final ConcurrentHashMap<String, Instant> lastProcessed = new ConcurrentHashMap<>();
-
-    // Интерфейс-заглушка для персистентности (пока возвращает true)
     private final ProcessedCandleRepository processedCandleRepository;
 
     /**
-     * Проверяет, является ли последняя свеча в окне новой закрытой свечой,
-     * и если да — возвращает событие с полным снепшотом окна.
+     * Проверяет, является ли последняя свеча в окне новой закрытой свечой.
      *
-     * @param window текущее окно свечей (должно быть готово: isReady() == true)
-     * @return Optional с событием, если свеча новая и закрытая, иначе empty
+     * @param window окно свечей
+     * @return Optional с событием, если обнаружена новая закрытая свеча
      */
     public Optional<NewClosedCandleEvent> detect(CandleWindow window) {
         if (!window.isReady()) {
@@ -46,12 +40,10 @@ public class CandleTransitionDetector {
         String symbol = window.symbol();
         Instant openTime = lastCandle.openTime();
 
-        java.util.concurrent.atomic.AtomicBoolean isNew = new java.util.concurrent.atomic.AtomicBoolean(false);
+        AtomicBoolean isNew = new AtomicBoolean(false);
 
-        // Атомарно проверяем и обновляем состояние
         lastProcessed.compute(symbol, (key, current) -> {
             if (current == null || !current.equals(openTime)) {
-                // Проверяем через репозиторий (заглушку), чтобы исключить дубли после перезапуска
                 if (processedCandleRepository.markAsProcessed(symbol, openTime)) {
                     isNew.set(true);
                     return openTime;
@@ -67,8 +59,11 @@ public class CandleTransitionDetector {
 
         return Optional.empty();
     }
+
     /**
-     * Сброс состояния для конкретного символа (например, при смене таймфрейма).
+     * Сбрасывает состояние обработки для указанного символа.
+     *
+     * @param symbol торговый символ
      */
     public void reset(String symbol) {
         lastProcessed.remove(symbol);

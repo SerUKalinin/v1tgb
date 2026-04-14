@@ -5,8 +5,19 @@ import org.springframework.scheduling.annotation.SchedulingConfigurer;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.config.ScheduledTaskRegistrar;
 
+/**
+ * Конфигурация планировщика задач.
+ * <p>
+ * Настраивает пул потоков для выполнения запланированных задач.
+ */
 @Configuration
 public class SchedulerConfig implements SchedulingConfigurer {
+
+    /**
+     * Настраивает планировщик задач с пулом из 5 потоков.
+     *
+     * @param taskRegistrar регистратор запланированных задач
+     */
     @Override
     public void configureTasks(ScheduledTaskRegistrar taskRegistrar) {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
