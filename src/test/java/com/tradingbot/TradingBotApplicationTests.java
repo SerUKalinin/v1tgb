@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
 
 @SpringBootTest(properties = "spring.flyway.enabled=false")
-@ActiveProfiles("test")
+@ActiveProfiles("backtest")
 class TradingBotApplicationTests {
 
 	@Test

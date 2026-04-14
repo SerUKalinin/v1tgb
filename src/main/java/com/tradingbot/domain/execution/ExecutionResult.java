@@ -1,15 +1,14 @@
 package com.tradingbot.domain.execution;
 
-import com.tradingbot.domain.model.Trade;
-import lombok.AllArgsConstructor;
-import lombok.Data;
+import lombok.Value;
 
-import java.util.List;
+import java.math.BigDecimal;
 
-@Data
-@AllArgsConstructor
+@Value
 public class ExecutionResult {
-    private boolean success;
-    private String orderId;
-    private List<Trade> trades;
+    String orderId;
+    String symbol;
+    BigDecimal price;
+    BigDecimal amount;
+    boolean success;
 }

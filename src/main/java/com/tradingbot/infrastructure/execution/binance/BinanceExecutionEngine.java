@@ -1,8 +1,8 @@
 package com.tradingbot.infrastructure.execution.binance;
 
 import com.tradingbot.domain.execution.ExecutionEngine;
-import com.tradingbot.domain.execution.ExecutionResult;
-import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.model.OrderRequest;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
@@ -10,8 +10,8 @@ import org.springframework.stereotype.Component;
 @Profile({"testnet", "live"})
 public class BinanceExecutionEngine implements ExecutionEngine {
     @Override
-    public ExecutionResult execute(Order order) {
+    public ExecutionResult execute(OrderRequest request) {
         // TODO: реальная интеграция с Binance REST + HMAC signature
-        throw new UnsupportedOperationException("Реализуй в Week 10");
+        return ExecutionResult.failure(request.getSymbol(), "Binance integration not implemented yet");
     }
 }
