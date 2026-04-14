@@ -11,22 +11,27 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.UUID;
+
 @Service
 @Slf4j
 @RequiredArgsConstructor
-public class TradingPipelineService {
+public class TradingPipeline {
 
     private final TradingStrategy strategy;
     private final RiskManager riskManager;
     private final ExecutionEngine executionEngine;
     private final PositionService positionService;
 
-    public void process(MarketData data) {
-        log.info("[PIPELINE] Processing symbol={} price={}", data.symbol(), data.price());
+    public void process(CandleWindow window) {
+        if (window.getCandles().isEmpty()) return;
+        
+        Candle lastCandle = window.getLast();
+        log.info("[PIPELINE] Processing symbol={} last_close={}", window.getSymbol(), lastCandle.getClose());
 
         // 1. Strategy
-        Signal signal = strategy.generateSignal(data);
-        if (signal.getType() == SignalType.HOLD) {
+        Signal signal = strategy.analyze(window);
+        if (signal == null || signal.getType() == SignalType.HOLD) {
             return;
         }
 
@@ -38,13 +43,13 @@ public class TradingPipelineService {
         }
 
         // 3. Execution
-        OrderRequest request = new OrderRequest(
-                signal.getSymbol(),
-                signal.getType() == SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,
-                decision.getAmount(),
-                signal.getPrice()
-        );
-
+        OrderRequest request = OrderRequest.builder()
+                .symbol(signal.getSymbol())
+                .side(signal.getType() == SignalType.BUY ? OrderSide.BUY : OrderSide.SELL)
+                .amount(decision.getAmount())
+                .price(signal.getPrice())
+                .clientOrderId(UUID.randomUUID().toString())
+                .build();
         ExecutionResult result = executionEngine.execute(request);
 
         // 4. Position Update
