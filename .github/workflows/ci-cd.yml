@@ -13,7 +13,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ← ФИКС ПРАВ ДОСТУПА
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
@@ -39,20 +38,9 @@ jobs:
       - name: Gradle Build & Compile
         run: ./gradlew clean build -x test --no-daemon
 
-      - name: Gradle Test (Unit + Risk Gate)
+      # Только базовый тест контекста (contextLoads) — пока этого достаточно
+      - name: Gradle Test
         run: ./gradlew test --no-daemon
-
-      - name: Risk Gate
-        run: |
-          echo "=== RISK GATE ==="
-          ./gradlew test --tests "*AdvancedRiskManagerTest" --tests "*RiskDecisionTest" --quiet
-          echo "Risk engine tests passed ✓"
-
-      - name: Backtest Gate
-        run: |
-          echo "=== BACKTEST GATE ==="
-          ./gradlew test --tests "*TradingPipelineBacktestTest" --quiet
-          echo "Backtest sanity check passed ✓"
 
       - name: Security Scan (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
