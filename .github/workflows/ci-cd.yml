@@ -1,0 +1,60 @@
+name: Trading Bot CI/CD
+
+on:
+  pull_request:
+    branches: [ main, release/** ]
+  push:
+    branches: [ release/** ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Cache Maven packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Maven Compile
+        run: ./mvnw clean compile -B
+
+      - name: Maven Test (Unit + Risk Engine tests)
+        run: ./mvnw test -B
+
+      - name: Risk Gate (проверка критических классов)
+        run: |
+          echo "=== RISK GATE ==="
+          ./mvnw test -Dtest=AdvancedRiskManagerTest,RiskDecisionTest --quiet
+          echo "Risk engine tests passed ✓"
+
+      - name: Backtest Gate (симуляция 24h backtest)
+        run: |
+          echo "=== BACKTEST GATE ==="
+          ./mvnw test -Dtest=TradingPipelineBacktestTest --quiet
+          echo "Backtest sanity check passed ✓"
+
+      - name: Security Scan (ищем API-ключи и секреты)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build JAR
+        run: ./mvnw package -DskipTests -B
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-bot-jar
+          path: target/trading-bot-1.0.0.jar
