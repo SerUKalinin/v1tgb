@@ -2,11 +2,11 @@ package com.tradingbot.domain.model;
 
 import com.tradingbot.common.enums.OrderSide;
 import lombok.AllArgsConstructor;
-import lombok.Data;
+import lombok.Getter;
 
 import java.math.BigDecimal;
 
-@Data
+@Getter
 @AllArgsConstructor
 public class Order {
     private String symbol;

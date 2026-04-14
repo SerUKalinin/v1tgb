@@ -24,25 +24,26 @@ ext {
 
 dependencies {
 
-
 	// Spring Boot
-
 	implementation 'org.springframework.boot:spring-boot-starter-web'
-	implementation 'org.springframework.boot:spring-boot-starter-webflux'   // WebClient
+	implementation 'org.springframework.boot:spring-boot-starter-webflux'
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 
-
 	// Database
-
 	runtimeOnly 'org.postgresql:postgresql'
-	implementation 'org.flywaydb:flyway-core'
+	implementation 'org.flywaydb:flyway-database-postgresql'
+
+
+	// Flyway (ВАЖНО: без версии!)
+	implementation 'org.flywaydb:flyway-core:11.0.0'
+
+	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0'
+
 
 
 	// Observability
-
 	implementation 'org.springframework.boot:spring-boot-starter-actuator'
-
 
 	// Lombok
 	compileOnly "org.projectlombok:lombok:${lombokVersion}"
@@ -51,13 +52,10 @@ dependencies {
 	// Testing
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 
-	// Testcontainers BOM
 	testImplementation platform("org.testcontainers:testcontainers-bom:${testcontainersVersion}")
 	testImplementation 'org.testcontainers:junit-jupiter'
-	implementation 'org.flywaydb:flyway-core'
 	testImplementation 'org.testcontainers:postgresql'
 
-	// JUnit platform (фикс для Gradle)
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 

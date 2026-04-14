@@ -7,7 +7,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.math.BigDecimal;
-import java.time.Instant;
 
 @Component
 @RequiredArgsConstructor
@@ -17,17 +16,28 @@ public class BinanceMarketDataClient implements MarketDataClient {
 
     @Override
     public BigDecimal getPrice(String symbol) {
-        BinancePriceResponse response = binanceWebClient.get()
-                .uri("/api/v3/ticker/price?symbol={symbol}", symbol)
-                .retrieve()
-                .bodyToMono(BinancePriceResponse.class)
-                .block();
-        return new BigDecimal(response.getPrice());
+        return getMarketData(symbol).price();
     }
 
     @Override
     public MarketData getMarketData(String symbol) {
-        return new MarketData(symbol, getPrice(symbol), Instant.now());
+        BinancePriceResponse response = fetch(symbol);
+
+        return new MarketData(
+                symbol,
+                new BigDecimal(response.getPrice()),
+                java.time.Instant.now()
+        );
+    }
+
+    private BinancePriceResponse fetch(String symbol) {
+        return binanceWebClient.get()
+                .uri(uriBuilder -> uriBuilder
+                        .path("/api/v3/ticker/price")
+                        .queryParam("symbol", symbol)
+                        .build())
+                .retrieve()
+                .bodyToMono(BinancePriceResponse.class)
+                .block();
     }
 }
-

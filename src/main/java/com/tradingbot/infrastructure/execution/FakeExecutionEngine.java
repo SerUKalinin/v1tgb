@@ -1,5 +1,6 @@
 package com.tradingbot.infrastructure.execution;
 
+import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.execution.ExecutionResult;
 import com.tradingbot.domain.model.Order;
@@ -19,14 +20,26 @@ public class FakeExecutionEngine implements ExecutionEngine {
 
     @Override
     public ExecutionResult execute(Order order) {
+
         BigDecimal slippage = order.getPrice().multiply(BigDecimal.valueOf(0.001));
-        BigDecimal executedPrice = order.getSide() == com.tradingbot.common.enums.OrderSide.BUY
-                ? order.getPrice().add(slippage)
-                : order.getPrice().subtract(slippage);
 
-        Trade trade = new Trade(order.getSymbol(), order.getSide(), order.getQuantity(), executedPrice, Instant.now());
+        BigDecimal executedPrice =
+                order.getSide() == OrderSide.BUY
+                        ? order.getPrice().add(slippage)
+                        : order.getPrice().subtract(slippage);
 
-        log.info("FAKE TRADE EXECUTED: {}", trade);
-        return new ExecutionResult(true, "FAKE_" + System.currentTimeMillis(), List.of(trade));
+        Trade trade = new Trade(
+                order.getSymbol(),
+                order.getSide(),
+                order.getQuantity(),
+                executedPrice,
+                Instant.now()
+        );
+
+        return new ExecutionResult(
+                true,
+                "FAKE_" + System.currentTimeMillis(),
+                List.of(trade)
+        );
     }
 }
