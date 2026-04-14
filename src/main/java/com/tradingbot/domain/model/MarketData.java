@@ -1,5 +1,7 @@
 package com.tradingbot.domain.model;
 
+import lombok.Value;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 

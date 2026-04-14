@@ -1,7 +1,8 @@
 package com.tradingbot.domain.execution;
 
-import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.model.OrderRequest;
 
 public interface ExecutionEngine {
-    ExecutionResult execute(Order order);
+    ExecutionResult execute(OrderRequest request);
 }

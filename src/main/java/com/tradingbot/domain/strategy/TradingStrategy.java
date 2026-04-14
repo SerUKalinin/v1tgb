@@ -1,10 +1,8 @@
 package com.tradingbot.domain.strategy;
 
-import com.tradingbot.domain.model.TradingSignal;
-import org.springframework.stereotype.Component;
-
-import java.math.BigDecimal;
+import com.tradingbot.domain.model.MarketData;
+import com.tradingbot.domain.model.Signal;
 
 public interface TradingStrategy {
-    TradingSignal analyze(String symbol, BigDecimal price);
+    Signal generateSignal(MarketData data);
 }
