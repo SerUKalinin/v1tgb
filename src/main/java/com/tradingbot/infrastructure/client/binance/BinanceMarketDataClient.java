@@ -1,43 +1,49 @@
 package com.tradingbot.infrastructure.client.binance;
 
-import com.tradingbot.domain.model.MarketData;
-import com.tradingbot.infrastructure.client.MarketDataClient;
+import com.tradingbot.domain.model.Candle;
+import com.tradingbot.infrastructure.execution.binance.BinanceClient;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
-import org.springframework.web.reactive.function.client.WebClient;
 
 import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 
 @Component
 @RequiredArgsConstructor
-public class BinanceMarketDataClient implements MarketDataClient {
+public class BinanceMarketDataClient {
+    private final BinanceClient binanceClient;
 
-    private final WebClient binanceWebClient;
-
-    @Override
-    public BigDecimal getPrice(String symbol) {
-        return getMarketData(symbol).price();
-    }
-
-    @Override
-    public MarketData getMarketData(String symbol) {
-        BinancePriceResponse response = fetch(symbol);
-
-        return new MarketData(
-                symbol,
-                new BigDecimal(response.getPrice()),
-                java.time.Instant.now()
+    public List<Candle> getCandles(String symbol, String interval, int limit) {
+        Map<String, String> params = Map.of(
+                "symbol", symbol,
+                "interval", interval,
+                "limit", String.valueOf(limit)
         );
+
+        Object[][] response = binanceClient.get("/api/v3/klines", params, Object[][].class, false);
+
+        if (response == null) {
+            return List.of();
+        }
+
+        return Arrays.stream(response)
+                .map(data -> mapToCandle(symbol, data))
+                .toList();
     }
 
-    private BinancePriceResponse fetch(String symbol) {
-        return binanceWebClient.get()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v3/ticker/price")
-                        .queryParam("symbol", symbol)
-                        .build())
-                .retrieve()
-                .bodyToMono(BinancePriceResponse.class)
-                .block();
-    }
+    private Candle mapToCandle(String symbol, Object[] data) {
+        return Candle.builder()
+                .symbol(symbol)
+                .openTime(Instant.ofEpochMilli(((Number) data[0]).longValue()))
+                .open(new BigDecimal(data[1].toString()))
+                .high(new BigDecimal(data[2].toString()))
+                .low(new BigDecimal(data[3].toString()))
+                .close(new BigDecimal(data[4].toString()))
+                .volume(new BigDecimal(data[5].toString()))
+                .closeTime(Instant.ofEpochMilli(((Number) data[6]).longValue()))
+                .isClosed(true)
+                .build();    }
 }

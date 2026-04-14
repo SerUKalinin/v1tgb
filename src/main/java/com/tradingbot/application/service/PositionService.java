@@ -70,6 +70,9 @@ public class PositionService {
         return positions.containsKey(symbol) && positions.get(symbol).getQuantity().compareTo(BigDecimal.ZERO) > 0;
     }
 
+    public Position getPosition(String symbol) {
+        return positions.get(symbol);
+    }
     public BigDecimal calculatePnL(String symbol, BigDecimal currentPrice) {
         Position position = positions.get(symbol);
         if (position == null || position.getQuantity().compareTo(BigDecimal.ZERO) == 0) {

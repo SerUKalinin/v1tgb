@@ -18,8 +18,7 @@ public class BacktestExecutionEngine implements ExecutionEngine {
                 UUID.randomUUID().toString(),
                 request.getSymbol(),
                 request.getSide(),
-                request.getQuantity(),
+                request.getAmount(),
                 request.getPrice()
-        );
-    }
+        );    }
 }
