@@ -1,8 +1,8 @@
 package com.tradingbot.application.pipeline;
 
+import com.tradingbot.application.service.OrderManagementService;
 import com.tradingbot.application.service.PositionService;
-import com.tradingbot.common.enums.OrderSide;
-import com.tradingbot.common.enums.SignalType;
+import com.tradingbot.common.enums.OrderSide;import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.*;
 import com.tradingbot.domain.risk.RiskManager;
@@ -27,6 +27,7 @@ public class TradingPipeline {
     private final RiskManager riskManager;
     private final ExecutionEngine executionEngine;
     private final PositionService positionService;
+    private final OrderManagementService orderManagementService;
 
     /**
      * Обрабатывает свечное окно через торговый конвейер.
@@ -52,7 +53,7 @@ public class TradingPipeline {
             return;
         }
 
-        // 3. Execution
+        // 3. Prepare Order
         OrderRequest request = OrderRequest.builder()
                 .symbol(signal.getSymbol())
                 .side(signal.getType() == SignalType.BUY ? OrderSide.BUY : OrderSide.SELL)
@@ -60,14 +61,18 @@ public class TradingPipeline {
                 .price(signal.getPrice())
                 .clientOrderId(UUID.randomUUID().toString())
                 .build();
+
+        // Register in DB before execution
+        orderManagementService.registerOrder(request);
+
+        // 4. Execution
         ExecutionResult result = executionEngine.execute(request);
 
-        // 4. Position Update
+        // 5. Process Result & Update Position
         if (result.isSuccess()) {
             log.info("[PIPELINE] Trade executed: orderId={}", result.getOrderId());
-            positionService.applyExecution(result);
-        } else {
-            log.error("[PIPELINE] Execution failed: {}", result.getErrorMessage());
+            orderManagementService.processExecution(result);
+        } else {            log.error("[PIPELINE] Execution failed: {}", result.getErrorMessage());
+            // TODO: Update order status to FAILED in DB if needed
         }
-    }
-}
+    }}

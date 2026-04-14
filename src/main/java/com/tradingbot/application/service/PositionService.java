@@ -6,8 +6,8 @@ import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.mapper.PositionMapper;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
 import jakarta.annotation.PostConstruct;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.springframework.transaction.annotation.Transactional;
+import lombok.RequiredArgsConstructor;import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -49,6 +49,7 @@ public class PositionService {
      *
      * @param result результат исполнения
      */
+    @Transactional
     public void applyExecution(ExecutionResult result) {
         Position current = positions.get(result.getSymbol());
 
@@ -56,25 +57,36 @@ public class PositionService {
             current = new Position(result.getSymbol(), BigDecimal.ZERO, BigDecimal.ZERO);
         }
 
-        BigDecimal newQty = current.getQuantity().add(result.getExecutedQty());
+        BigDecimal currentQty = current.getQuantity();
+        BigDecimal executedQty = result.getExecutedQty();
+        BigDecimal executedPrice = result.getExecutedPrice();
+
+        BigDecimal newQty = currentQty.add(executedQty);
         BigDecimal newEntryPrice;
 
+        // Логика расчета средней цены входа (Average Entry Price)
         if (newQty.compareTo(BigDecimal.ZERO) == 0) {
             newEntryPrice = BigDecimal.ZERO;
-        } else if (current.getQuantity().compareTo(BigDecimal.ZERO) == 0) {
-            newEntryPrice = result.getExecutedPrice();
+        } else if (currentQty.signum() == 0) {
+            // Открытие новой позиции
+            newEntryPrice = executedPrice;
+        } else if (currentQty.signum() == executedQty.signum()) {
+            // Увеличение существующей позиции (Averaging up/down)
+            newEntryPrice = current.getEntryPrice().multiply(currentQty.abs())
+                    .add(executedPrice.multiply(executedQty.abs()))
+                    .divide(newQty.abs(), 8, RoundingMode.HALF_UP);
         } else {
-            newEntryPrice = current.getEntryPrice().multiply(current.getQuantity())
-                    .add(result.getExecutedPrice().multiply(result.getExecutedQty()))
-                    .divide(newQty, 8, RoundingMode.HALF_UP);
+            // Частичное или полное закрытие позиции
+            // При уменьшении позиции средняя цена входа не меняется
+            newEntryPrice = current.getEntryPrice();
         }
 
         Position updated = new Position(result.getSymbol(), newQty, newEntryPrice);
         positions.put(result.getSymbol(), updated);
 
         repository.save(mapper.toEntity(updated));
-        log.info("[POSITIONS] Updated position for {}: qty={}, entryPrice={}",
-                updated.getSymbol(), updated.getQuantity(), updated.getEntryPrice());
+        log.info("[POSITIONS] Updated position for {}: qty={} (was {}), entryPrice={} (was {})",
+                updated.getSymbol(), newQty, currentQty, updated.getEntryPrice(), current.getEntryPrice());
     }
 
     /**
