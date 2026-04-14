@@ -14,7 +14,8 @@ jobs:
       pull-requests: read
       actions: read
 
-    steps:      - uses: actions/checkout@v4
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
