@@ -10,8 +10,12 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
-    steps:
-      - uses: actions/checkout@v4
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+
+    steps:      - uses: actions/checkout@v4
 
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
