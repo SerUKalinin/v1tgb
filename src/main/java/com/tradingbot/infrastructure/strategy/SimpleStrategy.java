@@ -6,11 +6,22 @@ import com.tradingbot.domain.model.Signal;
 import com.tradingbot.domain.strategy.TradingStrategy;
 import org.springframework.stereotype.Component;
 
+/**
+ * Простейшая тестовая стратегия.
+ * <p>
+ * Всегда возвращает сигнал HOLD.
+ */
 @Component
 public class SimpleStrategy implements TradingStrategy {
+
+    /**
+     * Анализирует окно свечей и возвращает сигнал HOLD.
+     *
+     * @param window окно свечей
+     * @return сигнал HOLD
+     */
     @Override
     public Signal analyze(CandleWindow window) {
-        // Простейшая логика для теста: всегда HOLD
         return new Signal(window.getSymbol(), SignalType.HOLD, window.getLast().getClose());
     }
 }

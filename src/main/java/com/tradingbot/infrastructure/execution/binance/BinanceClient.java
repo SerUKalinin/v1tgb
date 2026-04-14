@@ -12,6 +12,9 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
 
+/**
+ * Клиент для взаимодействия с API Binance.
+ */
 @Slf4j
 @Component
 public class BinanceClient {
@@ -32,6 +35,9 @@ public class BinanceClient {
         this.restTemplate = new RestTemplate();
     }
 
+    /**
+     * Синхронизирует локальное время с временем сервера Binance.
+     */
     public void syncTime() {
         try {
             Map<String, Object> response = restTemplate.getForObject(baseUrl + "/api/v3/time", Map.class);
@@ -43,6 +49,12 @@ public class BinanceClient {
         }
     }
 
+    /**
+     * Подписывает параметры запроса.
+     *
+     * @param params параметры запроса
+     * @return подпись HMAC-SHA256
+     */
     public String sign(Map<String, String> params) {
         String query = params.entrySet().stream()
                 .map(e -> e.getKey() + "=" + e.getValue())
@@ -68,6 +80,16 @@ public class BinanceClient {
         }
     }
 
+    /**
+     * Выполняет GET-запрос к API Binance.
+     *
+     * @param path         путь запроса
+     * @param params       параметры запроса
+     * @param responseType класс ответа
+     * @param signed       требуется ли подпись
+     * @param <T>          тип ответа
+     * @return ответ от API
+     */
     public <T> T get(String path, Map<String, String> params, Class<T> responseType, boolean signed) {
         String url = buildUrl(path, params, signed);
         org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
@@ -89,14 +111,29 @@ public class BinanceClient {
         return baseUrl + path + (query.isEmpty() ? "" : "?" + query);
     }
 
+    /**
+     * Возвращает текущее время сервера Binance с учётом смещения.
+     *
+     * @return время сервера в миллисекундах
+     */
     public long getServerTime() {
         return System.currentTimeMillis() + timeOffset;
     }
 
+    /**
+     * Возвращает API ключ.
+     *
+     * @return API ключ
+     */
     public String getApiKey() {
         return apiKey;
     }
 
+    /**
+     * Возвращает базовый URL API Binance.
+     *
+     * @return базовый URL
+     */
     public String getBaseUrl() {
         return baseUrl;
     }
