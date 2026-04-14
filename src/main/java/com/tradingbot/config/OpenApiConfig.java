@@ -5,9 +5,17 @@ import io.swagger.v3.oas.models.info.Info;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+/**
+ * Конфигурация OpenAPI (Swagger) для генерации документации API.
+ */
 @Configuration
 public class OpenApiConfig {
 
+    /**
+     * Создаёт и настраивает объект OpenAPI.
+     *
+     * @return экземпляр OpenAPI с метаинформацией
+     */
     @Bean
     public OpenAPI tradingBotOpenAPI() {
         return new OpenAPI()

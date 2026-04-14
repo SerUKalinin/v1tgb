@@ -14,6 +14,11 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * Сервис управления рыночными данными.
+ * <p>
+ * Обеспечивает загрузку, кэширование и обновление свечных данных.
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -21,13 +26,16 @@ public class MarketDataService {
 
     private final BinanceMarketDataClient marketDataClient;
     private final MarketDataCache marketDataCache;
-    private final CandleTransitionDetector detector;           // новый компонент
-    private final ApplicationEventPublisher eventPublisher;     // новый компонент
-
+    private final CandleTransitionDetector detector;
+    private final ApplicationEventPublisher eventPublisher;
     private final Map<String, AtomicBoolean> readyStatus = new ConcurrentHashMap<>();
 
-    // === Существующие методы (оставлены без изменений) ===
-
+    /**
+     * Выполняет прогрев данных: загружает 100 свечей и устанавливает флаг готовности.
+     *
+     * @param symbol   торговый символ
+     * @param interval свечной интервал
+     */
     public void warmUp(String symbol, String interval) {
         log.info("Запуск прогрева данных для {}: interval={}", symbol, interval);
         try {
@@ -40,6 +48,12 @@ public class MarketDataService {
         }
     }
 
+    /**
+     * Обновляет рыночные данные: загружает последние 3 свечи.
+     *
+     * @param symbol   торговый символ
+     * @param interval свечной интервал
+     */
     public void updateMarketData(String symbol, String interval) {
         try {
             List<Candle> candles = marketDataClient.getCandles(symbol, interval, 3);
@@ -51,27 +65,37 @@ public class MarketDataService {
         }
     }
 
+    /**
+     * Возвращает окно свечей для указанного символа.
+     *
+     * @param symbol торговый символ
+     * @return окно свечей
+     */
     public CandleWindow getWindow(String symbol) {
         return marketDataCache.getWindow(symbol);
     }
 
+    /**
+     * Проверяет, готово ли окно для указанного символа.
+     *
+     * @param symbol торговый символ
+     * @return true, если окно готово
+     */
     public boolean isReady(String symbol) {
         AtomicBoolean status = readyStatus.get(symbol);
         return status != null && status.get();
     }
 
-    // === Новый метод для событийной модели ===
-
     /**
-     * Единый метод обновления, который вызывается планировщиком.
-     * Выполняет fetch, обновление кэша и, если окно готово, пытается
-     * сгенерировать событие новой закрытой свечи.
+     * Единый метод обновления, вызываемый планировщиком.
+     * Выполняет обновление данных и генерацию события новой закрытой свечи.
+     *
+     * @param symbol   торговый символ
+     * @param interval свечной интервал
      */
     public void refresh(String symbol, String interval) {
-        // 1. Обновляем данные (используем существующую логику)
         updateMarketData(symbol, interval);
 
-        // 2. Проверяем, готово ли окно
         if (!isReady(symbol)) {
             log.debug("[MARKET] Окно для {} ещё не готово", symbol);
             return;
@@ -82,11 +106,11 @@ public class MarketDataService {
             return;
         }
 
-        // 3. Пытаемся зарегистрировать новую закрытую свечу через детектор
         detector.detect(window).ifPresent(event -> {
             Candle c = event.closedCandle();
             log.info("[VERIFY] NEW_CANDLE: symbol={} openTime={} closeTime={} O={} H={} L={} C={} V={}",
                     symbol, c.openTime(), c.getCloseTime(), c.getOpen(), c.getHigh(), c.getLow(), c.getClose(), c.getVolume());
             eventPublisher.publishEvent(event);
-        });    }
+        });
+    }
 }
