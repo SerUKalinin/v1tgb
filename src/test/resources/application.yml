@@ -18,3 +18,11 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+
+binance:
+  api-key: test-api-key
+  secret-key: test-secret-key
+  base-url: https://api.binance.com
+
+trading:
+  update-rate-ms: 60000
