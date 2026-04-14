@@ -1,5 +1,6 @@
-package com.tradingbot.application;
+package com.tradingbot.application.pipeline;
 
+import com.tradingbot.application.service.PositionService;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.execution.ExecutionEngine;

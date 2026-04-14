@@ -1,6 +1,6 @@
 package com.tradingbot.interfaces.scheduler;
 
-import com.tradingbot.application.TradingPipelineService;
+import com.tradingbot.application.pipeline.TradingPipelineService;
 import com.tradingbot.domain.model.MarketData;
 import com.tradingbot.infrastructure.client.binance.BinanceMarketDataClient;
 import lombok.RequiredArgsConstructor;
