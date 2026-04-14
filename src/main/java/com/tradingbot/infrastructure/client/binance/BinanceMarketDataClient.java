@@ -3,6 +3,7 @@ package com.tradingbot.infrastructure.client.binance;
 import com.tradingbot.domain.model.MarketData;
 import com.tradingbot.infrastructure.client.MarketDataClient;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -10,6 +11,7 @@ import java.math.BigDecimal;
 
 @Component
 @RequiredArgsConstructor
+@Profile("!backtest")
 public class BinanceMarketDataClient implements MarketDataClient {
 
     private final WebClient binanceWebClient;

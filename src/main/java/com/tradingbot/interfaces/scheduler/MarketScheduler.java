@@ -2,7 +2,7 @@ package com.tradingbot.interfaces.scheduler;
 
 import com.tradingbot.application.pipeline.TradingPipelineService;
 import com.tradingbot.domain.model.MarketData;
-import com.tradingbot.infrastructure.client.binance.BinanceMarketDataClient;
+import com.tradingbot.infrastructure.client.MarketDataClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -13,9 +13,8 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class MarketScheduler {
 
-    private final BinanceMarketDataClient marketDataClient;
+    private final MarketDataClient marketDataClient;
     private final TradingPipelineService tradingPipeline;
-
     @Scheduled(fixedRate = 5000)
     public void tick() {
         try {
