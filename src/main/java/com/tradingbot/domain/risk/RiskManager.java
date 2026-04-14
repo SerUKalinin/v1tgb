@@ -1,9 +1,8 @@
 package com.tradingbot.domain.risk;
 
-import com.tradingbot.domain.model.TradingSignal;
-
-import java.math.BigDecimal;
+import com.tradingbot.domain.model.RiskDecision;
+import com.tradingbot.domain.model.Signal;
 
 public interface RiskManager {
-    boolean approve(TradingSignal signal, BigDecimal price);
+    RiskDecision evaluate(Signal signal);
 }
