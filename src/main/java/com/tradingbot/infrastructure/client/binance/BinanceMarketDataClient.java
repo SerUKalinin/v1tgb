@@ -11,11 +11,23 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Клиент для получения рыночных данных с Binance.
+ */
 @Component
 @RequiredArgsConstructor
 public class BinanceMarketDataClient {
+
     private final BinanceClient binanceClient;
 
+    /**
+     * Получает свечные данные с Binance.
+     *
+     * @param symbol   торговый символ
+     * @param interval свечной интервал
+     * @param limit    количество свечей
+     * @return список свечей
+     */
     public List<Candle> getCandles(String symbol, String interval, int limit) {
         Map<String, String> params = Map.of(
                 "symbol", symbol,
@@ -34,6 +46,13 @@ public class BinanceMarketDataClient {
                 .toList();
     }
 
+    /**
+     * Преобразует данные из ответа Binance в модель Candle.
+     *
+     * @param symbol торговый символ
+     * @param data   массив данных свечи
+     * @return объект Candle
+     */
     private Candle mapToCandle(String symbol, Object[] data) {
         return Candle.builder()
                 .symbol(symbol)
@@ -45,5 +64,6 @@ public class BinanceMarketDataClient {
                 .volume(new BigDecimal(data[5].toString()))
                 .closeTime(Instant.ofEpochMilli(((Number) data[6]).longValue()))
                 .isClosed(true)
-                .build();    }
+                .build();
+    }
 }

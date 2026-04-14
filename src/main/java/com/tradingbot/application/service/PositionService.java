@@ -16,6 +16,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Сервис управления торговыми позициями.
+ * <p>
+ * Обеспечивает хранение, обновление и расчёт PnL позиций.
+ */
 @Service
 @Slf4j
 @RequiredArgsConstructor
@@ -25,6 +30,9 @@ public class PositionService {
     private final PositionMapper mapper;
     private final Map<String, Position> positions = new ConcurrentHashMap<>();
 
+    /**
+     * Загружает позиции из базы данных при старте приложения.
+     */
     @PostConstruct
     public void loadPositions() {
         log.info("[POSITIONS] Loading positions from database...");
@@ -36,6 +44,11 @@ public class PositionService {
         log.info("[POSITIONS] Loaded {} positions", positions.size());
     }
 
+    /**
+     * Применяет результат исполнения ордера к позиции.
+     *
+     * @param result результат исполнения
+     */
     public void applyExecution(ExecutionResult result) {
         Position current = positions.get(result.getSymbol());
 
@@ -51,7 +64,6 @@ public class PositionService {
         } else if (current.getQuantity().compareTo(BigDecimal.ZERO) == 0) {
             newEntryPrice = result.getExecutedPrice();
         } else {
-            // Расчет средней цены входа: (P1*Q1 + P2*Q2) / (Q1+Q2)
             newEntryPrice = current.getEntryPrice().multiply(current.getQuantity())
                     .add(result.getExecutedPrice().multiply(result.getExecutedQty()))
                     .divide(newQty, 8, RoundingMode.HALF_UP);
@@ -59,20 +71,39 @@ public class PositionService {
 
         Position updated = new Position(result.getSymbol(), newQty, newEntryPrice);
         positions.put(result.getSymbol(), updated);
-        
-        // Сохранение в БД
+
         repository.save(mapper.toEntity(updated));
-        log.info("[POSITIONS] Updated position for {}: qty={}, entryPrice={}", 
+        log.info("[POSITIONS] Updated position for {}: qty={}, entryPrice={}",
                 updated.getSymbol(), updated.getQuantity(), updated.getEntryPrice());
     }
 
+    /**
+     * Проверяет, есть ли открытая позиция по указанному символу.
+     *
+     * @param symbol торговый символ
+     * @return true, если позиция открыта
+     */
     public boolean hasOpenPosition(String symbol) {
         return positions.containsKey(symbol) && positions.get(symbol).getQuantity().compareTo(BigDecimal.ZERO) > 0;
     }
 
+    /**
+     * Возвращает позицию по указанному символу.
+     *
+     * @param symbol торговый символ
+     * @return позиция или null
+     */
     public Position getPosition(String symbol) {
         return positions.get(symbol);
     }
+
+    /**
+     * Рассчитывает нереализованную прибыль/убыток по позиции.
+     *
+     * @param symbol       торговый символ
+     * @param currentPrice текущая цена
+     * @return значение PnL
+     */
     public BigDecimal calculatePnL(String symbol, BigDecimal currentPrice) {
         Position position = positions.get(symbol);
         if (position == null || position.getQuantity().compareTo(BigDecimal.ZERO) == 0) {

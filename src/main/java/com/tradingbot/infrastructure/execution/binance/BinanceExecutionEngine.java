@@ -12,16 +12,28 @@ import org.springframework.stereotype.Component;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * Исполнительный движок для отправки ордеров на Binance.
+ * <p>
+ * Активируется в профилях prod, testnet, live.
+ */
 @Slf4j
 @Component
 @Profile({"prod", "testnet", "live"})
 @RequiredArgsConstructor
 public class BinanceExecutionEngine implements ExecutionEngine {
-    
+
     private final BinanceClient binanceClient;
+
+    /**
+     * Выполняет торговый ордер на Binance.
+     *
+     * @param request запрос на исполнение ордера
+     * @return результат исполнения
+     */
     @Override
     public ExecutionResult execute(OrderRequest request) {
-        log.info("[EXECUTION] Sending order to Binance: symbol={}, side={}, amount={}, clientOrderId={}", 
+        log.info("[EXECUTION] Sending order to Binance: symbol={}, side={}, amount={}, clientOrderId={}",
                 request.getSymbol(), request.getSide(), request.getAmount(), request.getClientOrderId());
 
         try {
@@ -37,7 +49,7 @@ public class BinanceExecutionEngine implements ExecutionEngine {
             if (response != null && response.containsKey("orderId")) {
                 String orderId = response.get("orderId").toString();
                 return ExecutionResult.success(orderId, request.getSymbol(), request.getSide(), request.getAmount(), request.getPrice());
-            }            
+            }
             return ExecutionResult.failure(request.getSymbol(), "Invalid response from Binance");
         } catch (Exception e) {
             log.error("[EXECUTION] Failed to execute order for {}", request.getSymbol(), e);

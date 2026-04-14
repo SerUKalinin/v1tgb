@@ -13,6 +13,11 @@ import org.springframework.stereotype.Service;
 
 import java.util.UUID;
 
+/**
+ * Торговый конвейер, объединяющий этапы обработки сигнала.
+ * <p>
+ * Последовательность: стратегия → риск-менеджер → исполнение → обновление позиции.
+ */
 @Service
 @Slf4j
 @RequiredArgsConstructor
@@ -23,9 +28,14 @@ public class TradingPipeline {
     private final ExecutionEngine executionEngine;
     private final PositionService positionService;
 
+    /**
+     * Обрабатывает свечное окно через торговый конвейер.
+     *
+     * @param window окно свечей
+     */
     public void process(CandleWindow window) {
         if (window.getCandles().isEmpty()) return;
-        
+
         Candle lastCandle = window.getLast();
         log.info("[PIPELINE] Processing symbol={} last_close={}", window.getSymbol(), lastCandle.getClose());
 
