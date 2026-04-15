@@ -18,11 +18,9 @@ public class RiskStateStore {
 
     private final AtomicReference<RiskState> globalState;
     private final Map<String, AtomicReference<RiskState>> symbolStates = new ConcurrentHashMap<>();
-    private final RiskStateReducer reducer;
 
-    public RiskStateStore(RiskStateReducer reducer) {
+    public RiskStateStore() {
         this.globalState = new AtomicReference<>(RiskState.empty());
-        this.reducer = reducer;
     }
 
     public RiskState getState() {
@@ -33,20 +31,11 @@ public class RiskStateStore {
         return symbolStates.computeIfAbsent(symbol, k -> new AtomicReference<>(RiskState.empty())).get();
     }
 
-    public RiskState update(RiskEvent event) {
-        // Обновляем глобальное состояние
-        globalState.updateAndGet(currentState -> reducer.reduce(currentState, event));
-        
-        // Если событие привязано к символу, обновляем и его сегмент
-        if (event.getSymbol() != null) {
-            return symbolStates.computeIfAbsent(event.getSymbol(), k -> new AtomicReference<>(RiskState.empty()))
-                    .updateAndGet(currentState -> reducer.reduce(currentState, event));
-        }
-        
-        return globalState.get();
-    }
-
-    public RiskState updateCustom(UnaryOperator<RiskState> updateFunction) {
-        return globalState.updateAndGet(updateFunction);
+    /**
+     * Internal update only for RiskEngine.
+     */
+    protected void updateInternal(RiskState newState) {
+        globalState.set(newState);
+        // Note: Symbol-specific state segments can be updated here if needed
     }
 }

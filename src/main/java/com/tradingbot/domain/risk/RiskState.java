@@ -21,6 +21,8 @@ public class RiskState {
     Instant lastUpdateTimestamp;
     Map<String, BigDecimal> symbolExposures;
     java.util.Set<String> processedEventIds;
+    boolean halted;
+    long version;
     
     public static RiskState empty() {
         return RiskState.builder()
@@ -32,6 +34,8 @@ public class RiskState {
                 .lastUpdateTimestamp(Instant.EPOCH)
                 .symbolExposures(Map.of())
                 .processedEventIds(java.util.Set.of())
+                .halted(false)
+                .version(0L)
                 .build();
     }
 }

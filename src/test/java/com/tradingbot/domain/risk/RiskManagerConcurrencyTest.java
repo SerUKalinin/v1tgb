@@ -19,10 +19,13 @@ class RiskManagerConcurrencyTest {
         int threadCount = 10;
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         
-        RiskStateStore store = new RiskStateStore(new RiskStateReducer());
-        store.updateCustom(state -> state.toBuilder()
+        RiskStateStore store = new RiskStateStore();
+        // Инициализируем состояние через RiskEngine, как того требует новый контракт
+        RiskEngine engine = new RiskEngine(null, null, null, null, store);
+        engine.initialize(RiskState.empty().toBuilder()
                 .totalEquity(new BigDecimal("100000"))
-                .build());        
+                .build());
+        
         // Правило, которое всегда одобряет, но вносит небольшую задержку для имитации нагрузки
         RiskRule slowRule = (req, state) -> {
             try { Thread.sleep(10); } catch (InterruptedException e) {}

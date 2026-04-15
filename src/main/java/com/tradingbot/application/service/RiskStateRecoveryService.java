@@ -1,91 +1,83 @@
 package com.tradingbot.application.service;
 
-import com.tradingbot.domain.risk.RiskStateStore;
-import com.tradingbot.domain.risk.RiskStateStore;
-import com.tradingbot.infrastructure.persistence.entity.RiskStateSnapshotEntity;
-import com.tradingbot.infrastructure.persistence.entity.TradeEntity;
-import com.tradingbot.infrastructure.persistence.repository.RiskStateSnapshotRepository;
-import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tradingbot.domain.risk.*;
+import com.tradingbot.infrastructure.persistence.entity.RiskEventEntity;
+import com.tradingbot.infrastructure.persistence.entity.RiskSnapshotEntity;
+import com.tradingbot.infrastructure.persistence.repository.RiskEventRepository;
+import com.tradingbot.infrastructure.persistence.repository.RiskSnapshotRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
-import java.time.Instant;
-import java.time.temporal.ChronoUnit;
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Objects;
-import java.util.stream.Collectors;
 
 /**
- * Recovers RiskState from database on startup and manages snapshots.
+ * Recovers RiskState from database on startup using snapshots and event log.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class RiskStateRecoveryService {
-    private final TradeRepository tradeRepository;
-    private final RiskStateSnapshotRepository snapshotRepository;
-    private final RiskStateStore riskStateStore;
+    private final RiskEventRepository eventRepository;
+    private final RiskSnapshotRepository snapshotRepository;
+    private final RiskEngine riskEngine;
+    private final RiskStateReducer reducer;
+    private final ObjectMapper objectMapper;
+
+    private static final String AGGREGATE_ID = "risk_core";
 
     @EventListener(ApplicationReadyEvent.class)
     public void recoverState() {
-        log.info("[RISK-RECOVERY] Starting risk state recovery from database...");
+        log.info("[RISK-RECOVERY] Starting deterministic risk state recovery...");
 
-        var latestSnapshot = snapshotRepository.findLatest();
-        Instant recoveryStartTime = latestSnapshot
-                .map(RiskStateSnapshotEntity::getTimestamp)
-                .orElse(Instant.now().truncatedTo(ChronoUnit.DAYS));
+        // 1. Load latest snapshot
+        RiskState state = snapshotRepository.findFirstByAggregateIdOrderByLastVersionDesc(AGGREGATE_ID)
+                .map(this::deserializeSnapshot)
+                .orElse(RiskState.empty());
 
-        if (latestSnapshot.isPresent()) {
-            var snap = latestSnapshot.get();
-            log.info("[RISK-RECOVERY] Found snapshot from {}", snap.getTimestamp());
-            riskStateStore.updateCustom(state -> state.toBuilder()
-                    .balance(snap.getBalance())
-                    .totalEquity(snap.getEquity())
-                    .dailyPnl(snap.getDailyPnl())
-                    .maxEquity(snap.getMaxEquity())
-                    .processedEventIds(new HashSet<>(Arrays.asList(snap.getProcessedEventIds().split(","))))
-                    .lastUpdateTimestamp(snap.getTimestamp())
-                    .build());
+        log.info("[RISK-RECOVERY] Loaded snapshot at version {}", state.getVersion());
+
+        // 2. Replay tail events
+        List<RiskEventEntity> tailEvents = eventRepository
+                .findByAggregateIdAndVersionGreaterThanOrderByVersionAsc(AGGREGATE_ID, state.getVersion());
+
+        log.info("[RISK-RECOVERY] Replaying {} tail events...", tailEvents.size());
+
+        for (RiskEventEntity entity : tailEvents) {
+            RiskEvent event = deserializeEvent(entity);
+            state = reducer.reduce(state, event);
         }
-        List<TradeEntity> newTrades = tradeRepository.findAllByExecutedAtAfter(recoveryStartTime);
 
-        BigDecimal additionalPnl = newTrades.stream()
-                .map(TradeEntity::getRealizedPnl)
-                .filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // 3. Initialize RiskEngine with recovered state
+        riskEngine.initialize(state);
 
-        log.info("[RISK-RECOVERY] Found {} new trades since {}. Additional PnL: {}", 
-                newTrades.size(), recoveryStartTime, additionalPnl);
-
-        riskStateStore.updateCustom(state -> state.toBuilder()
-                .dailyPnl(state.getDailyPnl().add(additionalPnl))
-                .lastUpdateTimestamp(Instant.now())
-                .build());
-
-        log.info("[RISK-RECOVERY] Recovery complete. Current Daily PnL: {}", 
-                riskStateStore.getState().getDailyPnl());
+        log.info("[RISK-RECOVERY] Recovery complete. Final version: {}, Halted: {}, Daily PnL: {}", 
+                state.getVersion(), state.isHalted(), state.getDailyPnl());
     }
 
-    @Scheduled(fixedRate = 300000) // Every 5 minutes
-    public void saveSnapshot() {
-        var state = riskStateStore.getState();
-        log.debug("[RISK-SNAPSHOT] Saving current risk state snapshot...");
+    private RiskState deserializeSnapshot(RiskSnapshotEntity entity) {
+        try {
+            return objectMapper.readValue(entity.getStateJson(), RiskState.class);
+        } catch (Exception e) {
+            log.error("Failed to deserialize snapshot", e);
+            return RiskState.empty();
+        }
+    }
 
-        RiskStateSnapshotEntity snapshot = RiskStateSnapshotEntity.builder()
-                .timestamp(Instant.now())
-                .balance(state.getBalance())
-                .equity(state.getTotalEquity())
-                .dailyPnl(state.getDailyPnl())
-                .maxEquity(state.getMaxEquity())
-                .processedEventIds(String.join(",", state.getProcessedEventIds()))
-                .build();
-
-        snapshotRepository.save(snapshot);
-    }}
+    private RiskEvent deserializeEvent(RiskEventEntity entity) {
+        try {
+            Class<? extends RiskEvent> eventClass = switch (entity.getEventType()) {
+                case "TradeExecuted" -> RiskEvent.TradeExecuted.class;
+                case "PriceUpdated" -> RiskEvent.PriceUpdated.class;
+                case "TradingHalted" -> RiskEvent.TradingHalted.class;
+                default -> throw new IllegalArgumentException("Unknown event type: " + entity.getEventType());
+            };
+            return objectMapper.readValue(entity.getPayload(), eventClass);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to deserialize event", e);
+        }
+    }
+}

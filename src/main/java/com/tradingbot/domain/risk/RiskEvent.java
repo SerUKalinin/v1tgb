@@ -31,4 +31,13 @@ public interface RiskEvent {
         @Override public String getEventId() { return eventId; }
         @Override public String getSymbol() { return symbol; }
     }
+
+    record TradingHalted(
+        String eventId,
+        String reason,
+        Instant timestamp
+    ) implements RiskEvent {
+        @Override public Instant getTimestamp() { return timestamp; }
+        @Override public String getEventId() { return eventId; }
+    }
 }
