@@ -7,6 +7,8 @@ import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
 
+import java.math.RoundingMode;
+
 @Component
 @Slf4j
 public class RiskStateReducer {
@@ -24,6 +26,23 @@ public class RiskStateReducer {
                 default -> currentState;
             };
 
+            // Auto-Halt Logic
+            if (!newState.isHalted()) {
+                // 1. Daily Loss Limit > 5%
+                BigDecimal dailyLossLimit = newState.getTotalEquity().multiply(new BigDecimal("0.05"));
+                if (newState.getDailyPnl().compareTo(dailyLossLimit.negate()) < 0) {
+                    log.error("[RiskReducer] AUTO-HALT: Daily loss limit exceeded (5%)");
+                    newState = newState.toBuilder().halted(true).build();
+                } else {
+                    // 2. Max Drawdown > 10% (Computed from peak)
+                    BigDecimal currentDrawdown = calculateDrawdown(newState);
+                    if (currentDrawdown.compareTo(new BigDecimal("10.0")) > 0) {
+                        log.error("[RiskReducer] AUTO-HALT: Max drawdown exceeded (10%). Current DD: {}%", currentDrawdown);
+                        newState = newState.toBuilder().halted(true).build();
+                    }
+                }
+            }
+
             java.util.Set<String> newEventIds = new java.util.HashSet<>(newState.getProcessedEventIds());
             newEventIds.add(event.getEventId());
             
@@ -38,6 +57,16 @@ public class RiskStateReducer {
         }
     }
 
+    private BigDecimal calculateDrawdown(RiskState state) {
+        if (state.getMaxEquity() == null || state.getMaxEquity().compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return state.getMaxEquity()
+                .subtract(state.getTotalEquity())
+                .divide(state.getMaxEquity(), 4, RoundingMode.HALF_UP)
+                .multiply(new BigDecimal("100"));
+    }
+
     private RiskState handleTradingHalted(RiskState state, RiskEvent.TradingHalted event) {
         log.warn("Risk Engine HALTED: {}", event.reason());
         return state.toBuilder()
@@ -48,6 +77,7 @@ public class RiskStateReducer {
     private RiskState handleTradeExecuted(RiskState state, RiskEvent.TradeExecuted event) {
         BigDecimal newDailyPnl = state.getDailyPnl().add(event.realizedPnl());
         BigDecimal newEquity = state.getTotalEquity().add(event.realizedPnl());
+        BigDecimal newMaxEquity = newEquity.max(state.getMaxEquity());
         
         Map<String, BigDecimal> newExposures = new HashMap<>(state.getSymbolExposures());
         BigDecimal currentExp = newExposures.getOrDefault(event.symbol(), BigDecimal.ZERO);
@@ -56,6 +86,7 @@ public class RiskStateReducer {
         return state.toBuilder()
                 .dailyPnl(newDailyPnl)
                 .totalEquity(newEquity)
+                .maxEquity(newMaxEquity)
                 .symbolExposures(Map.copyOf(newExposures))
                 .lastUpdateTimestamp(event.timestamp())
                 .build();

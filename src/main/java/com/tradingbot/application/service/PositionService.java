@@ -107,17 +107,20 @@ public class PositionService {
             } else if (currentQty.signum() == 0) {
                 newEntryPrice = executedPrice;
             } else if (currentQty.signum() == executedQty.signum()) {
-                // Увеличение позиции
+                // Увеличение позиции (Long + Long или Short + Short)
                 BigDecimal totalCost = entity.getEntryPrice().multiply(currentQty.abs())
                         .add(executedPrice.multiply(executedQty.abs()));
                 newEntryPrice = totalCost.divide(newQty.abs(), 8, RoundingMode.HALF_UP);
             } else {
-                // Частичное или полное закрытие
+                // Частичное закрытие или переворот (Long + Short или Short + Long)
                 if (currentQty.abs().compareTo(executedQty.abs()) >= 0) {
+                    // Частичное закрытие без переворота
                     BigDecimal closedQty = executedQty.negate();
                     BigDecimal tradePnl = calculateTradePnl(closedQty, entity.getEntryPrice(), executedPrice);
                     realizedPnl = realizedPnl.add(tradePnl);
+                    // entryPrice остается прежним
                 } else {
+                    // Полное закрытие старой и открытие новой в другую сторону (переворот)
                     BigDecimal closedQty = currentQty;
                     BigDecimal tradePnl = calculateTradePnl(closedQty, entity.getEntryPrice(), executedPrice);
                     realizedPnl = realizedPnl.add(tradePnl);

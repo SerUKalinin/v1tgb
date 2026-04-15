@@ -48,56 +48,53 @@ public class OrderManagementService {
     public ExecutionResult executeOrder(OrderRequest request) {
         log.info("[OMS] Public API call: executeOrder for {} {}", request.getSide(), request.getSymbol());
 
-        // 1. Создание ордера (NEW)
-        OrderEntity order = OrderEntity.builder()
-                .id(UUID.randomUUID().toString())
-                .clientOrderId(request.getClientOrderId() != null ? request.getClientOrderId() : "c-" + UUID.randomUUID().toString().substring(0, 8))
+        // В Stage 3 мы адаптируем OrderRequest к SignalEvent, чтобы пройти через единый Gate
+        SignalEvent signal = SignalEvent.builder()
                 .symbol(request.getSymbol())
-                .strategyId(request.getStrategyId())
-                .side(request.getSide())
-                .type(request.getType() != null ? request.getType() : com.tradingbot.common.enums.OrderType.MARKET)
-                .quantity(request.getAmount())
+                .type(request.getSide() == com.tradingbot.common.enums.OrderSide.BUY ? SignalType.BUY : SignalType.SELL)
                 .price(request.getPrice())
-                .status(OrderStatus.NEW.name())
-                .createdAt(Instant.now())
-                .build();        order = orderRepository.save(order);
-        publishOrderEvent(order, "Order created via API");
+                .strategyId(request.getStrategyId())
+                .candleTime(Instant.now())
+                .build();
 
-        // 2. Risk Check
-        RiskDecision decision = riskManager.check(order);
-        if (!decision.isApproved()) {
-            order.setStatus(OrderStatus.REJECTED.name());
-            orderRepository.save(order);
-            publishOrderEvent(order, "Rejected by risk: " + decision.getReason());
-            return ExecutionResult.failure(order.getId(), "Risk check failed: " + decision.getReason());
-        }
-
-        if (decision.getType() == RiskDecision.DecisionType.REDUCE_SIZE) {
-            order.setQuantity(decision.getAmount());
-            log.info("[OMS] Order size reduced by risk to {}", decision.getAmount());
-        }
-
-        order.setStatus(OrderStatus.VALIDATED.name());
-        order = orderRepository.save(order);
-        publishOrderEvent(order, "Risk check passed");
-
-        // 3. Execution
-        return executeInternal(order);
+        return processSignal(signal);
     }
 
-    private ExecutionResult executeInternal(OrderEntity order) {
+    private ExecutionResult processSignal(SignalEvent signal) {
+        // 1. Risk Enforcement Gate (Centralized Sizing & Validation)
+        java.util.Optional<com.tradingbot.domain.risk.ApprovedOrder> approvedOrderOpt = riskManager.approveSignal(signal);
+        
+        if (approvedOrderOpt.isEmpty()) {
+            log.warn("[OMS] Signal rejected by Risk Gate: {}", signal);
+            return ExecutionResult.failure(null, "Rejected by Risk Gate");
+        }
+
+        com.tradingbot.domain.risk.ApprovedOrder approvedOrder = approvedOrderOpt.get();
+
+        // 2. Persistence (OrderEntity)
+        OrderEntity order = OrderEntity.builder()
+                .id(approvedOrder.getOrderId())
+                .clientOrderId(approvedOrder.getClientOrderId())
+                .symbol(approvedOrder.getSymbol())
+                .strategyId(approvedOrder.getStrategyId())
+                .side(approvedOrder.getSide())
+                .type(approvedOrder.getType())
+                .quantity(approvedOrder.getQuantity())
+                .price(approvedOrder.getPrice())
+                .status(OrderStatus.VALIDATED.name())
+                .createdAt(Instant.now())
+                .build();
+        
+        order = orderRepository.save(order);
+        publishOrderEvent(order, "Approved by Risk Gate");
+
+        // 3. Execution
+        return executeInternal(order, approvedOrder);
+    }
+
+    private ExecutionResult executeInternal(OrderEntity order, com.tradingbot.domain.risk.ApprovedOrder approvedOrder) {
         try {
-            OrderRequest request = OrderRequest.builder()
-                    .orderId(order.getId())
-                    .clientOrderId(order.getClientOrderId())
-                    .symbol(order.getSymbol())
-                    .side(order.getSide())
-                    .type(order.getType())
-                    .amount(order.getQuantity())
-                    .price(order.getPrice())
-                    .strategyId(order.getStrategyId())
-                    .build();
-            ExecutionResult result = executionEngine.execute(request);
+            ExecutionResult result = executionEngine.execute(approvedOrder);
             
             if (result.isSuccess()) {
                 order.setStatus(OrderStatus.FILLED.name());
@@ -126,23 +123,14 @@ public class OrderManagementService {
     public void onSignal(SignalEvent event) {
         if (event.getType() == SignalType.HOLD) return;
 
-        String dedupeId = event.getSymbol() + ":" + event.getCandleTime().toEpochMilli();
+        String dedupeId = event.getSymbol() + ":" + (event.getCandleTime() != null ? event.getCandleTime().toEpochMilli() : System.currentTimeMillis());
         if (processedSignals.putIfAbsent(dedupeId, Boolean.TRUE) != null) {
             log.debug("[OMS] Duplicate signal detected for {}, skipping", dedupeId);
             return;
         }
 
         log.info("[OMS] Processing signal: {} {} @ {}", event.getType(), event.getSymbol(), event.getPrice());
-
-        OrderRequest request = OrderRequest.builder()
-                .clientOrderId("c-" + UUID.randomUUID().toString().substring(0, 8))
-                .symbol(event.getSymbol())
-                .side(event.getType() == SignalType.BUY ? com.tradingbot.common.enums.OrderSide.BUY : com.tradingbot.common.enums.OrderSide.SELL)
-                .amount(event.getQuantity() != null ? event.getQuantity() : new java.math.BigDecimal("0.01"))
-                .price(event.getPrice())
-                .strategyId(event.getStrategyId())
-                .build();
-        executeOrder(request);
+        processSignal(event);
     }
     @EventListener
     @Transactional

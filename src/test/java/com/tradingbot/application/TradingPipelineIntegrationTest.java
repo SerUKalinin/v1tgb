@@ -5,10 +5,10 @@ import com.tradingbot.application.service.PositionService;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.model.*;
+import com.tradingbot.domain.risk.ApprovedOrder;
 import com.tradingbot.domain.risk.RiskDecision;
-import com.tradingbot.domain.strategy.TradingStrategy;
 import com.tradingbot.domain.risk.RiskManager;
-import com.tradingbot.application.service.OrderManagementService;
+import com.tradingbot.domain.strategy.TradingStrategy;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -19,6 +19,8 @@ import org.springframework.test.context.ActiveProfiles;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -73,42 +75,48 @@ class TradingPipelineIntegrationTest {
                 new Signal(symbol, strategyId, com.tradingbot.common.enums.SignalType.BUY, price, amount)
         );
 
-        // 2. Risk
-        when(riskManager.check(any())).thenReturn(
-                RiskDecision.approve(amount)
-        );
-        when(riskManager.evaluate(any())).thenReturn(
-                RiskDecision.approve(amount)
-        );
+        // 2. Risk Mock (Stage 3: approveSignal returns ApprovedOrder)
+        ApprovedOrder approvedOrder = ApprovedOrder.builder()
+                .orderId(UUID.randomUUID().toString())
+                .clientOrderId("c-test")
+                .symbol(symbol)
+                .side(com.tradingbot.common.enums.OrderSide.BUY)
+                .type(com.tradingbot.common.enums.OrderType.MARKET)
+                .quantity(amount)
+                .price(price)
+                .strategyId(strategyId)
+                .approvedAt(Instant.now())
+                .build();
+
+        when(riskManager.approveSignal(any())).thenReturn(Optional.of(approvedOrder));
 
         // 3. Execution Engine Mock
         when(executionEngine.execute(any())).thenAnswer(invocation -> {
-            OrderRequest req = invocation.getArgument(0);
-            System.out.println("=== MOCK EXECUTION CALLED FOR " + req.getSymbol() + " ===");
+            ApprovedOrder order = invocation.getArgument(0);
+            System.out.println("=== MOCK EXECUTION CALLED FOR " + order.getSymbol() + " ===");
             
-            String orderId = req.getOrderId() != null ? req.getOrderId() : "test-order";
             String tradeId = "trade-1";
 
             ExecutionResult result = ExecutionResult.success(
-                    orderId,
+                    order.getOrderId(),
                     "exchange-order-1",
                     tradeId,
-                    req.getSymbol(),
-                    req.getSide(),
-                    req.getAmount(),
-                    req.getPrice(),
+                    order.getSymbol(),
+                    order.getSide(),
+                    order.getQuantity(),
+                    order.getPrice(),
                     BigDecimal.ZERO,
                     "USDT",
-                    req.getClientOrderId()
+                    order.getClientOrderId()
             );
 
             // Публикуем событие исполнения, чтобы сработал Ledger и Position Reducer
             eventPublisher.publishEvent(new OrderFilledEvent(
-                    orderId,
+                    order.getOrderId(),
                     tradeId,
-                    req.getSymbol(),
-                    req.getAmount(),
-                    req.getPrice()
+                    order.getSymbol(),
+                    order.getQuantity(),
+                    order.getPrice()
             ));
 
             return result;
