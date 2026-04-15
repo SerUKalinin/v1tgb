@@ -13,8 +13,10 @@ import java.util.Map;
 @Value
 @Builder(toBuilder = true)
 public class RiskState {
+    BigDecimal balance;
     BigDecimal totalEquity;
     BigDecimal dailyPnl;
+    BigDecimal maxEquity;
     BigDecimal maxDrawdown;
     Instant lastUpdateTimestamp;
     Map<String, BigDecimal> symbolExposures;
@@ -22,8 +24,10 @@ public class RiskState {
     
     public static RiskState empty() {
         return RiskState.builder()
+                .balance(BigDecimal.ZERO)
                 .totalEquity(BigDecimal.ZERO)
                 .dailyPnl(BigDecimal.ZERO)
+                .maxEquity(BigDecimal.ZERO)
                 .maxDrawdown(BigDecimal.ZERO)
                 .lastUpdateTimestamp(Instant.EPOCH)
                 .symbolExposures(Map.of())

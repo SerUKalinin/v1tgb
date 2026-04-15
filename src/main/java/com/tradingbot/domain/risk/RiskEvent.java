@@ -6,6 +6,7 @@ import java.time.Instant;
 public interface RiskEvent {
     Instant getTimestamp();
     String getEventId();
+    default String getSymbol() { return null; }
 
     record TradeExecuted(
         String eventId,
@@ -17,6 +18,7 @@ public interface RiskEvent {
     ) implements RiskEvent {
         @Override public Instant getTimestamp() { return timestamp; }
         @Override public String getEventId() { return eventId; }
+        @Override public String getSymbol() { return symbol; }
     }
 
     record PriceUpdated(
@@ -27,5 +29,6 @@ public interface RiskEvent {
     ) implements RiskEvent {
         @Override public Instant getTimestamp() { return timestamp; }
         @Override public String getEventId() { return eventId; }
+        @Override public String getSymbol() { return symbol; }
     }
 }
