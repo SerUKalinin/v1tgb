@@ -6,17 +6,22 @@ import lombok.Value;
 
 import java.math.BigDecimal;
 
-/**
- * Запрос на исполнение торгового ордера.
- */
+import com.tradingbot.common.enums.OrderType;
+
 @Value
-@Builder
+@Builder(toBuilder = true)
 public class OrderRequest {
-    String orderId; // Добавлено поле
+    String orderId;
+    String clientOrderId;
     String symbol;
+    BigDecimal quantity;
+    BigDecimal amount; // Alias for quantity to support legacy code
     OrderSide side;
-    BigDecimal amount;
+    OrderType type;
     BigDecimal price;
     String strategyId;
-    String clientOrderId;
+
+    public BigDecimal getAmount() {
+        return amount != null ? amount : quantity;
+    }
 }

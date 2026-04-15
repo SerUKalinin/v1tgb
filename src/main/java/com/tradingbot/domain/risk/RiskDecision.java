@@ -19,10 +19,13 @@ public class RiskDecision {
         REDUCE_SIZE
     }
 
+    public static RiskDecision approve() {
+        return new RiskDecision(DecisionType.APPROVE, null, "Risk check passed");
+    }
+
     public static RiskDecision approve(BigDecimal amount) {
         return new RiskDecision(DecisionType.APPROVE, amount, "Risk check passed");
     }
-
     public static RiskDecision reject(String reason) {
         return new RiskDecision(DecisionType.REJECT, BigDecimal.ZERO, reason);
     }

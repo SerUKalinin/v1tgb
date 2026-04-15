@@ -2,13 +2,13 @@ package com.tradingbot.infrastructure.execution.binance;
 
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
-import com.tradingbot.domain.model.OrderRequest;
-import com.tradingbot.infrastructure.execution.binance.BinanceClient;
+import com.tradingbot.domain.risk.ApprovedOrder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -17,8 +17,6 @@ import java.util.Map;
  * <p>
  * Активируется в профилях prod, testnet, live.
  */
-import java.math.BigDecimal;
-
 @Slf4j
 @Component
 @Profile({"prod", "testnet", "live"})
@@ -29,43 +27,45 @@ public class BinanceExecutionEngine implements ExecutionEngine {
 
     /**
      * Выполняет торговый ордер на Binance.
+     * В Stage 3 принимает только ApprovedOrder.
      *
-     * @param request запрос на исполнение ордера
+     * @param approvedOrder ордер, одобренный риск-менеджером
      * @return результат исполнения
      */
     @Override
-    public ExecutionResult execute(OrderRequest request) {
+    public ExecutionResult execute(ApprovedOrder approvedOrder) {
         log.info("[EXECUTION] Sending order to Binance: symbol={}, side={}, amount={}, clientOrderId={}",
-                request.getSymbol(), request.getSide(), request.getAmount(), request.getClientOrderId());
+                approvedOrder.getSymbol(), approvedOrder.getSide(), approvedOrder.getQuantity(), approvedOrder.getClientOrderId());
 
         try {
             Map<String, String> params = new HashMap<>();
-            params.put("symbol", request.getSymbol());
-            params.put("side", request.getSide().name());
+            params.put("symbol", approvedOrder.getSymbol());
+            params.put("side", approvedOrder.getSide().name());
             params.put("type", "MARKET");
-            params.put("quantity", request.getAmount().toPlainString());
-            params.put("newClientOrderId", request.getClientOrderId());
+            params.put("quantity", approvedOrder.getQuantity().toPlainString());
+            params.put("newClientOrderId", approvedOrder.getClientOrderId());
 
             Map response = binanceClient.get("/api/v3/order", params, Map.class, true);
 
             if (response != null && response.containsKey("orderId")) {
                 String exchangeOrderId = response.get("orderId").toString();
-                // В реальном API Binance здесь также приходят сделки (fills), из которых можно вытащить externalTradeId и комиссии
                 return ExecutionResult.success(
-                        request.getOrderId(),
+                        approvedOrder.getOrderId(),
                         exchangeOrderId,
                         "trade-" + exchangeOrderId, // Mock trade ID
-                        request.getSymbol(),
-                        request.getSide(),
-                        request.getAmount(),
-                        request.getPrice(),
+                        approvedOrder.getSymbol(),
+                        approvedOrder.getSide(),
+                        approvedOrder.getQuantity(),
+                        approvedOrder.getPrice(),
                         BigDecimal.ZERO,
                         "USDT",
-                        request.getClientOrderId()
-                );            }            return ExecutionResult.failure(request.getSymbol(), "Invalid response from Binance");
+                        approvedOrder.getClientOrderId()
+                );
+            }
+            return ExecutionResult.failure(approvedOrder.getSymbol(), "Invalid response from Binance");
         } catch (Exception e) {
-            log.error("[EXECUTION] Failed to execute order for {}", request.getSymbol(), e);
-            return ExecutionResult.failure(request.getSymbol(), e.getMessage());
+            log.error("[EXECUTION] Failed to execute order for {}", approvedOrder.getSymbol(), e);
+            return ExecutionResult.failure(approvedOrder.getSymbol(), e.getMessage());
         }
     }
 }

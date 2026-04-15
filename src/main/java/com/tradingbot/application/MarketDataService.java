@@ -3,21 +3,25 @@ package com.tradingbot.application;
 import com.tradingbot.application.event.CandleTransitionDetector;
 import com.tradingbot.domain.model.Candle;
 import com.tradingbot.domain.model.CandleWindow;
+import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.infrastructure.client.binance.BinanceMarketDataClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Сервис управления рыночными данными.
- * <p>
- * Обеспечивает загрузку, кэширование и обновление свечных данных.
  */
 @Slf4j
 @Service
@@ -28,13 +32,15 @@ public class MarketDataService {
     private final MarketDataCache marketDataCache;
     private final CandleTransitionDetector detector;
     private final ApplicationEventPublisher eventPublisher;
+    private final RiskEngine riskEngine;
+    
     private final Map<String, AtomicBoolean> readyStatus = new ConcurrentHashMap<>();
+    private final Map<String, BigDecimal> lastRiskPrices = new ConcurrentHashMap<>();
+    
+    private static final BigDecimal PRICE_FILTER_THRESHOLD = new BigDecimal("0.001"); // 0.1%
 
     /**
      * Выполняет прогрев данных: загружает 100 свечей и устанавливает флаг готовности.
-     *
-     * @param symbol   торговый символ
-     * @param interval свечной интервал
      */
     public void warmUp(String symbol, String interval) {
         log.info("Запуск прогрева данных для {}: interval={}", symbol, interval);
@@ -49,50 +55,42 @@ public class MarketDataService {
     }
 
     /**
-     * Обновляет рыночные данные: загружает последние 3 свечи.
-     *
-     * @param symbol   торговый символ
-     * @param interval свечной интервал
+     * Обновляет рыночные данные и уведомляет RiskEngine при значимых изменениях.
      */
     public void updateMarketData(String symbol, String interval) {
         try {
             List<Candle> candles = marketDataClient.getCandles(symbol, interval, 3);
+            if (candles.isEmpty()) return;
+
             for (Candle candle : candles) {
                 marketDataCache.updateOrAdd(symbol, candle);
+            }
+
+            // Фильтрация и отправка в RiskEngine
+            BigDecimal currentPrice = candles.get(candles.size() - 1).getClose();
+            if (shouldUpdateRisk(symbol, currentPrice)) {
+                riskEngine.publish(new RiskEvent.PriceUpdated(
+                        UUID.randomUUID().toString(),
+                        symbol,
+                        currentPrice,
+                        Instant.now()
+                ));
+                lastRiskPrices.put(symbol, currentPrice);
             }
         } catch (Exception e) {
             log.error("Ошибка при обновлении данных для {}", symbol, e);
         }
     }
 
-    /**
-     * Возвращает окно свечей для указанного символа.
-     *
-     * @param symbol торговый символ
-     * @return окно свечей
-     */
     public CandleWindow getWindow(String symbol) {
         return marketDataCache.getWindow(symbol);
     }
 
-    /**
-     * Проверяет, готово ли окно для указанного символа.
-     *
-     * @param symbol торговый символ
-     * @return true, если окно готово
-     */
     public boolean isReady(String symbol) {
         AtomicBoolean status = readyStatus.get(symbol);
         return status != null && status.get();
     }
 
-    /**
-     * Единый метод обновления, вызываемый планировщиком.
-     * Выполняет обновление данных и генерацию события новой закрытой свечи.
-     *
-     * @param symbol   торговый символ
-     * @param interval свечной интервал
-     */
     public void refresh(String symbol, String interval) {
         updateMarketData(symbol, interval);
 
@@ -112,5 +110,15 @@ public class MarketDataService {
                     symbol, c.openTime(), c.getCloseTime(), c.getOpen(), c.getHigh(), c.getLow(), c.getClose(), c.getVolume());
             eventPublisher.publishEvent(event);
         });
+    }
+
+    private boolean shouldUpdateRisk(String symbol, BigDecimal currentPrice) {
+        BigDecimal lastPrice = lastRiskPrices.get(symbol);
+        if (lastPrice == null) return true;
+
+        BigDecimal diff = currentPrice.subtract(lastPrice).abs();
+        BigDecimal threshold = lastPrice.multiply(PRICE_FILTER_THRESHOLD);
+        
+        return diff.compareTo(threshold) >= 0;
     }
 }
