@@ -17,6 +17,8 @@ import java.util.Map;
  * <p>
  * Активируется в профилях prod, testnet, live.
  */
+import java.math.BigDecimal;
+
 @Slf4j
 @Component
 @Profile({"prod", "testnet", "live"})
@@ -47,10 +49,20 @@ public class BinanceExecutionEngine implements ExecutionEngine {
             Map response = binanceClient.get("/api/v3/order", params, Map.class, true);
 
             if (response != null && response.containsKey("orderId")) {
-                String orderId = response.get("orderId").toString();
-                return ExecutionResult.success(orderId, request.getSymbol(), request.getSide(), request.getAmount(), request.getPrice());
-            }
-            return ExecutionResult.failure(request.getSymbol(), "Invalid response from Binance");
+                String exchangeOrderId = response.get("orderId").toString();
+                // В реальном API Binance здесь также приходят сделки (fills), из которых можно вытащить externalTradeId и комиссии
+                return ExecutionResult.success(
+                        request.getOrderId(),
+                        exchangeOrderId,
+                        "trade-" + exchangeOrderId, // Mock trade ID
+                        request.getSymbol(),
+                        request.getSide(),
+                        request.getAmount(),
+                        request.getPrice(),
+                        BigDecimal.ZERO,
+                        "USDT",
+                        request.getClientOrderId()
+                );            }            return ExecutionResult.failure(request.getSymbol(), "Invalid response from Binance");
         } catch (Exception e) {
             log.error("[EXECUTION] Failed to execute order for {}", request.getSymbol(), e);
             return ExecutionResult.failure(request.getSymbol(), e.getMessage());

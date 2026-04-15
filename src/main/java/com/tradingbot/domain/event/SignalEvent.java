@@ -1,18 +1,18 @@
-package com.tradingbot.domain.model;
+package com.tradingbot.domain.event;
 
 import com.tradingbot.common.enums.SignalType;
+import lombok.Builder;
 import lombok.Value;
-
 import java.math.BigDecimal;
+import java.time.Instant;
 
-/**
- * Торговый сигнал, генерируемый стратегией.
- */
 @Value
-public class Signal {
+@Builder
+public class SignalEvent {
     String symbol;
-    String strategyId;
     SignalType type;
     BigDecimal price;
     BigDecimal quantity;
+    Instant candleTime;
+    String strategyId;
 }

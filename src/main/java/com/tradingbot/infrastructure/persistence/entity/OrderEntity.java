@@ -21,8 +21,9 @@ public class OrderEntity {
 
     private String clientOrderId;
 
-    private String symbol;
+    private String exchangeOrderId;
 
+    private String symbol;
     @Enumerated(EnumType.STRING)
     private OrderSide side;
 
@@ -30,5 +31,11 @@ public class OrderEntity {
 
     private BigDecimal price;
 
+    private String strategyId;
+
+    private String status;
+
     private Instant createdAt;
+
+    private Instant updatedAt;
 }

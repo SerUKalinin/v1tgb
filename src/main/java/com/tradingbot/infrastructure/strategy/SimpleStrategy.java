@@ -6,6 +6,8 @@ import com.tradingbot.domain.model.Signal;
 import com.tradingbot.domain.strategy.TradingStrategy;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
+
 /**
  * Простейшая тестовая стратегия.
  * <p>
@@ -22,6 +24,7 @@ public class SimpleStrategy implements TradingStrategy {
      */
     @Override
     public Signal analyze(CandleWindow window) {
-        return new Signal(window.getSymbol(), SignalType.HOLD, window.getLast().getClose());
+        // Простейшая логика: всегда HOLD для примера
+        return new Signal(window.getSymbol(), "simple-strategy", SignalType.HOLD, window.getLast().getClose(), BigDecimal.ZERO);
     }
 }

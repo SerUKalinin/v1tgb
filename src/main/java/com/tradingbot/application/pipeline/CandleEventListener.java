@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
+import org.springframework.scheduling.annotation.Async;
+
 /**
  * Сервис-связка между событиями рынка и торговым конвейером.
  */
@@ -20,13 +22,13 @@ public class CandleEventListener {
     private final MarketDataService marketDataService;
 
     /**
-     * Слушает события о новых закрытых свечах и запускает конвейер.
+     * Слушает события о новых закрытых свечах и запускает конвейер асинхронно.
      *
      * @param event событие новой свечи
      */
+    @Async
     @EventListener
-    public void onNewCandle(NewClosedCandleEvent event) {
-        String symbol = event.symbol();
+    public void onNewCandle(NewClosedCandleEvent event) {        String symbol = event.symbol();
         log.info("[PIPELINE-SERVICE] Received new candle event for {}", symbol);
 
         CandleWindow window = marketDataService.getWindow(symbol);

@@ -6,17 +6,17 @@ CREATE TABLE orders (
     side VARCHAR(10) NOT NULL,
     quantity DECIMAL(20, 8) NOT NULL,
     price DECIMAL(20, 8),
-    created_at TIMESTAMP NOT NULL
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
 CREATE TABLE trades (
-    id VARCHAR(255) PRIMARY KEY,
+    id BIGSERIAL PRIMARY KEY,
     order_id VARCHAR(255) NOT NULL,
     symbol VARCHAR(20) NOT NULL,
     side VARCHAR(10) NOT NULL,
     quantity DECIMAL(20, 8) NOT NULL,
     price DECIMAL(20, 8) NOT NULL,
-    executed_at TIMESTAMP NOT NULL
+    executed_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
 CREATE TABLE positions (
