@@ -1,7 +1,9 @@
 package com.tradingbot.domain.risk;
 
-import com.tradingbot.domain.model.Signal;
+import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
+
+import java.util.Optional;
 
 /**
  * Интерфейс риск-менеджера.
@@ -9,12 +11,19 @@ import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 public interface RiskManager {
 
     /**
-     * Оценивает сигнал до создания ордера.
+     * Принимает сигнал и возвращает одобренный ордер с рассчитанным объемом.
+     * Если риск-движок отклоняет сигнал, возвращает Optional.empty().
      */
-    RiskDecision evaluate(Signal signal);
+    Optional<ApprovedOrder> approveSignal(SignalEvent signal);
 
     /**
      * Проверяет уже созданный ордер.
      */
     RiskDecision check(OrderEntity order);
+
+    /**
+     * Проверяет, актуально ли еще одобрение ордера относительно текущего состояния риска.
+     * Используется как финальный затвор перед ExecutionEngine.
+     */
+    boolean isApprovalFresh(ApprovedOrder approvedOrder);
 }

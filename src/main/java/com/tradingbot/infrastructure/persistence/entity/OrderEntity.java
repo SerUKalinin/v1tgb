@@ -7,6 +7,14 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.Instant;
 
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderType;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+
 @Entity
 @Table(name = "orders")
 @Getter
@@ -15,7 +23,6 @@ import java.time.Instant;
 @AllArgsConstructor
 @Builder
 public class OrderEntity {
-
     @Id
     private String id;
 
@@ -24,11 +31,14 @@ public class OrderEntity {
     private String exchangeOrderId;
 
     private String symbol;
+
     @Enumerated(EnumType.STRING)
     private OrderSide side;
 
-    private BigDecimal quantity;
+    @Enumerated(EnumType.STRING)
+    private OrderType type;
 
+    private BigDecimal quantity;
     private BigDecimal price;
 
     private String strategyId;
