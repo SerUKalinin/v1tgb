@@ -7,46 +7,35 @@ import lombok.*;
 import java.math.BigDecimal;
 import java.time.Instant;
 
-/**
- * JPA-сущность для хранения информации об ордерах в базе данных.
- */
 @Entity
 @Table(name = "orders")
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
+@Builder
 public class OrderEntity {
 
-    /**
-     * Уникальный идентификатор ордера.
-     */
     @Id
     private String id;
 
-    /**
-     * Торговый символ.
-     */
-    private String symbol;
+    private String clientOrderId;
 
-    /**
-     * Сторона ордера (покупка/продажа).
-     */
+    private String exchangeOrderId;
+
+    private String symbol;
     @Enumerated(EnumType.STRING)
     private OrderSide side;
 
-    /**
-     * Количество базовой валюты.
-     */
     private BigDecimal quantity;
 
-    /**
-     * Цена исполнения.
-     */
     private BigDecimal price;
 
-    /**
-     * Время создания ордера.
-     */
+    private String strategyId;
+
+    private String status;
+
     private Instant createdAt;
+
+    private Instant updatedAt;
 }

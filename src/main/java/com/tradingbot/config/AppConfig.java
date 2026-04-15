@@ -4,6 +4,7 @@ import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.infrastructure.execution.binance.BinanceExecutionEngine;
 import com.tradingbot.infrastructure.execution.fake.BacktestExecutionEngine;
 import com.tradingbot.infrastructure.execution.binance.BinanceClient;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -35,11 +36,12 @@ public class AppConfig {
      * <p>
      * Активируется в профиле "test".
      *
+     * @param eventPublisher издатель событий
      * @return экземпляр BacktestExecutionEngine
      */
     @Bean
     @Profile("test")
-    public ExecutionEngine backtestExecutionEngine() {
-        return new BacktestExecutionEngine();
+    public ExecutionEngine backtestExecutionEngine(ApplicationEventPublisher eventPublisher) {
+        return new BacktestExecutionEngine(eventPublisher);
     }
 }
