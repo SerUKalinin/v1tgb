@@ -3,6 +3,7 @@ package com.tradingbot.application.service;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Trade;
+import com.tradingbot.domain.risk.RiskStateStore;
 import com.tradingbot.infrastructure.persistence.entity.TradeEntity;
 import com.tradingbot.infrastructure.persistence.mapper.TradeMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
@@ -27,6 +28,7 @@ public class TradeService {
     private final ApplicationEventPublisher eventPublisher;
 
     private final OrderRepository orderRepository;
+    private final RiskStateStore riskStateStore;
 
     /**
      * Слушает события об исполнении ордеров и регистрирует сделки.
@@ -54,11 +56,21 @@ public class TradeService {
         entity.setSide(order.getSide());
         entity.setStrategyId(order.getStrategyId());
         entity.setExecutedAt(java.time.Instant.now());
+        entity.setRealizedPnl(java.math.BigDecimal.ZERO); // В реальной системе здесь был бы расчет PnL
         
         TradeEntity saved = tradeRepository.save(entity);
+
+        // Обновляем состояние риск-движка
+        riskStateStore.update(new com.tradingbot.domain.risk.RiskEvent.TradeExecuted(
+                saved.getExchangeTradeId(),
+                saved.getSymbol(),
+                saved.getQuantity(),
+                saved.getPrice(),
+                saved.getRealizedPnl(),
+                saved.getExecutedAt()
+        ));
         
-        eventPublisher.publishEvent(new TradeCreatedEvent(
-                saved.getId(),
+        eventPublisher.publishEvent(new TradeCreatedEvent(                saved.getId(),
                 saved.getOrderId(),
                 saved.getSymbol(),
                 saved.getStrategyId(),

@@ -1,6 +1,7 @@
 package com.tradingbot.application.service;
 
 import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.OrderEvent;
 import com.tradingbot.domain.event.SignalEvent;
@@ -54,13 +55,12 @@ public class OrderManagementService {
                 .symbol(request.getSymbol())
                 .strategyId(request.getStrategyId())
                 .side(request.getSide())
+                .type(request.getType() != null ? request.getType() : com.tradingbot.common.enums.OrderType.MARKET)
                 .quantity(request.getAmount())
                 .price(request.getPrice())
                 .status(OrderStatus.NEW.name())
                 .createdAt(Instant.now())
-                .build();
-
-        order = orderRepository.save(order);
+                .build();        order = orderRepository.save(order);
         publishOrderEvent(order, "Order created via API");
 
         // 2. Risk Check
@@ -92,11 +92,11 @@ public class OrderManagementService {
                     .clientOrderId(order.getClientOrderId())
                     .symbol(order.getSymbol())
                     .side(order.getSide())
+                    .type(order.getType())
                     .amount(order.getQuantity())
                     .price(order.getPrice())
                     .strategyId(order.getStrategyId())
                     .build();
-
             ExecutionResult result = executionEngine.execute(request);
             
             if (result.isSuccess()) {

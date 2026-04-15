@@ -6,10 +6,10 @@ spring:
     username: postgres
     password: postgres
   jpa:
+    open-in-view: false
     hibernate:
       ddl-auto: validate
     show-sql: true
-
 logging:
   level:
     root: INFO

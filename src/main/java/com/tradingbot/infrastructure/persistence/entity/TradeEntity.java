@@ -46,8 +46,13 @@ public class TradeEntity {
 
     private String strategyId;
 
-    private BigDecimal commission;
+    private BigDecimal netQuantity;
 
+    private BigDecimal avgEntryPrice;
+
+    private BigDecimal realizedPnl;
+
+    private BigDecimal commission;
     private String commissionAsset;
 
     @Column(insertable = false, updatable = false)

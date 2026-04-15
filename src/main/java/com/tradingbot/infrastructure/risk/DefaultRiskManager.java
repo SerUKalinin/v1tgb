@@ -1,25 +1,32 @@
 package com.tradingbot.infrastructure.risk;
 
+import com.tradingbot.domain.model.OrderRequest;
 import com.tradingbot.domain.model.Signal;
+import com.tradingbot.domain.risk.ExchangeFilterService;
 import com.tradingbot.domain.risk.RiskDecision;
 import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 
 /**
- * Базовая реализация риск-менеджера.
+ * Базовая реализация риск-менеджера, интегрированная с ExchangeFilterService.
  */
-@Component
+@Service
 @Slf4j
+@RequiredArgsConstructor
 public class DefaultRiskManager implements RiskManager {
+
+    private final ExchangeFilterService filterService;
 
     @Override
     public RiskDecision evaluate(Signal signal) {
         log.info("[RISK] Evaluating signal: {} {} @ {}", signal.getType(), signal.getSymbol(), signal.getPrice());
-        // Базовая логика для сигналов
+        // В будущем здесь можно добавить расчет размера позиции на основе волатильности
         return RiskDecision.approve(new BigDecimal("0.01"));
     }
 
@@ -31,12 +38,15 @@ public class DefaultRiskManager implements RiskManager {
             return RiskDecision.reject("Quantity must be positive");
         }
 
-        // Пример ограничения: не более 0.1 BTC за раз
-        BigDecimal maxAmount = new BigDecimal("0.1");
-        if (order.getSymbol().contains("BTC") && order.getQuantity().compareTo(maxAmount) > 0) {
-            log.warn("[RISK] Reducing size from {} to {}", order.getQuantity(), maxAmount);
-            return RiskDecision.reduce(maxAmount, "Max BTC amount exceeded");
-        }
+        // Интеграция с новым движком правил через ExchangeFilterService
+        OrderRequest request = OrderRequest.builder()
+                .symbol(order.getSymbol())
+                .quantity(order.getQuantity())
+                .side(order.getSide())
+                .type(order.getType())
+                .price(order.getPrice())
+                .build();
 
-        return RiskDecision.approve(order.getQuantity());
-    }}
+        return filterService.filter(request);
+    }
+}
