@@ -1,31 +1,28 @@
 package com.tradingbot.domain.model;
 
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.Builder;
+import lombok.Value;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 
 /**
- * Торговая позиция по символу.
+ * Чистая доменная модель позиции (Position).
+ * Является производным состоянием (Projection) на основе списка сделок.
  */
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
+@Value
+@Builder(toBuilder = true)
 public class Position {
+    String symbol;
+    String strategyId;
+    BigDecimal netQuantity;
+    BigDecimal avgEntryPrice;
+    Instant updatedAt;
 
     /**
-     * Торговый символ.
+     * Проверка, открыта ли позиция.
      */
-    private String symbol;
-
-    /**
-     * Количество базовой валюты в позиции.
-     */
-    private BigDecimal quantity;
-
-    /**
-     * Средняя цена входа в позицию.
-     */
-    private BigDecimal entryPrice;
+    public boolean isOpen() {
+        return netQuantity != null && netQuantity.compareTo(BigDecimal.ZERO) != 0;
+    }
 }

@@ -1,18 +1,20 @@
 package com.tradingbot.domain.risk;
 
-import com.tradingbot.domain.model.RiskDecision;
 import com.tradingbot.domain.model.Signal;
+import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 
 /**
- * Менеджер рисков для оценки торговых сигналов.
+ * Интерфейс риск-менеджера.
  */
 public interface RiskManager {
 
     /**
-     * Оценивает торговый сигнал и возвращает решение.
-     *
-     * @param signal торговый сигнал
-     * @return решение риск-менеджера
+     * Оценивает сигнал до создания ордера.
      */
     RiskDecision evaluate(Signal signal);
+
+    /**
+     * Проверяет уже созданный ордер.
+     */
+    RiskDecision check(OrderEntity order);
 }

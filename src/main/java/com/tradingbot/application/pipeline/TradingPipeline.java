@@ -1,22 +1,19 @@
 package com.tradingbot.application.pipeline;
 
-import com.tradingbot.application.service.PositionService;
+import com.tradingbot.application.service.OrderManagementService;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.SignalType;
-import com.tradingbot.domain.execution.ExecutionEngine;
+import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.model.*;
+import com.tradingbot.domain.risk.RiskDecision;
 import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.domain.strategy.TradingStrategy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.UUID;
-
 /**
  * Торговый конвейер, объединяющий этапы обработки сигнала.
- * <p>
- * Последовательность: стратегия → риск-менеджер → исполнение → обновление позиции.
  */
 @Service
 @Slf4j
@@ -25,8 +22,7 @@ public class TradingPipeline {
 
     private final TradingStrategy strategy;
     private final RiskManager riskManager;
-    private final ExecutionEngine executionEngine;
-    private final PositionService positionService;
+    private final OrderManagementService orderManagementService;
 
     /**
      * Обрабатывает свечное окно через торговый конвейер.
@@ -39,35 +35,33 @@ public class TradingPipeline {
         Candle lastCandle = window.getLast();
         log.info("[PIPELINE] Processing symbol={} last_close={}", window.getSymbol(), lastCandle.getClose());
 
-        // 1. Strategy
+        // 1. Strategy (Stateless Decision)
         Signal signal = strategy.analyze(window);
         if (signal == null || signal.getType() == SignalType.HOLD) {
             return;
         }
 
-        // 2. Risk
+        // 2. Risk (Stateless Decision)
         RiskDecision decision = riskManager.evaluate(signal);
         if (!decision.isApproved()) {
             log.warn("[PIPELINE] Risk rejected: {}", decision.getReason());
             return;
         }
 
-        // 3. Execution
+        // 3. Prepare Order Request (DTO)
         OrderRequest request = OrderRequest.builder()
                 .symbol(signal.getSymbol())
                 .side(signal.getType() == SignalType.BUY ? OrderSide.BUY : OrderSide.SELL)
                 .amount(decision.getAmount())
                 .price(signal.getPrice())
-                .clientOrderId(UUID.randomUUID().toString())
+                .strategyId("simple-strategy")
+                .clientOrderId(generateClientOrderId(window))
                 .build();
-        ExecutionResult result = executionEngine.execute(request);
 
-        // 4. Position Update
-        if (result.isSuccess()) {
-            log.info("[PIPELINE] Trade executed: orderId={}", result.getOrderId());
-            positionService.applyExecution(result);
-        } else {
-            log.error("[PIPELINE] Execution failed: {}", result.getErrorMessage());
-        }
+        // 4. Delegate to OMS (Stateful Transactional Boundary)
+        orderManagementService.executeOrder(request);
+    }
+    private String generateClientOrderId(CandleWindow window) {
+        return String.format("%s_%s", window.getSymbol(), window.getLast().getOpenTime().toEpochMilli());
     }
 }

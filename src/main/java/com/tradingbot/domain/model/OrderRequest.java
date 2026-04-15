@@ -12,29 +12,11 @@ import java.math.BigDecimal;
 @Value
 @Builder
 public class OrderRequest {
-
-    /**
-     * Торговый символ.
-     */
+    String orderId; // Добавлено поле
     String symbol;
-
-    /**
-     * Сторона ордера (покупка/продажа).
-     */
     OrderSide side;
-
-    /**
-     * Количество базовой валюты.
-     */
     BigDecimal amount;
-
-    /**
-     * Цена для лимитного ордера. Если null — рыночный ордер.
-     */
     BigDecimal price;
-
-    /**
-     * Уникальный идентификатор ордера со стороны клиента.
-     */
+    String strategyId;
     String clientOrderId;
 }
