@@ -94,6 +94,15 @@ public class OrderManagementService {
 
     private ExecutionResult executeInternal(OrderEntity order, com.tradingbot.domain.risk.ApprovedOrder approvedOrder) {
         try {
+            // 1. RiskGate Validation: Финальная проверка перед исполнением
+            if (!riskManager.isApprovalFresh(approvedOrder)) {
+                log.error("[OMS] Stale approval or System HALTED for order {}", order.getId());
+                order.setStatus(OrderStatus.REJECTED.name());
+                orderRepository.save(order);
+                publishOrderEvent(order, "Rejected by RiskGate: Stale approval or System HALTED");
+                return ExecutionResult.failure(order.getId(), "RiskGate validation failed");
+            }
+
             ExecutionResult result = executionEngine.execute(approvedOrder);
             
             if (result.isSuccess()) {

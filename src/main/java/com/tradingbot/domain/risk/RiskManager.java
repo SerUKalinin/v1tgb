@@ -20,4 +20,10 @@ public interface RiskManager {
      * Проверяет уже созданный ордер.
      */
     RiskDecision check(OrderEntity order);
+
+    /**
+     * Проверяет, актуально ли еще одобрение ордера относительно текущего состояния риска.
+     * Используется как финальный затвор перед ExecutionEngine.
+     */
+    boolean isApprovalFresh(ApprovedOrder approvedOrder);
 }

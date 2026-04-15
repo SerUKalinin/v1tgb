@@ -80,70 +80,51 @@ public class PositionService {
                             .version(0L)
                             .build());
 
-            // Идемпотентность: проверка последнего обработанного tradeId
+            // Идемпотентность
             if (entity.getLastTradeId() != null && entity.getLastTradeId() >= event.getTradeId()) {
-                log.info("[POSITIONS] Trade {} already processed for position {}:{}. Skipping.", 
-                        event.getTradeId(), event.getStrategyId(), event.getSymbol());
+                log.info("[POSITIONS] Trade {} already processed. Skipping.", event.getTradeId());
                 return;
             }
 
-            BigDecimal currentQty = entity.getQuantity();
-            BigDecimal executedQty = event.getSide() == OrderSide.BUY 
-                    ? event.getQuantity() 
-                    : event.getQuantity().negate();
-            BigDecimal executedPrice = event.getPrice();
+            // 1. Map Entity to Domain
+            Position currentPosition = mapper.toDomain(entity);
 
-            BigDecimal newQty = currentQty.add(executedQty);
-            BigDecimal newEntryPrice = entity.getEntryPrice();
-            BigDecimal realizedPnl = entity.getRealizedPnl();
+            // 2. Pure Function Transition
+            Position nextPosition = com.tradingbot.domain.model.PositionReducer.reduce(currentPosition, event);
 
-            // Логика расчета средней цены входа и Realized PnL
-            if (newQty.compareTo(BigDecimal.ZERO) == 0) {
-                if (currentQty.signum() != 0) {
-                    BigDecimal tradePnl = calculateTradePnl(currentQty, entity.getEntryPrice(), executedPrice);
-                    realizedPnl = realizedPnl.add(tradePnl);
-                }
-                newEntryPrice = BigDecimal.ZERO;
-            } else if (currentQty.signum() == 0) {
-                newEntryPrice = executedPrice;
-            } else if (currentQty.signum() == executedQty.signum()) {
-                // Увеличение позиции (Long + Long или Short + Short)
-                BigDecimal totalCost = entity.getEntryPrice().multiply(currentQty.abs())
-                        .add(executedPrice.multiply(executedQty.abs()));
-                newEntryPrice = totalCost.divide(newQty.abs(), 8, RoundingMode.HALF_UP);
-            } else {
-                // Частичное закрытие или переворот (Long + Short или Short + Long)
-                if (currentQty.abs().compareTo(executedQty.abs()) >= 0) {
-                    // Частичное закрытие без переворота
-                    BigDecimal closedQty = executedQty.negate();
-                    BigDecimal tradePnl = calculateTradePnl(closedQty, entity.getEntryPrice(), executedPrice);
-                    realizedPnl = realizedPnl.add(tradePnl);
-                    // entryPrice остается прежним
-                } else {
-                    // Полное закрытие старой и открытие новой в другую сторону (переворот)
-                    BigDecimal closedQty = currentQty;
-                    BigDecimal tradePnl = calculateTradePnl(closedQty, entity.getEntryPrice(), executedPrice);
-                    realizedPnl = realizedPnl.add(tradePnl);
-                    newEntryPrice = executedPrice;
-                }
-            }
+            // 3. Calculate Realized PnL (Derived from transition)
+            BigDecimal tradePnl = calculateTradePnl(currentPosition, event);
+            BigDecimal newRealizedPnl = entity.getRealizedPnl().add(tradePnl);
 
-            entity.setQuantity(newQty);
-            entity.setEntryPrice(newEntryPrice);
-            entity.setRealizedPnl(realizedPnl);
+            // 4. Map back to Entity and Save
+            entity.setQuantity(nextPosition.getNetQuantity());
+            entity.setEntryPrice(nextPosition.getAvgEntryPrice());
+            entity.setRealizedPnl(newRealizedPnl);
             entity.setLastTradeId(event.getTradeId());
             entity.setUpdatedAt(Instant.now());
 
             repository.save(entity);
-            
-            positions.put(getCacheKey(event.getSymbol(), event.getStrategyId()), mapper.toDomain(entity));
+            positions.put(getCacheKey(event.getSymbol(), event.getStrategyId()), nextPosition);
 
             log.info("[POSITIONS] Updated position for {} ({}): qty={} (was {}), entryPrice={}, realizedPnl={}",
-                    event.getSymbol(), event.getStrategyId(), newQty, currentQty, newEntryPrice, realizedPnl);
+                    event.getSymbol(), event.getStrategyId(), nextPosition.getNetQuantity(), 
+                    currentPosition.getNetQuantity(), nextPosition.getAvgEntryPrice(), newRealizedPnl);
         } catch (Exception e) {
             log.error("[POSITIONS] Critical error processing trade {}: {}", event.getTradeId(), e.getMessage(), e);
-            // Мы НЕ пробрасываем исключение дальше, чтобы не ломать пайплайн
         }
+    }
+
+    private BigDecimal calculateTradePnl(Position current, TradeCreatedEvent event) {
+        BigDecimal currentQty = current.getNetQuantity() != null ? current.getNetQuantity() : BigDecimal.ZERO;
+        if (currentQty.signum() == 0) return BigDecimal.ZERO;
+
+        BigDecimal executedQty = event.getSide() == OrderSide.BUY ? event.getQuantity() : event.getQuantity().negate();
+        
+        // PnL возникает только если мы закрываем позицию (знаки разные)
+        if (currentQty.signum() == executedQty.signum()) return BigDecimal.ZERO;
+
+        BigDecimal closedQty = currentQty.abs().min(event.getQuantity()).multiply(BigDecimal.valueOf(currentQty.signum()));
+        return event.getPrice().subtract(current.getAvgEntryPrice()).multiply(closedQty).setScale(8, RoundingMode.HALF_UP);
     }
 
     /**

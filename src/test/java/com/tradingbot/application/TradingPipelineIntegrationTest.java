@@ -22,8 +22,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
@@ -86,9 +85,11 @@ class TradingPipelineIntegrationTest {
                 .price(price)
                 .strategyId(strategyId)
                 .approvedAt(Instant.now())
+                .riskStateVersion(1L)
                 .build();
 
         when(riskManager.approveSignal(any())).thenReturn(Optional.of(approvedOrder));
+        when(riskManager.isApprovalFresh(any())).thenReturn(true);
 
         // 3. Execution Engine Mock
         when(executionEngine.execute(any())).thenAnswer(invocation -> {
@@ -111,12 +112,15 @@ class TradingPipelineIntegrationTest {
             );
 
             // Публикуем событие исполнения, чтобы сработал Ledger и Position Reducer
-            eventPublisher.publishEvent(new OrderFilledEvent(
+            // Используем актуальный конструктор TradeCreatedEvent
+            eventPublisher.publishEvent(new com.tradingbot.domain.event.TradeCreatedEvent(
+                    1L,
                     order.getOrderId(),
-                    tradeId,
                     order.getSymbol(),
+                    order.getStrategyId(),
                     order.getQuantity(),
-                    order.getPrice()
+                    order.getPrice(),
+                    order.getSide()
             ));
 
             return result;
@@ -130,11 +134,12 @@ class TradingPipelineIntegrationTest {
         Position pos = positionService.getPosition(symbol, strategyId);
         System.out.println("=== FINAL POSITION CHECK: " + pos + " ===");
         
-        assertTrue(positionService.hasOpenPosition(symbol, strategyId), 
-                "Позиция должна быть открыта. Текущее состояние: " + pos);
+        assertNotNull(pos, "Позиция должна существовать в кэше/БД");
+        assertTrue(pos.isOpen(), "Позиция должна быть открыта. Текущее состояние: " + pos);
         
         assertEquals(symbol, pos.getSymbol());
         assertEquals(0, price.compareTo(pos.getAvgEntryPrice()), "Цена входа должна совпадать");
+        assertEquals(0, amount.compareTo(pos.getNetQuantity()), "Объем позиции должен совпадать с объемом сделки");
         System.out.println("=== INTEGRATION TEST SUCCESS ===");
     }
 }

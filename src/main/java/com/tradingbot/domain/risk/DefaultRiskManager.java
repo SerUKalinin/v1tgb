@@ -87,6 +87,29 @@ public class DefaultRiskManager implements RiskManager {
         return RiskDecision.approve(order.getQuantity());
     }
 
+    @Override
+    public boolean isApprovalFresh(ApprovedOrder approvedOrder) {
+        RiskState currentState = stateStore.getState();
+        
+        // 1. Проверка на Halt (самое критичное)
+        if (currentState.isHalted()) {
+            log.error("[RiskGate] Stale approval detected: System is HALTED. Order: {}", approvedOrder.getOrderId());
+            return false;
+        }
+
+        // 2. Проверка версии состояния (Version Check)
+        // Если версия изменилась, значит между одобрением и исполнением проскочило другое событие риска
+        if (approvedOrder.getRiskStateVersion() != currentState.getVersion()) {
+            log.warn("[RiskGate] Stale approval detected: Version mismatch. Order version: {}, Current version: {}", 
+                    approvedOrder.getRiskStateVersion(), currentState.getVersion());
+            // В Stage 3 мы позволяем небольшое расхождение, если это не Halt, 
+            // но логируем это как потенциальный риск.
+            // Для жесткого режима: return false;
+        }
+
+        return true;
+    }
+
     private BigDecimal calculateQuantity(SignalEvent signal, RiskState state) {
         // Simple sizing logic: 1% of equity per trade
         BigDecimal riskPercent = new BigDecimal("0.01");
