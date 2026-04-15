@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 
 /**
  * JPA-сущность для хранения информации о позициях в базе данных.
@@ -14,21 +15,38 @@ import java.math.BigDecimal;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
+@Builder
 public class PositionEntity {
 
-    /**
-     * Торговый символ (является первичным ключом).
-     */
     @Id
     private String symbol;
 
-    /**
-     * Количество базовой валюты в позиции.
-     */
+    @Column(name = "strategy_id")
+    private String strategyId;
+
+    @Column(name = "net_quantity")
     private BigDecimal quantity;
 
-    /**
-     * Средняя цена входа в позицию.
-     */
+    @Column(name = "avg_entry_price")
     private BigDecimal entryPrice;
+    private BigDecimal realizedPnl;
+
+    @Version
+    private Long version;
+
+    @Column(name = "last_trade_id")
+    private Long lastTradeId;
+
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+
+    @PrePersist
+    public void onCreate() {
+        this.updatedAt = Instant.now();
+    }
+
+    @PreUpdate
+    public void onUpdate() {
+        this.updatedAt = Instant.now();
+    }
 }

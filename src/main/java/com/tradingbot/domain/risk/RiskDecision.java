@@ -9,39 +9,29 @@ import java.math.BigDecimal;
  */
 @Value
 public class RiskDecision {
-
-    /**
-     * Флаг одобрения сигнала.
-     */
-    boolean approved;
-
-    /**
-     * Допустимый объём для торговли.
-     */
+    DecisionType type;
     BigDecimal amount;
-
-    /**
-     * Причина отклонения (при approved = false).
-     */
     String reason;
 
-    /**
-     * Создаёт решение об одобрении сигнала.
-     *
-     * @param amount допустимый объём
-     * @return одобренное решение
-     */
-    public static RiskDecision approved(BigDecimal amount) {
-        return new RiskDecision(true, amount, null);
+    public enum DecisionType {
+        APPROVE,
+        REJECT,
+        REDUCE_SIZE
     }
 
-    /**
-     * Создаёт решение об отклонении сигнала.
-     *
-     * @param reason причина отклонения
-     * @return отклонённое решение
-     */
-    public static RiskDecision rejected(String reason) {
-        return new RiskDecision(false, BigDecimal.ZERO, reason);
+    public static RiskDecision approve(BigDecimal amount) {
+        return new RiskDecision(DecisionType.APPROVE, amount, "Risk check passed");
+    }
+
+    public static RiskDecision reject(String reason) {
+        return new RiskDecision(DecisionType.REJECT, BigDecimal.ZERO, reason);
+    }
+
+    public static RiskDecision reduce(BigDecimal newAmount, String reason) {
+        return new RiskDecision(DecisionType.REDUCE_SIZE, newAmount, reason);
+    }
+
+    public boolean isApproved() {
+        return type == DecisionType.APPROVE || type == DecisionType.REDUCE_SIZE;
     }
 }

@@ -1,0 +1,29 @@
+package com.tradingbot.domain.model;
+
+import com.tradingbot.common.enums.OrderSide;
+import lombok.Builder;
+import lombok.Value;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+
+/**
+ * Чистая доменная модель сделки (Trade).
+ * Является неизменяемым фактом исполнения ордера.
+ */
+@Value
+@Builder
+public class Trade {
+    Long id;
+    String exchangeTradeId;
+    String orderId;
+    String clientOrderId;
+    String symbol;
+    String strategyId;
+    OrderSide side;
+    BigDecimal price;
+    BigDecimal quantity;
+    BigDecimal feeAmount;
+    String feeAsset;
+    Instant executedAt;
+}

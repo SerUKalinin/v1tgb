@@ -17,11 +17,13 @@ public class PositionMapper {
      * @return доменная модель позиции
      */
     public Position toDomain(PositionEntity entity) {
-        return new Position(
-                entity.getSymbol(),
-                entity.getQuantity(),
-                entity.getEntryPrice()
-        );
+        return Position.builder()
+                .symbol(entity.getSymbol())
+                .strategyId(entity.getStrategyId())
+                .netQuantity(entity.getQuantity())
+                .avgEntryPrice(entity.getEntryPrice())
+                .updatedAt(entity.getUpdatedAt())
+                .build();
     }
 
     /**
@@ -31,10 +33,9 @@ public class PositionMapper {
      * @return JPA-сущность позиции
      */
     public PositionEntity toEntity(Position position) {
-        PositionEntity entity = new PositionEntity();
-        entity.setSymbol(position.getSymbol());
-        entity.setQuantity(position.getQuantity());
-        entity.setEntryPrice(position.getEntryPrice());
-        return entity;
-    }
-}
+        return PositionEntity.builder()
+                .symbol(position.getSymbol())
+                .quantity(position.getNetQuantity())
+                .entryPrice(position.getAvgEntryPrice())
+                .build();
+    }}
