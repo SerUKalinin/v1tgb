@@ -53,16 +53,15 @@ dependencies {
 	compileOnly "org.projectlombok:lombok:${lombokVersion}"
 	annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
 
+	// Telegram Bot
+	implementation 'org.telegram:telegrambots-spring-boot-starter:6.7.0'
+	implementation 'jakarta.xml.bind:jakarta.xml.bind-api:4.0.0'
+	implementation 'org.glassfish.jaxb:jaxb-runtime:4.0.0'
+	implementation 'javax.xml.bind:jaxb-api:2.3.1'
 	// Testing
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
-
-	testImplementation platform("org.testcontainers:testcontainers-bom:${testcontainersVersion}")
-	testImplementation 'org.testcontainers:junit-jupiter'
-	testImplementation 'org.testcontainers:postgresql'
-
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
-
 tasks.named('test') {
 	useJUnitPlatform()
 }

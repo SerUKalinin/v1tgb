@@ -1,0 +1,23 @@
+package com.tradingbot.application.pipeline;
+
+import com.tradingbot.application.signal.SignalRouter;
+import com.tradingbot.domain.event.SignalEvent;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.event.EventListener;
+import org.springframework.stereotype.Component;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+@org.springframework.context.annotation.Profile("!test")
+public class SignalEventListener {
+
+    private final SignalRouter signalRouter;
+
+    @EventListener
+    public void onSignal(SignalEvent event) {
+        log.info("[EVENT-LISTENER] Received signal event for symbol: {}", event.getSymbol());
+        signalRouter.route(event);
+    }
+}

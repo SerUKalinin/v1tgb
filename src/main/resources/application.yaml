@@ -23,3 +23,8 @@ flyway:
   enabled: true
   schemas: public
   baseline-on-migrate: true
+
+telegram:
+  bot:
+    username: v1TGBot
+    token: 8064498072:AAEfnWPqQksCYape17hi2sYuvTjnTIz-64g

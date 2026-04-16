@@ -10,6 +10,7 @@ import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.domain.strategy.TradingStrategy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 /**
@@ -23,6 +24,7 @@ public class TradingPipeline {
     private final TradingStrategy strategy;
     private final RiskManager riskManager;
     private final OrderManagementService orderManagementService;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * Обрабатывает свечное окно через торговый конвейер.
@@ -40,6 +42,15 @@ public class TradingPipeline {
         if (signal == null || signal.getType() == SignalType.HOLD) {
             return;
         }
+
+        // 🔥 PUBLISH SIGNAL EVENT (For Product Layer / Telegram)
+        eventPublisher.publishEvent(SignalEvent.builder()
+                .symbol(signal.getSymbol())
+                .type(signal.getType())
+                .price(signal.getPrice())
+                .strategyId(signal.getStrategyId())
+                .candleTime(window.getLast().getOpenTime())
+                .build());
 
         // 2. Risk (Stateless Decision)
         RiskDecision decision = riskManager.evaluate(signal);

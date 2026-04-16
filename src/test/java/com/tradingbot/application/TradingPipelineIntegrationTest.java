@@ -48,8 +48,7 @@ class TradingPipelineIntegrationTest {
     private com.tradingbot.domain.execution.ExecutionEngine executionEngine;
 
     @Test
-    void shouldExecuteTradeAndSavePositionWhenBuySignalReceived() {
-        System.out.println("=== INTEGRATION TEST STARTED ===");
+    void shouldExecuteTradeAndSavePositionWhenBuySignalReceived() throws InterruptedException {        System.out.println("=== INTEGRATION TEST STARTED ===");
         String symbol = "BTCUSDT";
         String strategyId = "simple-strategy";
         BigDecimal price = new BigDecimal("60000");
@@ -116,8 +115,11 @@ class TradingPipelineIntegrationTest {
         // ACT
         System.out.println("=== CALLING PIPELINE.PROCESS ===");
         tradingPipeline.process(window);
+        
+        // Даем немного времени на обработку событий в памяти
+        Thread.sleep(200);
+        
         System.out.println("=== PIPELINE.PROCESS FINISHED ===");
-
         // ASSERT
         Position pos = positionService.getPosition(symbol, strategyId);
         System.out.println("=== FINAL POSITION CHECK: " + pos + " ===");
