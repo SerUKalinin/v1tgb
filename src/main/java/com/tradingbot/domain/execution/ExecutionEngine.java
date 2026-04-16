@@ -1,18 +1,16 @@
 package com.tradingbot.domain.execution;
 
 import com.tradingbot.domain.model.ExecutionResult;
-import com.tradingbot.domain.model.OrderRequest;
+import com.tradingbot.domain.risk.ApprovedOrder;
 
 /**
- * Исполнительный движок для отправки торговых ордеров.
+ * Интерфейс движка исполнения ордеров.
  */
 public interface ExecutionEngine {
 
     /**
-     * Выполняет торговый ордер.
-     *
-     * @param request запрос на исполнение ордера
-     * @return результат исполнения
+     * Исполняет ордер, одобренный риск-менеджером.
+     * В Stage 3 это единственный входной контракт.
      */
-    ExecutionResult execute(OrderRequest request);
+    ExecutionResult execute(ApprovedOrder approvedOrder);
 }

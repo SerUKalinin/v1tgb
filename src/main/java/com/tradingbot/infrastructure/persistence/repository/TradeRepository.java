@@ -7,18 +7,13 @@ import org.springframework.stereotype.Repository;
 import java.util.List;
 import java.util.Optional;
 
+import java.time.Instant;
+import java.util.List;
+
 @Repository
 public interface TradeRepository extends JpaRepository<TradeEntity, Long> {
-
-    
-    Optional<TradeEntity> findByExchangeTradeId(String exchangeTradeId);
-
+    List<TradeEntity> findAllByExecutedAtAfter(Instant executedAt);
     boolean existsByExchangeTradeId(String exchangeTradeId);
-
-    boolean existsByClientOrderId(String clientOrderId);
-
-    long countByExchangeTradeId(String exchangeTradeId);
-
-    List<TradeEntity> findBySymbolAndStrategyIdOrderByExecutedAtAsc(String symbol, String strategyId);    
+    List<TradeEntity> findBySymbolAndStrategyIdOrderByExecutedAtAsc(String symbol, String strategyId);
     List<TradeEntity> findAllByOrderByExecutedAtAsc();
 }

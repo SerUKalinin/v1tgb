@@ -1,1 +1,2 @@
 # TradingBotApplication
+# v1tgb
