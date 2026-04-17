@@ -1,19 +1,14 @@
 package com.tradingbot.application.service;
 
-import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderStatus;
-import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.OrderEvent;
 import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.domain.event.TradeExecutedEvent;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.OrderRequest;
-import com.tradingbot.domain.position.PositionState;
-import com.tradingbot.domain.position.PositionStatus;
-import com.tradingbot.domain.risk.RiskManager;
-import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
+import com.tradingbot.domain.model.Position;
+import com.tradingbot.domain.risk.RiskManager;import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,7 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Map;
-import java.util.UUID;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
@@ -42,146 +37,226 @@ public class OrderManagementService {
 
     private final Map<String, Boolean> processedSignals = new ConcurrentHashMap<>();
 
-    /**
-     * Закрытие позиции по рынку (TP/SL или ручное).
-     */
+    // =========================================================
+    // ENTRY POINT (DISABLED)
+    // =========================================================
+
     @Transactional
-    public void closePosition(PositionState position) {
-        if (position.status() != PositionStatus.OPEN) {
-            log.warn("[OMS] Cannot close position for {}: status is {}", position.symbol(), position.status());
-            return;
-        }
-
-        log.info("[OMS] Closing position for {} (Qty: {})", position.symbol(), position.netQuantity());
-
-        OrderSide closeSide = position.netQuantity().signum() > 0 ? OrderSide.SELL : OrderSide.BUY;
-        BigDecimal closeQty = position.netQuantity().abs();
-
-        OrderRequest closeRequest = OrderRequest.builder()
-                .symbol(position.symbol())
-                .strategyId(position.strategyId())
-                .side(closeSide)
-                .type(OrderType.MARKET)
-                .quantity(closeQty)
-                .price(BigDecimal.ZERO)
-                .build();
-
-        executeOrder(closeRequest);
-    }
-
-    /**
-     * Публичный API для исполнения ордера.
-     */
-    @Transactional
+    @Deprecated
     public ExecutionResult executeOrder(OrderRequest request) {
-        log.info("[OMS] Public API call: executeOrder for {} {}", request.getSide(), request.getSymbol());
-
-        SignalEvent signal = SignalEvent.builder()
-                .symbol(request.getSymbol())
-                .type(request.getSide() == OrderSide.BUY ? SignalType.BUY : SignalType.SELL)
-                .price(request.getPrice())
-                .strategyId(request.getStrategyId())
-                .candleTime(Instant.now())
-                .build();
-
-        return processSignal(signal);
+        throw new IllegalStateException("Use SignalEvent pipeline only");
     }
 
-    private ExecutionResult processSignal(SignalEvent signal) {
-        java.util.Optional<com.tradingbot.domain.risk.ApprovedOrder> approvedOrderOpt = riskManager.approveSignal(signal);
-
-        if (approvedOrderOpt.isEmpty()) {
-            log.warn("[OMS] Signal rejected by Risk Gate: {}", signal);
-            return ExecutionResult.failure(null, "Rejected by Risk Gate");
-        }
-
-        com.tradingbot.domain.risk.ApprovedOrder approvedOrder = approvedOrderOpt.get();
-
-        OrderEntity order = OrderEntity.builder()
-                .id(approvedOrder.getOrderId())
-                .clientOrderId(approvedOrder.getClientOrderId())
-                .symbol(approvedOrder.getSymbol())
-                .strategyId(approvedOrder.getStrategyId())
-                .side(approvedOrder.getSide())
-                .type(approvedOrder.getType())
-                .quantity(approvedOrder.getQuantity())
-                .price(approvedOrder.getPrice())
-                .stopLoss(approvedOrder.getStopLoss())
-                .takeProfit(approvedOrder.getTakeProfit())
-                .status(OrderStatus.VALIDATED.name())
-                .createdAt(Instant.now())
-                .build();
-
-        order = orderRepository.save(order);
-        publishOrderEvent(order, "Approved by Risk Gate");
-
-        return executeInternal(order, approvedOrder);
-    }
-
-    private ExecutionResult executeInternal(OrderEntity order, com.tradingbot.domain.risk.ApprovedOrder approvedOrder) {
-        try {
-            if (!riskManager.isApprovalFresh(approvedOrder)) {
-                log.error("[OMS] Stale approval or System HALTED for order {}", order.getId());
-                order.setStatus(OrderStatus.REJECTED.name());
-                orderRepository.save(order);
-                publishOrderEvent(order, "Rejected by RiskGate: Stale approval or System HALTED");
-                return ExecutionResult.failure(order.getId(), "RiskGate validation failed");
-            }
-
-            ExecutionResult result = executionEngine.execute(approvedOrder);
-
-            if (result.isSuccess()) {
-                order.setStatus(OrderStatus.FILLED.name());
-                order.setExchangeOrderId(result.getExchangeOrderId());
-                orderRepository.save(order);
-
-                publishOrderEvent(order, "Order filled successfully");
-                return result;
-            } else {
-                order.setStatus(OrderStatus.REJECTED.name());
-                orderRepository.save(order);
-                publishOrderEvent(order, "Execution failed: " + result.getErrorMessage());
-                return result;
-            }
-        } catch (Exception e) {
-            log.error("[OMS] Execution error for order {}", order.getId(), e);
-            order.setStatus(OrderStatus.ERROR.name());
-            orderRepository.save(order);
-            publishOrderEvent(order, "Critical execution error: " + e.getMessage());
-            return ExecutionResult.failure(order.getId(), e.getMessage());
-        }
-    }
+    // =========================================================
+    // SIGNAL ENTRY POINT
+    // =========================================================
 
     @EventListener
     @Transactional
     public void onSignal(SignalEvent event) {
-        if (event.getType() == SignalType.HOLD) return;
 
-        String dedupeId = event.getSymbol() + ":" + (event.getCandleTime() != null ? event.getCandleTime().toEpochMilli() : System.currentTimeMillis());
-        if (processedSignals.putIfAbsent(dedupeId, Boolean.TRUE) != null) {
-            log.debug("[OMS] Duplicate signal detected for {}, skipping", dedupeId);
+        if (event.getType() == SignalType.HOLD) {
             return;
         }
 
-        log.info("[OMS] Processing signal: {} {} @ {}", event.getType(), event.getSymbol(), event.getPrice());
+        // FIX 2: stable dedup key
+        String dedupeId = buildDedupeKey(event);
+
+        if (processedSignals.putIfAbsent(dedupeId, Boolean.TRUE) != null) {
+            log.debug("[OMS] Duplicate signal skipped: {}", dedupeId);
+            return;
+        }
+
+        log.info("[OMS] Processing signal {} {} @ {}",
+                event.getType(),
+                event.getSymbol(),
+                event.getPrice());
+
         processSignal(event);
     }
 
-    @EventListener
-    @Transactional
-    public void onTradeExecuted(TradeExecutedEvent event) {
+    private String buildDedupeKey(SignalEvent event) {
+        return event.getSymbol()
+                + ":"
+                + event.getStrategyId()
+                + ":"
+                + event.getType()
+                + ":"
+                + (event.getCandleTime() != null
+                ? event.getCandleTime().toEpochMilli()
+                : System.currentTimeMillis());
     }
 
+    // =========================================================
+    // CORE LOGIC
+    // =========================================================
+
+    private ExecutionResult processSignal(SignalEvent signal) {
+
+        // POSITION GUARD
+        Position position = positionService.getPosition(
+                signal.getSymbol(),
+                signal.getStrategyId()
+        );
+
+        if (position != null && position.isOpen()) {
+
+            boolean sameDirection =
+                    (position.getNetQuantity().signum() > 0 && signal.getType() == SignalType.BUY)
+                            || (position.getNetQuantity().signum() < 0 && signal.getType() == SignalType.SELL);
+
+            if (sameDirection) {
+                log.warn("[OMS] Skip signal: already in position {} {}", signal.getSymbol(), signal.getType());
+                return ExecutionResult.failure(null, "Already in position");
+            }
+        }
+        // RISK CHECK
+        Optional<com.tradingbot.domain.risk.ApprovedOrder> approvedOpt =
+                riskManager.approveSignal(signal);
+
+        if (approvedOpt.isEmpty()) {
+            log.warn("[OMS] Signal rejected by Risk: {}", signal);
+            return ExecutionResult.failure(null, "Rejected by Risk Engine");
+        }
+
+        com.tradingbot.domain.risk.ApprovedOrder approved = approvedOpt.get();
+
+        // DB IDEMPOTENCY (FIX 3)
+        if (orderRepository.existsByClientOrderId(approved.getClientOrderId())) {
+            log.warn("[OMS] Duplicate order blocked: {}", approved.getClientOrderId());
+            return ExecutionResult.failure(null, "Duplicate order");
+        }
+
+        OrderEntity order = createOrderEntity(approved);
+
+        order = orderRepository.save(order);
+
+        publishOrderEvent(order, "Approved by Risk Engine");
+
+        return executeInternal(order, approved);
+    }
+
+    // =========================================================
+    // EXECUTION
+    // =========================================================
+
+    private ExecutionResult executeInternal(
+            OrderEntity order,
+            com.tradingbot.domain.risk.ApprovedOrder approved
+    ) {
+        try {
+
+            if (!riskManager.isApprovalFresh(approved)) {
+                log.error("[OMS] Stale approval: {}", order.getId());
+
+                order.setStatus(OrderStatus.REJECTED.name());
+                orderRepository.save(order);
+
+                publishOrderEvent(order, "Rejected: stale approval");
+
+                return ExecutionResult.failure(order.getId(), "Stale approval");
+            }
+
+            ExecutionResult result = executionEngine.execute(approved);
+
+            if (result.isSuccess()) {
+
+                order.setStatus(OrderStatus.FILLED.name());
+                order.setExchangeOrderId(result.getExchangeOrderId());
+
+                orderRepository.save(order);
+
+                publishOrderEvent(order, "FILLED");
+
+                return result;
+            }
+
+            order.setStatus(OrderStatus.REJECTED.name());
+            orderRepository.save(order);
+
+            publishOrderEvent(order, "FAILED: " + result.getErrorMessage());
+
+            return result;
+
+        } catch (Exception e) {
+
+            log.error("[OMS] Execution error {}", order.getId(), e);
+
+            order.setStatus(OrderStatus.ERROR.name());
+            orderRepository.save(order);
+
+            publishOrderEvent(order, "ERROR: " + e.getMessage());
+
+            return ExecutionResult.failure(order.getId(), e.getMessage());
+        }
+    }
+
+    // =========================================================
+    // CLOSE POSITION
+    // =========================================================
+
+    @Transactional
+    public void closePosition(Position position) {
+
+        if (!position.isOpen()) {
+            log.warn("[OMS] Cannot close position {}", position.getSymbol());
+            return;
+        }
+
+        SignalType type = position.getNetQuantity().signum() > 0
+                ? SignalType.SELL
+                : SignalType.BUY;
+
+        SignalEvent closeSignal = SignalEvent.builder()
+                .symbol(position.getSymbol())
+                .strategyId(position.getStrategyId())
+                .type(type)
+                .price(BigDecimal.ZERO)
+                .candleTime(Instant.now())
+                .build();
+
+        processSignal(closeSignal);
+    }
+    // =========================================================
+    // ENTITY CREATION
+    // =========================================================
+
+    private OrderEntity createOrderEntity(
+            com.tradingbot.domain.risk.ApprovedOrder approved
+    ) {
+        return OrderEntity.builder()
+                .id(approved.getOrderId())
+                .clientOrderId(approved.getClientOrderId())
+                .symbol(approved.getSymbol())
+                .strategyId(approved.getStrategyId())
+                .side(approved.getSide())
+                .type(approved.getType())
+                .quantity(approved.getQuantity())
+                .price(approved.getPrice())
+                .stopLoss(approved.getStopLoss())
+                .takeProfit(approved.getTakeProfit())
+                .status(OrderStatus.VALIDATED.name())
+                .createdAt(Instant.now())
+                .build();
+    }
+
+    // =========================================================
+    // EVENTS
+    // =========================================================
+
     private void publishOrderEvent(OrderEntity order, String message) {
-        eventPublisher.publishEvent(OrderEvent.builder()
-                .orderId(order.getId())
-                .clientOrderId(order.getClientOrderId())
-                .status(OrderStatus.valueOf(order.getStatus()))
-                .symbol(order.getSymbol())
-                .side(order.getSide())
-                .quantity(order.getQuantity())
-                .message(message)
-                .timestamp(Instant.now())
-                .build());
+
+        eventPublisher.publishEvent(
+                OrderEvent.builder()
+                        .orderId(order.getId())
+                        .clientOrderId(order.getClientOrderId())
+                        .status(OrderStatus.valueOf(order.getStatus()))
+                        .symbol(order.getSymbol())
+                        .side(order.getSide())
+                        .quantity(order.getQuantity())
+                        .message(message)
+                        .timestamp(Instant.now())
+                        .build()
+        );
     }
 }

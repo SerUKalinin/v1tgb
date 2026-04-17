@@ -34,10 +34,9 @@ public class SignalRouter {
                 .symbol(signal.getSymbol())
                 .type(signal.getType())
                 .price(signal.getPrice())
-                .takeProfit1(signal.getTakeProfit() != null ? signal.getTakeProfit() : signal.getPrice().multiply(java.math.BigDecimal.valueOf(1.02)))
-                .takeProfit2(signal.getPrice().multiply(java.math.BigDecimal.valueOf(1.05)))
-                .stopLoss(signal.getStopLoss() != null ? signal.getStopLoss() : signal.getPrice().multiply(java.math.BigDecimal.valueOf(0.98)))
-                .strategyId(signal.getStrategyId())
+                .takeProfit1(signal.getTakeProfit() != null ? signal.getTakeProfit() : signal.getPrice().multiply(java.math.BigDecimal.valueOf(1.0005)))
+                .takeProfit2(signal.getPrice().multiply(java.math.BigDecimal.valueOf(1.0010)))
+                .stopLoss(signal.getStopLoss() != null ? signal.getStopLoss() : signal.getPrice().multiply(java.math.BigDecimal.valueOf(0.9995)))                .strategyId(signal.getStrategyId())
                 .createdAt(Instant.now())
                 .timestamp(signal.getCandleTime())
                 .build();

@@ -2,12 +2,14 @@ package com.tradingbot.infrastructure.persistence.repository;
 
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
 
+@Repository
 public interface OrderRepository extends JpaRepository<OrderEntity, String> {
+    List<OrderEntity> findBySymbol(String symbol);
     Optional<OrderEntity> findByClientOrderId(String clientOrderId);
     boolean existsByClientOrderId(String clientOrderId);
-    List<OrderEntity> findAllByStatusIn(List<String> statuses);
 }
