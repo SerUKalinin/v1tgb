@@ -1,4 +1,4 @@
-package com.tradingbot.domain.user;
+package com.tradingbot.domain.model;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;

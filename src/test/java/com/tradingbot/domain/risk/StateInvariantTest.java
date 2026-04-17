@@ -2,8 +2,8 @@ package com.tradingbot.domain.risk;
 
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Position;
-import com.tradingbot.domain.model.PositionReducer;
 import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.domain.position.PositionReducer;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;

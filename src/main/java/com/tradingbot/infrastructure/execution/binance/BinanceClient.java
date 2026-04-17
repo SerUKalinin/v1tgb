@@ -8,6 +8,7 @@ import org.springframework.web.client.RestTemplate;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
@@ -98,6 +99,24 @@ public class BinanceClient {
         return restTemplate.exchange(url, org.springframework.http.HttpMethod.GET, entity, responseType).getBody();
     }
 
+    /**
+     * Выполняет POST-запрос к API Binance.
+     *
+     * @param path         путь запроса
+     * @param params       параметры запроса
+     * @param responseType класс ответа
+     * @param signed       требуется ли подпись
+     * @param <T>          тип ответа
+     * @return ответ от API
+     */
+    public <T> T post(String path, Map<String, String> params, Class<T> responseType, boolean signed) {
+        String url = buildUrl(path, params, signed);
+        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        headers.set("X-MBX-APIKEY", apiKey);
+        org.springframework.http.HttpEntity<String> entity = new org.springframework.http.HttpEntity<>(headers);
+        return restTemplate.exchange(url, org.springframework.http.HttpMethod.POST, entity, responseType).getBody();
+    }
+
     private String buildUrl(String path, Map<String, String> params, boolean signed) {
         Map<String, String> allParams = new TreeMap<>(params);
         if (signed) {
@@ -136,5 +155,12 @@ public class BinanceClient {
      */
     public String getBaseUrl() {
         return baseUrl;
+    }
+
+    /**
+     * Получает информацию об аккаунте (балансы).
+     */
+    public Map getAccountInfo() {
+        return get("/api/v3/account", new HashMap<>(), Map.class, true);
     }
 }

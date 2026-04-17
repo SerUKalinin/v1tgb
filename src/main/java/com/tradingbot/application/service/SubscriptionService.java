@@ -1,7 +1,7 @@
 package com.tradingbot.application.service;
 
-import com.tradingbot.domain.user.SubscriptionTier;
-import com.tradingbot.domain.user.User;
+import com.tradingbot.domain.model.SubscriptionTier;
+import com.tradingbot.domain.model.User;
 import org.springframework.stereotype.Service;
 
 @Service

@@ -1,7 +1,8 @@
 package com.tradingbot.infrastructure.telegram;
 
+import com.tradingbot.application.service.AnalyticsService;
 import com.tradingbot.application.service.SubscriptionService;
-import com.tradingbot.application.user.UserService;
+import com.tradingbot.application.service.UserService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,6 +22,7 @@ import java.util.List;
 public class TradingTelegramBot extends TelegramLongPollingBot {
     private final UserService userService;
     private final SubscriptionService subscriptionService;
+    private final AnalyticsService analyticsService;
 
     @Value("${telegram.bot.token}")
     private String token;
@@ -52,6 +54,7 @@ public class TradingTelegramBot extends TelegramLongPollingBot {
                 case "/menu" -> handleMenu(chatId);
                 case "/status" -> handleStatus(chatId);
                 case "/subscribe" -> handleSubscribe(chatId);
+                case "/stats" -> handleStats(chatId);
                 default -> sendMessage(chatId, "Неизвестная команда 🤖. Используйте /menu для навигации.");
             }
         } catch (Exception e) {
@@ -65,11 +68,17 @@ public class TradingTelegramBot extends TelegramLongPollingBot {
         Long chatId = update.getCallbackQuery().getMessage().getChatId();
 
         switch (data) {
-            case "stats" -> sendMessage(chatId, "📊 *Статистика* (в разработке)");
+            case "stats" -> handleStats(chatId);
             case "signals" -> sendMessage(chatId, "📡 *Сигналы* будут приходить сюда автоматически.");
             case "subscribe" -> handleSubscribe(chatId);
             case "settings" -> sendMessage(chatId, "⚙️ *Настройки* (в разработке)");
         }
+    }
+
+    private void handleStats(Long chatId) {
+        var stats = analyticsService.getGlobalStats();
+        String message = analyticsService.formatStatsMessage(stats);
+        sendMessage(chatId, message);
     }
 
     private void handleStart(Long chatId, Update update) {        String username = update.getMessage().getFrom().getUserName();

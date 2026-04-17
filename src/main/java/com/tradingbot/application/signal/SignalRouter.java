@@ -2,9 +2,10 @@ package com.tradingbot.application.signal;
 
 import com.tradingbot.application.service.SubscriptionService;
 import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.domain.model.SignalEntity;
-import com.tradingbot.domain.user.User;
-import com.tradingbot.infrastructure.persistence.SignalRepository;
+import com.tradingbot.infrastructure.persistence.entity.SignalEntity;
+import com.tradingbot.domain.model.User;
+import com.tradingbot.infrastructure.persistence.repository.SignalRepository;
+import com.tradingbot.infrastructure.persistence.repository.JpaUserRepository;
 import com.tradingbot.infrastructure.telegram.TradingTelegramBot;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,7 +21,7 @@ import java.util.Optional;
 @Profile("!test")
 public class SignalRouter {
 
-    private final com.tradingbot.infrastructure.persistence.JpaUserRepository userRepository;
+    private final JpaUserRepository userRepository;
     private final Optional<TradingTelegramBot> telegramBot;
     private final SubscriptionService subscriptionService;
     private final SignalRepository signalRepository;

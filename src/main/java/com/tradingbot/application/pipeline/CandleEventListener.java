@@ -1,6 +1,6 @@
 package com.tradingbot.application.pipeline;
 
-import com.tradingbot.application.MarketDataService;
+import com.tradingbot.application.market.MarketDataService;
 import com.tradingbot.application.event.NewClosedCandleEvent;
 import com.tradingbot.domain.model.CandleWindow;
 import lombok.RequiredArgsConstructor;

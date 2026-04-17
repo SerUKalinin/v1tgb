@@ -1,9 +1,9 @@
 package com.tradingbot.interfaces.web;
 
-import com.tradingbot.application.user.UserService;
+import com.tradingbot.domain.model.SubscriptionTier;
 import com.tradingbot.domain.risk.RiskEngine;
-import com.tradingbot.domain.user.User;
-import com.tradingbot.infrastructure.persistence.SignalRepository;
+import com.tradingbot.infrastructure.persistence.repository.SignalRepository;
+import com.tradingbot.infrastructure.persistence.repository.JpaUserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -16,7 +16,7 @@ import java.util.Map;
 @RequestMapping("/debug/saas")
 @RequiredArgsConstructor
 public class SaasMonitoringController {
-    private final com.tradingbot.infrastructure.persistence.JpaUserRepository userRepository;
+    private final JpaUserRepository userRepository;
     private final SignalRepository signalRepository;
     private final RiskEngine riskEngine;
 
@@ -37,7 +37,7 @@ public class SaasMonitoringController {
 
         // Апгрейдим ваш реальный ID
         userRepository.findByChatId(403753468L).ifPresent(user -> {
-            user.setTier(com.tradingbot.domain.user.SubscriptionTier.PRO);
+            user.setTier(SubscriptionTier.PRO);
             userRepository.save(user);
         });
         

@@ -1,6 +1,6 @@
 spring:
   profiles:
-    active: backtest
+    active: testnet
   datasource:
     url: jdbc:postgresql://localhost:5432/trading?currentSchema=public
     username: postgres
@@ -20,3 +20,4 @@ telegram:
   bot:
     username: v1TGBot
     token: 8064498072:AAGGn9DVOMKq0jEAUurYS5ZQ1FHtTpkkI_I
+    admin-id: 403753468

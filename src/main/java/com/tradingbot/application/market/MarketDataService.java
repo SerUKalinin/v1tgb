@@ -1,4 +1,4 @@
-package com.tradingbot.application;
+package com.tradingbot.application.market;
 
 import com.tradingbot.application.event.CandleTransitionDetector;
 import com.tradingbot.domain.model.Candle;
@@ -12,7 +12,6 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;

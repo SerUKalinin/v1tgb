@@ -1,6 +1,6 @@
-package com.tradingbot.infrastructure.persistence;
+package com.tradingbot.infrastructure.persistence.repository;
 
-import com.tradingbot.domain.model.SignalEntity;
+import com.tradingbot.infrastructure.persistence.entity.SignalEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 

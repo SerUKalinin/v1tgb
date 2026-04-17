@@ -1,7 +1,8 @@
-package com.tradingbot.application.user;
+package com.tradingbot.application.service;
 
-import com.tradingbot.domain.user.SubscriptionTier;
-import com.tradingbot.domain.user.User;
+import com.tradingbot.domain.model.SubscriptionTier;
+import com.tradingbot.domain.model.User;
+import com.tradingbot.infrastructure.persistence.repository.JpaUserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -9,7 +10,7 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class UserService {
 
-    private final com.tradingbot.infrastructure.persistence.JpaUserRepository userRepository;
+    private final JpaUserRepository userRepository;
 
     public User registerOrUpdate(Long chatId, String username) {
         return userRepository.findByChatId(chatId)

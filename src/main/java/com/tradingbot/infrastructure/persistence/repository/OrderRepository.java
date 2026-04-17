@@ -8,5 +8,6 @@ import java.util.Optional;
 
 public interface OrderRepository extends JpaRepository<OrderEntity, String> {
     Optional<OrderEntity> findByClientOrderId(String clientOrderId);
+    boolean existsByClientOrderId(String clientOrderId);
     List<OrderEntity> findAllByStatusIn(List<String> statuses);
 }

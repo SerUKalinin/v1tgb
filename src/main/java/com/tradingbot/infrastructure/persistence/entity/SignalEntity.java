@@ -1,4 +1,4 @@
-package com.tradingbot.domain.model;
+package com.tradingbot.infrastructure.persistence.entity;
 
 import com.tradingbot.common.enums.SignalType;
 import jakarta.persistence.*;

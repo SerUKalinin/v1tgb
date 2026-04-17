@@ -1,4 +1,4 @@
-package com.tradingbot.domain.user;
+package com.tradingbot.domain.model;
 
 public enum SubscriptionTier {
     FREE,

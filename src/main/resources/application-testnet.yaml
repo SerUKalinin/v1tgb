@@ -1,0 +1,19 @@
+binance:
+  api-key: ${BINANCE_API_KEY}
+  secret-key: ${BINANCE_SECRET_KEY}
+  base-url: https://testnet.binance.vision
+  recv-window: 5000
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/trading?currentSchema=public
+    username: postgres
+    password: postgres
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+
+logging:
+  level:
+    com.tradingbot.infrastructure.execution: DEBUG
