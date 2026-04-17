@@ -48,7 +48,7 @@ public class SignalRouter {
                 String message = formatSignalForUser(user, signal);
                 log.info("[ROUTER] Sending signal to user {}: {}", user.getChatId(), message.replace("\n", " "));
                 telegramBot.ifPresentOrElse(
-                    bot -> bot.sendTextMessage(user.getChatId(), message),
+                    bot -> bot.sendMessage(user.getChatId(), message),
                     () -> log.warn("[ROUTER] Telegram bot not available, message not sent to {}", user.getChatId())
                 );
             }

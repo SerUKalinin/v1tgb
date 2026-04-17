@@ -15,12 +15,11 @@ import java.util.Random;
 /**
  * Генератор тестовых сигналов для проверки работы Product Layer и Telegram.
  */
-@Component
+//@Component
 @Slf4j
 @RequiredArgsConstructor
-@org.springframework.context.annotation.Profile("!test")
-public class SignalGenerator {
-    private final ApplicationEventPublisher eventPublisher;
+@org.springframework.context.annotation.Profile("none") // Отключено, чтобы не мешать реальным сигналам
+public class SignalGenerator {    private final ApplicationEventPublisher eventPublisher;
     private final Random random = new Random();
     private final String[] symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"};
 

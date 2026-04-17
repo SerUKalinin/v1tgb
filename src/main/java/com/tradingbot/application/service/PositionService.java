@@ -1,13 +1,20 @@
 package com.tradingbot.application.service;
 
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Position;
 import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.mapper.PositionMapper;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
-import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
 import jakarta.annotation.PostConstruct;
+import org.springframework.context.event.EventListener;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -15,25 +22,18 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.tradingbot.domain.event.TradeCreatedEvent;
-import org.springframework.context.event.EventListener;
-import com.tradingbot.common.enums.OrderSide;
-import java.time.Instant;
-
 /**
  * Сервис управления торговыми позициями.
- * <p>
- * Обеспечивает хранение, обновление и расчёт PnL позиций.
  */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class PositionService {
-
     private final PositionRepository repository;
     private final TradeRepository tradeRepository;
     private final PositionMapper mapper;
@@ -63,9 +63,15 @@ public class PositionService {
 
     /**
      * Слушает события о создании сделок и обновляет состояние позиции (Reducer).
+     * Использует Retryable для обработки конфликтов оптимистической блокировки.
      */
     @EventListener
-    @Transactional
+    @Retryable(
+        retryFor = {ObjectOptimisticLockingFailureException.class},
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 100, multiplier = 2)
+    )
+    @Transactional(propagation = Propagation.REQUIRES_NEW, isolation = Isolation.READ_COMMITTED)
     public void onTradeCreated(TradeCreatedEvent event) {
         try {
             log.info("[POSITIONS] Reducing state for trade: {}", event.getTradeId());
@@ -109,6 +115,9 @@ public class PositionService {
             log.info("[POSITIONS] Updated position for {} ({}): qty={} (was {}), entryPrice={}, realizedPnl={}",
                     event.getSymbol(), event.getStrategyId(), nextPosition.getNetQuantity(), 
                     currentPosition.getNetQuantity(), nextPosition.getAvgEntryPrice(), newRealizedPnl);
+        } catch (ObjectOptimisticLockingFailureException e) {
+            log.warn("[POSITIONS] Optimistic lock failure for trade {}, retrying...", event.getTradeId());
+            throw e;
         } catch (Exception e) {
             log.error("[POSITIONS] Critical error processing trade {}: {}", event.getTradeId(), e.getMessage(), e);
         }
