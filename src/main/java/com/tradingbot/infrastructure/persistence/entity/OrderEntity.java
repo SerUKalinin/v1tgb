@@ -40,8 +40,10 @@ public class OrderEntity {
 
     private BigDecimal quantity;
     private BigDecimal price;
-
+    private BigDecimal stopLoss;
+    private BigDecimal takeProfit;
     private String strategyId;
+
 
     private String status;
 

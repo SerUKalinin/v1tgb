@@ -1,4 +1,4 @@
-package com.tradingbot.application.signal;
+package com.tradingbot.application.service;
 
 import com.tradingbot.infrastructure.persistence.entity.SignalEntity;
 import com.tradingbot.domain.model.SubscriptionTier;

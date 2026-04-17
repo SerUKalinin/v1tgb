@@ -13,9 +13,12 @@ public class TradeCreatedEvent extends DomainEvent {
     private final BigDecimal quantity;
     private final BigDecimal price;
     private final OrderSide side;
+    private final BigDecimal stopLoss;
+    private final BigDecimal takeProfit;
 
     public TradeCreatedEvent(Long tradeId, String orderId, String symbol, String strategyId, 
-                             BigDecimal quantity, BigDecimal price, OrderSide side) {
+                             BigDecimal quantity, BigDecimal price, OrderSide side,
+                             BigDecimal stopLoss, BigDecimal takeProfit) {
         super();
         this.tradeId = tradeId;
         this.orderId = orderId;
@@ -24,5 +27,7 @@ public class TradeCreatedEvent extends DomainEvent {
         this.quantity = quantity;
         this.price = price;
         this.side = side;
+        this.stopLoss = stopLoss;
+        this.takeProfit = takeProfit;
     }
 }

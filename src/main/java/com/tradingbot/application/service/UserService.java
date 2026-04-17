@@ -27,4 +27,9 @@ public class UserService {
                             .build();
                     return userRepository.save(newUser);
                 });
-    }}
+    }
+
+    public void save(User user) {
+        userRepository.save(user);
+    }
+}

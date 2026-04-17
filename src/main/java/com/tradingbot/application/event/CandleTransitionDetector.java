@@ -54,7 +54,15 @@ public class CandleTransitionDetector {
 
         if (isNew.get()) {
             log.info("[DETECTOR] New closed candle detected: symbol={} openTime={}", symbol, openTime);
-            return Optional.of(new NewClosedCandleEvent(symbol, lastCandle, window));
+            return Optional.of(new NewClosedCandleEvent(
+                    symbol,
+                    lastCandle.getOpen(),
+                    lastCandle.getHigh(),
+                    lastCandle.getLow(),
+                    lastCandle.getClose(),
+                    lastCandle.getVolume(),
+                    lastCandle.getCloseTime()
+            ));
         }
 
         return Optional.empty();

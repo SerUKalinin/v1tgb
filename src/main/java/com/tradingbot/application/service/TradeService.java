@@ -71,13 +71,16 @@ public class TradeService {
                 saved.getExecutedAt()
         ));
         
-        eventPublisher.publishEvent(new TradeCreatedEvent(                saved.getId(),
+        eventPublisher.publishEvent(new TradeCreatedEvent(
+                saved.getId(),
                 saved.getOrderId(),
                 saved.getSymbol(),
                 saved.getStrategyId(),
                 saved.getQuantity(),
                 saved.getPrice(),
-                saved.getSide()
+                saved.getSide(),
+                order.getStopLoss(),   // Пробрасываем SL из ордера
+                order.getTakeProfit()  // Пробрасываем TP из ордера
         ));
     }
     public List<Trade> getTradeHistory(String symbol, String strategyId) {

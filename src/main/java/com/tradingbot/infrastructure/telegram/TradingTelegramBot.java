@@ -81,8 +81,13 @@ public class TradingTelegramBot extends TelegramLongPollingBot {
         sendMessage(chatId, message);
     }
 
-    private void handleStart(Long chatId, Update update) {        String username = update.getMessage().getFrom().getUserName();
-        userService.registerOrUpdate(chatId, username);
+    private void handleStart(Long chatId, Update update) {
+        String username = update.getMessage().getFrom().getUserName();
+        var user = userService.registerOrUpdate(chatId, username);
+        
+        // Принудительно активируем пользователя при старте
+        user.setActive(true);
+        userService.save(user);
 
         String welcomeText = """
                 🚀 *Добро пожаловать в Trading Bot SaaS!*

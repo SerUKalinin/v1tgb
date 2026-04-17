@@ -65,6 +65,8 @@ public class DefaultRiskManager implements RiskManager {
                     OrderType.MARKET,
                     quantity,
                     signal.getPrice(),
+                    signal.getStopLoss(),
+                    signal.getTakeProfit(),
                     signal.getStrategyId(),
                     Instant.now(),
                     currentState.getVersion()

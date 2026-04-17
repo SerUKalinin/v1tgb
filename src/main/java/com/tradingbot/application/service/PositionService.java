@@ -89,6 +89,10 @@ public class PositionService {
                     entity.getEntryPrice(),
                     entity.getLastTradeId(),
                     entity.getRealizedPnl(),
+                    entity.getStopLoss(),
+                    entity.getTakeProfit(),
+                    entity.getStatus() != null ? com.tradingbot.domain.position.PositionStatus.valueOf(entity.getStatus()) : com.tradingbot.domain.position.PositionStatus.NEW,
+                    entity.getCloseRequestId(),
                     entity.getUpdatedAt()
             );
 
@@ -99,6 +103,10 @@ public class PositionService {
             entity.setEntryPrice(newState.averagePrice());
             entity.setRealizedPnl(newState.realizedPnl());
             entity.setLastTradeId(newState.lastTradeId());
+            entity.setStopLoss(newState.stopLoss());
+            entity.setTakeProfit(newState.takeProfit());
+            entity.setStatus(newState.status().name());
+            entity.setCloseRequestId(newState.closeRequestId());
             entity.setUpdatedAt(newState.updatedAt());
 
             // 4. Save & Sync Cache
@@ -144,5 +152,28 @@ public class PositionService {
         return currentPrice.subtract(position.getAvgEntryPrice())
                 .multiply(position.getNetQuantity())
                 .setScale(8, RoundingMode.HALF_UP);
+    }
+
+    public List<PositionState> getAllPositions() {
+        return positions.values().stream()
+                .map(p -> {
+                    PositionEntity entity = repository.findBySymbolAndStrategyId(p.getSymbol(), p.getStrategyId()).orElse(null);
+                    if (entity == null) return null;
+                    return new PositionState(
+                            entity.getSymbol(),
+                            entity.getStrategyId(),
+                            entity.getQuantity(),
+                            entity.getEntryPrice(),
+                            entity.getLastTradeId(),
+                            entity.getRealizedPnl(),
+                            entity.getStopLoss(),
+                            entity.getTakeProfit(),
+                            entity.getStatus() != null ? com.tradingbot.domain.position.PositionStatus.valueOf(entity.getStatus()) : com.tradingbot.domain.position.PositionStatus.NEW,
+                            entity.getCloseRequestId(),
+                            entity.getUpdatedAt()
+                    );
+                })
+                .filter(java.util.Objects::nonNull)
+                .toList();
     }
 }

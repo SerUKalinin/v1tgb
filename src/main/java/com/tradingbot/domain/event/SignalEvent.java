@@ -13,6 +13,8 @@ public class SignalEvent {
     SignalType type;
     BigDecimal price;
     BigDecimal quantity;
+    BigDecimal stopLoss;
+    BigDecimal takeProfit;
     Instant candleTime;
     String strategyId;
 }

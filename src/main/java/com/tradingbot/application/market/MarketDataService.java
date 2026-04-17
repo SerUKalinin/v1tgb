@@ -104,9 +104,8 @@ public class MarketDataService {
         }
 
         detector.detect(window).ifPresent(event -> {
-            Candle c = event.closedCandle();
-            log.info("[VERIFY] NEW_CANDLE: symbol={} openTime={} closeTime={} O={} H={} L={} C={} V={}",
-                    symbol, c.openTime(), c.getCloseTime(), c.getOpen(), c.getHigh(), c.getLow(), c.getClose(), c.getVolume());
+            log.info("[VERIFY] NEW_CANDLE: symbol={} closeTime={} O={} H={} L={} C={} V={}",
+                    symbol, event.closeTime(), event.open(), event.high(), event.low(), event.close(), event.volume());
             eventPublisher.publishEvent(event);
         });
     }

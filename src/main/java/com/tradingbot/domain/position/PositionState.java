@@ -3,6 +3,8 @@ package com.tradingbot.domain.position;
 import java.math.BigDecimal;
 import java.time.Instant;
 
+import java.util.UUID;
+
 public record PositionState(
     String symbol,
     String strategyId,
@@ -10,6 +12,10 @@ public record PositionState(
     BigDecimal averagePrice,
     Long lastTradeId,
     BigDecimal realizedPnl,
+    BigDecimal stopLoss,
+    BigDecimal takeProfit,
+    PositionStatus status,
+    UUID closeRequestId,
     Instant updatedAt
 ) {
     public static PositionState empty(String symbol, String strategyId) {
@@ -19,7 +25,11 @@ public record PositionState(
             BigDecimal.ZERO, 
             BigDecimal.ZERO, 
             -1L, 
-            BigDecimal.ZERO, 
+            BigDecimal.ZERO,
+            null,
+            null,
+            PositionStatus.NEW,
+            null,
             Instant.now()
         );
     }

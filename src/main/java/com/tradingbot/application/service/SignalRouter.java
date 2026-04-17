@@ -1,6 +1,5 @@
-package com.tradingbot.application.signal;
+package com.tradingbot.application.service;
 
-import com.tradingbot.application.service.SubscriptionService;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.infrastructure.persistence.entity.SignalEntity;
 import com.tradingbot.domain.model.User;
@@ -35,9 +34,9 @@ public class SignalRouter {
                 .symbol(signal.getSymbol())
                 .type(signal.getType())
                 .price(signal.getPrice())
-                .takeProfit1(signal.getPrice().multiply(java.math.BigDecimal.valueOf(1.02))) // Mock TP
-                .takeProfit2(signal.getPrice().multiply(java.math.BigDecimal.valueOf(1.05))) // Mock TP
-                .stopLoss(signal.getPrice().multiply(java.math.BigDecimal.valueOf(0.98)))    // Mock SL
+                .takeProfit1(signal.getTakeProfit() != null ? signal.getTakeProfit() : signal.getPrice().multiply(java.math.BigDecimal.valueOf(1.02)))
+                .takeProfit2(signal.getPrice().multiply(java.math.BigDecimal.valueOf(1.05)))
+                .stopLoss(signal.getStopLoss() != null ? signal.getStopLoss() : signal.getPrice().multiply(java.math.BigDecimal.valueOf(0.98)))
                 .strategyId(signal.getStrategyId())
                 .createdAt(Instant.now())
                 .timestamp(signal.getCandleTime())
@@ -52,6 +51,7 @@ public class SignalRouter {
         }
 
         users.forEach(user -> {
+            log.debug("[ROUTER] Checking user {}: active={}, tier={}", user.getChatId(), user.isActive(), user.getTier());
             if (user.isActive()) {
                 String message = signalFormatterService.format(entity, user.getTier());
                 log.info("[ROUTER] Sending signal to user {}: {}", user.getChatId(), message.replace("\n", " "));

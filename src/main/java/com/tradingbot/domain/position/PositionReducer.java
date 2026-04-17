@@ -20,9 +20,24 @@ public class PositionReducer {
         BigDecimal tradePnl = calculateTradePnl(state, event);
         BigDecimal newAveragePrice = calculateNewAvgPrice(state, event, newNetQuantity);
 
-        // ВАЖНО для Stage 3.5:
-        // Если позиция была NEW (статус из нашего плана), фиксируем TP/SL.
-        // Здесь мы добавим логику проброса TP/SL из event.
+        // Логика Stage 3.5:
+        // 1. TP/SL фиксируются только при открытии новой позиции (статус NEW)
+        // 2. После первого входа статус становится OPEN
+        // 3. Если позиция закрылась в ноль, статус становится CLOSED
+        
+        BigDecimal newStopLoss = state.stopLoss();
+        BigDecimal newTakeProfit = state.takeProfit();
+        PositionStatus newStatus = state.status();
+
+        if (state.status() == PositionStatus.NEW && newNetQuantity.signum() != 0) {
+            newStopLoss = event.getStopLoss();
+            newTakeProfit = event.getTakeProfit();
+            newStatus = PositionStatus.OPEN;
+            log.info("Position opened for {}. TP: {}, SL: {}", state.symbol(), newTakeProfit, newStopLoss);
+        } else if (newNetQuantity.signum() == 0) {
+            newStatus = PositionStatus.CLOSED;
+            log.info("Position closed for {}", state.symbol());
+        }
 
         return new PositionState(
                 state.symbol(),
@@ -31,8 +46,10 @@ public class PositionReducer {
                 newAveragePrice,
                 event.getTradeId(),
                 state.realizedPnl().add(tradePnl),
-                // state.stopLoss(), // Добавим в следующем шаге
-                // state.takeProfit(), // Добавим в следующем шаге
+                newStopLoss,
+                newTakeProfit,
+                newStatus,
+                state.closeRequestId(),
                 Instant.now()
         );
     }
