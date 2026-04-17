@@ -24,6 +24,10 @@ public class SignalEntity {    @Id
     private SignalType type;
     
     private BigDecimal price;
+    private BigDecimal takeProfit1;
+    private BigDecimal takeProfit2;
+    private BigDecimal stopLoss;
     private String strategyId;
     private Instant createdAt;
+    private Instant timestamp;
 }

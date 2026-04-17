@@ -24,18 +24,25 @@ public class SignalRouter {
     private final Optional<TradingTelegramBot> telegramBot;
     private final SubscriptionService subscriptionService;
     private final SignalRepository signalRepository;
+    private final SignalFormatterService signalFormatterService;
 
     public void route(SignalEvent signal) {
         log.info("[ROUTER] Routing signal: {} {}", signal.getSymbol(), signal.getType());
 
         // Сохраняем сигнал в БД для истории
-        signalRepository.save(SignalEntity.builder()
+        SignalEntity entity = SignalEntity.builder()
                 .symbol(signal.getSymbol())
                 .type(signal.getType())
                 .price(signal.getPrice())
+                .takeProfit1(signal.getPrice().multiply(java.math.BigDecimal.valueOf(1.02))) // Mock TP
+                .takeProfit2(signal.getPrice().multiply(java.math.BigDecimal.valueOf(1.05))) // Mock TP
+                .stopLoss(signal.getPrice().multiply(java.math.BigDecimal.valueOf(0.98)))    // Mock SL
                 .strategyId(signal.getStrategyId())
                 .createdAt(Instant.now())
-                .build());
+                .timestamp(signal.getCandleTime())
+                .build();
+        
+        signalRepository.save(entity);
 
         var users = userRepository.findAll();
         if (!users.iterator().hasNext()) {
@@ -45,7 +52,7 @@ public class SignalRouter {
 
         users.forEach(user -> {
             if (user.isActive()) {
-                String message = formatSignalForUser(user, signal);
+                String message = signalFormatterService.format(entity, user.getTier());
                 log.info("[ROUTER] Sending signal to user {}: {}", user.getChatId(), message.replace("\n", " "));
                 telegramBot.ifPresentOrElse(
                     bot -> bot.sendMessage(user.getChatId(), message),
@@ -56,28 +63,6 @@ public class SignalRouter {
     }
 
     private String formatSignalForUser(User user, SignalEvent signal) {
-        if (subscriptionService.canAccessFullSignal(user)) {
-            return String.format(
-                    "💎 [PRO] НОВЫЙ СИГНАЛ!\n\n" +
-                    "Инструмент: %s\n" +
-                    "Тип: %s\n" +
-                    "Цена: %s\n" +
-                    "Время: %s",
-                    signal.getSymbol(),
-                    signal.getType(),
-                    signal.getPrice(),
-                    signal.getCandleTime()
-            );
-        } else {
-            return String.format(
-                    "🔔 [FREE] ОБНАРУЖЕН СИГНАЛ!\n\n" +
-                    "Инструмент: %s\n" +
-                    "Тип: %s\n" +
-                    "Цена: [СКРЫТО 🔒]\n\n" +
-                    "Чтобы видеть цену в реальном времени, активируйте PRO подписку!",
-                    signal.getSymbol(),
-                    signal.getType()
-            );
-        }
+        return ""; // Deprecated, using SignalFormatterService
     }
 }

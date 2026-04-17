@@ -2,23 +2,19 @@ package com.tradingbot.application.service;
 
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.domain.event.TradeCreatedEvent;
-import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Position;
+import com.tradingbot.domain.position.PositionReducer;
+import com.tradingbot.domain.position.PositionState;
+import com.tradingbot.infrastructure.concurrent.PartitionLockManager;
 import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.mapper.PositionMapper;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
-import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
 import jakarta.annotation.PostConstruct;
-import org.springframework.context.event.EventListener;
-import org.springframework.retry.annotation.Backoff;
-import org.springframework.retry.annotation.Retryable;
-import org.springframework.orm.ObjectOptimisticLockingFailureException;
-import org.springframework.transaction.annotation.Isolation;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -26,26 +22,26 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Сервис управления торговыми позициями.
+ * Использует Partitioning Lock для обеспечения детерминированности и исключения гонок.
  */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class PositionService {
     private final PositionRepository repository;
-    private final TradeRepository tradeRepository;
     private final PositionMapper mapper;
+    private final PartitionLockManager lockManager;
+    private final PositionReducer reducer;
     private final Map<String, Position> positions = new ConcurrentHashMap<>();
 
     private String getCacheKey(String symbol, String strategyId) {
         return strategyId + ":" + symbol;
     }
 
-    /**
-     * Загружает позиции из базы данных при старте приложения.
-     */
     @PostConstruct
     public void loadPositions() {
         log.info("[POSITIONS] Loading positions from database...");
@@ -62,125 +58,91 @@ public class PositionService {
     }
 
     /**
-     * Слушает события о создании сделок и обновляет состояние позиции (Reducer).
-     * Использует Retryable для обработки конфликтов оптимистической блокировки.
+     * Слушает события о создании сделок и обновляет состояние позиции.
+     * Гарантирует последовательную обработку через Striped Lock по символу и стратегии.
      */
     @EventListener
-    @Retryable(
-        retryFor = {ObjectOptimisticLockingFailureException.class},
-        maxAttempts = 3,
-        backoff = @Backoff(delay = 100, multiplier = 2)
-    )
-    @Transactional(propagation = Propagation.REQUIRES_NEW, isolation = Isolation.READ_COMMITTED)
+    @Transactional
     public void onTradeCreated(TradeCreatedEvent event) {
+        String lockKey = event.getStrategyId() + ":" + event.getSymbol();
+        ReentrantLock lock = lockManager.getLock(lockKey);
+
+        lock.lock();
         try {
-            log.info("[POSITIONS] Reducing state for trade: {}", event.getTradeId());
+            log.info("[POSITIONS] Processing trade {} for {}", event.getTradeId(), lockKey);
 
             PositionEntity entity = repository.findBySymbolAndStrategyId(event.getSymbol(), event.getStrategyId())
-                    .orElse(PositionEntity.builder()
-                            .symbol(event.getSymbol())
-                            .strategyId(event.getStrategyId())
-                            .quantity(BigDecimal.ZERO)
-                            .entryPrice(BigDecimal.ZERO)
-                            .realizedPnl(BigDecimal.ZERO)
-                            .version(0L)
-                            .build());
+                    .orElseGet(() -> createNewPositionEntity(event));
 
-            // Идемпотентность
+            // 1. Strict Idempotency Check
             if (entity.getLastTradeId() != null && entity.getLastTradeId() >= event.getTradeId()) {
-                log.info("[POSITIONS] Trade {} already processed. Skipping.", event.getTradeId());
+                log.warn("[POSITIONS] Trade {} already processed or older. Skipping. (Last: {})", 
+                        event.getTradeId(), entity.getLastTradeId());
                 return;
             }
 
-            // 1. Map Entity to Domain
-            Position currentPosition = mapper.toDomain(entity);
+            // 2. Pure State Transition
+            PositionState currentState = new PositionState(
+                    entity.getSymbol(),
+                    entity.getStrategyId(),
+                    entity.getQuantity(),
+                    entity.getEntryPrice(),
+                    entity.getLastTradeId(),
+                    entity.getRealizedPnl(),
+                    entity.getUpdatedAt()
+            );
 
-            // 2. Pure Function Transition
-            Position nextPosition = com.tradingbot.domain.model.PositionReducer.reduce(currentPosition, event);
+            PositionState newState = reducer.reduce(currentState, event);
 
-            // 3. Calculate Realized PnL (Derived from transition)
-            BigDecimal tradePnl = calculateTradePnl(currentPosition, event);
-            BigDecimal newRealizedPnl = entity.getRealizedPnl().add(tradePnl);
+            // 3. Update Managed Entity
+            entity.setQuantity(newState.netQuantity());
+            entity.setEntryPrice(newState.averagePrice());
+            entity.setRealizedPnl(newState.realizedPnl());
+            entity.setLastTradeId(newState.lastTradeId());
+            entity.setUpdatedAt(newState.updatedAt());
 
-            // 4. Map back to Entity and Save
-            entity.setQuantity(nextPosition.getNetQuantity());
-            entity.setEntryPrice(nextPosition.getAvgEntryPrice());
-            entity.setRealizedPnl(newRealizedPnl);
-            entity.setLastTradeId(event.getTradeId());
-            entity.setUpdatedAt(Instant.now());
-
+            // 4. Save & Sync Cache
             repository.save(entity);
-            positions.put(getCacheKey(event.getSymbol(), event.getStrategyId()), nextPosition);
+            positions.put(lockKey, mapper.toDomain(entity));
 
-            log.info("[POSITIONS] Updated position for {} ({}): qty={} (was {}), entryPrice={}, realizedPnl={}",
-                    event.getSymbol(), event.getStrategyId(), nextPosition.getNetQuantity(), 
-                    currentPosition.getNetQuantity(), nextPosition.getAvgEntryPrice(), newRealizedPnl);
-        } catch (ObjectOptimisticLockingFailureException e) {
-            log.warn("[POSITIONS] Optimistic lock failure for trade {}, retrying...", event.getTradeId());
-            throw e;
+            log.info("[POSITIONS] Updated {}: Qty {} -> {}, PnL: +{}", 
+                    lockKey, currentState.netQuantity(), newState.netQuantity(), 
+                    newState.realizedPnl().subtract(currentState.realizedPnl()));
+
         } catch (Exception e) {
             log.error("[POSITIONS] Critical error processing trade {}: {}", event.getTradeId(), e.getMessage(), e);
+            throw e; // Rollback transaction
+        } finally {
+            lock.unlock();
         }
     }
 
-    private BigDecimal calculateTradePnl(Position current, TradeCreatedEvent event) {
-        BigDecimal currentQty = current.getNetQuantity() != null ? current.getNetQuantity() : BigDecimal.ZERO;
-        if (currentQty.signum() == 0) return BigDecimal.ZERO;
-
-        BigDecimal executedQty = event.getSide() == OrderSide.BUY ? event.getQuantity() : event.getQuantity().negate();
-        
-        // PnL возникает только если мы закрываем позицию (знаки разные)
-        if (currentQty.signum() == executedQty.signum()) return BigDecimal.ZERO;
-
-        BigDecimal closedQty = currentQty.abs().min(event.getQuantity()).multiply(BigDecimal.valueOf(currentQty.signum()));
-        return event.getPrice().subtract(current.getAvgEntryPrice()).multiply(closedQty).setScale(8, RoundingMode.HALF_UP);
+    private PositionEntity createNewPositionEntity(TradeCreatedEvent event) {
+        return PositionEntity.builder()
+                .symbol(event.getSymbol())
+                .strategyId(event.getStrategyId())
+                .quantity(BigDecimal.ZERO)
+                .entryPrice(BigDecimal.ZERO)
+                .realizedPnl(BigDecimal.ZERO)
+                .version(0L)
+                .build();
     }
 
-    /**
-     * @deprecated Используйте onTradeCreated (Event-Driven)
-     */
-    @Deprecated
-    @Transactional
-    public void applyExecution(ExecutionResult result, String strategyId) {
-        // Метод оставлен для обратной совместимости на время миграции, но логика перенесена в onTradeCreated
-    }
-
-    private BigDecimal calculateTradePnl(BigDecimal qty, BigDecimal entryPrice, BigDecimal exitPrice) {
-        // PnL = (Exit - Entry) * Qty (для Long)
-        // Если Qty отрицательный (Short), формула та же: (Exit - Entry) * (-Qty) -> (Entry - Exit) * Qty
-        return exitPrice.subtract(entryPrice).multiply(qty).setScale(8, RoundingMode.HALF_UP);
-    }
-
-    /**
-     * Проверяет, есть ли открытая позиция по указанному символу.
-     */
     public boolean hasOpenPosition(String symbol, String strategyId) {
         Position p = positions.get(getCacheKey(symbol, strategyId));
         return p != null && p.getNetQuantity().compareTo(BigDecimal.ZERO) != 0;
     }
 
-    /**
-     * Возвращает позицию по указанному символу.
-     */
     public Position getPosition(String symbol, String strategyId) {
         return positions.get(getCacheKey(symbol, strategyId));
     }
 
-    /**
-     * Рассчитывает нереализованную прибыль/убыток по позиции.
-     *
-     * @param symbol       торговый символ
-     * @param strategyId   идентификатор стратегии
-     * @param currentPrice текущая цена
-     * @return значение PnL
-     */
     public BigDecimal calculatePnL(String symbol, String strategyId, BigDecimal currentPrice) {
         Position position = positions.get(getCacheKey(symbol, strategyId));
-        if (position == null || position.getAvgEntryPrice().compareTo(BigDecimal.ZERO) == 0) {
-            return BigDecimal.ZERO;
-        }
-        return currentPrice.subtract(position.getNetQuantity())
-                .multiply(position.getAvgEntryPrice())
+        if (position == null || position.getNetQuantity().signum() == 0) return BigDecimal.ZERO;
+        
+        return currentPrice.subtract(position.getAvgEntryPrice())
+                .multiply(position.getNetQuantity())
                 .setScale(8, RoundingMode.HALF_UP);
     }
 }

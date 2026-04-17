@@ -11,20 +11,19 @@ public class UserService {
 
     private final com.tradingbot.infrastructure.persistence.JpaUserRepository userRepository;
 
-    public void registerOrUpdate(Long chatId, String username) {        userRepository.findByChatId(chatId).ifPresentOrElse(
-                user -> {
+    public User registerOrUpdate(Long chatId, String username) {
+        return userRepository.findByChatId(chatId)
+                .map(user -> {
                     user.setUsername(username);
-                    userRepository.save(user);
-                },
-                () -> {
+                    return userRepository.save(user);
+                })
+                .orElseGet(() -> {
                     User newUser = User.builder()
                             .chatId(chatId)
                             .username(username)
                             .tier(SubscriptionTier.FREE)
                             .active(true)
                             .build();
-                    userRepository.save(newUser);
-                }
-        );
-    }
-}
+                    return userRepository.save(newUser);
+                });
+    }}

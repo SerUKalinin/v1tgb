@@ -24,6 +24,7 @@ public class User {
     
     @Enumerated(EnumType.STRING)
     private SubscriptionTier tier;
-    
+
     private boolean active;
+
 }
