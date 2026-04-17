@@ -2,11 +2,11 @@ package com.tradingbot.application;
 
 import com.tradingbot.application.pipeline.TradingPipeline;
 import com.tradingbot.application.service.PositionService;
-import com.tradingbot.common.enums.SignalType;
-import com.tradingbot.domain.event.OrderFilledEvent;
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderType;
+import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.*;
 import com.tradingbot.domain.risk.ApprovedOrder;
-import com.tradingbot.domain.risk.RiskDecision;
 import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.domain.strategy.TradingStrategy;
 import org.junit.jupiter.api.Test;
@@ -49,13 +49,14 @@ class TradingPipelineIntegrationTest {
     private com.tradingbot.domain.execution.ExecutionEngine executionEngine;
 
     @Test
-    void shouldExecuteTradeAndSavePositionWhenBuySignalReceived() throws InterruptedException {        System.out.println("=== INTEGRATION TEST STARTED ===");
+    void shouldExecuteTradeAndSavePositionWhenBuySignalReceived() {
+
         String symbol = "BTCUSDT";
         String strategyId = "simple-strategy";
         BigDecimal price = new BigDecimal("60000");
         BigDecimal amount = new BigDecimal("0.1");
         Instant now = Instant.now();
-        
+
         Candle candle = Candle.builder()
                 .openTime(now)
                 .open(price)
@@ -65,21 +66,23 @@ class TradingPipelineIntegrationTest {
                 .volume(BigDecimal.TEN)
                 .closeTime(now.plusSeconds(60))
                 .build();
-        
+
         CandleWindow window = new CandleWindow(symbol, List.of(candle));
-        
-        // 1. Strategy
+
+        // 1. Strategy mock
         when(tradingStrategy.analyze(any())).thenReturn(
-                new Signal(symbol, strategyId, com.tradingbot.common.enums.SignalType.BUY, price, amount)
+                new Signal(symbol, strategyId,
+                        com.tradingbot.common.enums.SignalType.BUY,
+                        price, amount)
         );
 
-        // 2. Risk Mock (Stage 3: approveSignal returns ApprovedOrder)
+        // 2. Risk mock
         ApprovedOrder approvedOrder = ApprovedOrder.builder()
                 .orderId(UUID.randomUUID().toString())
                 .clientOrderId("c-test")
                 .symbol(symbol)
-                .side(com.tradingbot.common.enums.OrderSide.BUY)
-                .type(com.tradingbot.common.enums.OrderType.MARKET)
+                .side(OrderSide.BUY)
+                .type(OrderType.MARKET)
                 .quantity(amount)
                 .price(price)
                 .strategyId(strategyId)
@@ -90,17 +93,14 @@ class TradingPipelineIntegrationTest {
         when(riskManager.approveSignal(any())).thenReturn(Optional.of(approvedOrder));
         when(riskManager.isApprovalFresh(any())).thenReturn(true);
 
-        // 3. Execution Engine Mock
+        // 3. Execution mock
         when(executionEngine.execute(any())).thenAnswer(invocation -> {
             ApprovedOrder order = invocation.getArgument(0);
-            System.out.println("=== MOCK EXECUTION CALLED FOR " + order.getSymbol() + " ===");
-            
-            String tradeId = "trade-1";
 
             ExecutionResult result = ExecutionResult.success(
                     order.getOrderId(),
                     "exchange-order-1",
-                    tradeId,
+                    "trade-1",
                     order.getSymbol(),
                     order.getSide(),
                     order.getQuantity(),
@@ -110,38 +110,33 @@ class TradingPipelineIntegrationTest {
                     order.getClientOrderId()
             );
 
-            // Публикуем событие исполнения, чтобы сработал Ledger и Position Reducer
-            // Используем актуальный конструктор TradeCreatedEvent
-            eventPublisher.publishEvent(new com.tradingbot.domain.event.TradeCreatedEvent(
+            // 🔥 ВАЖНО: новый конструктор (fee + pnl)
+            eventPublisher.publishEvent(new TradeCreatedEvent(
                     1L,
                     order.getOrderId(),
                     order.getSymbol(),
                     order.getStrategyId(),
                     order.getQuantity(),
                     order.getPrice(),
-                    order.getSide()
+                    order.getSide(),
+                    BigDecimal.ZERO, // fee
+                    BigDecimal.ZERO  // realized pnl
             ));
 
             return result;
         });
+
         // ACT
-        System.out.println("=== CALLING PIPELINE.PROCESS ===");
         tradingPipeline.process(window);
-        
-        // Даем немного времени на обработку событий в памяти
-        Thread.sleep(200);
-        
-        System.out.println("=== PIPELINE.PROCESS FINISHED ===");
+
         // ASSERT
         Position pos = positionService.getPosition(symbol, strategyId);
-        System.out.println("=== FINAL POSITION CHECK: " + pos + " ===");
-        
-        assertNotNull(pos, "Позиция должна существовать в кэше/БД");
-        assertTrue(pos.isOpen(), "Позиция должна быть открыта. Текущее состояние: " + pos);
-        
+
+        assertNotNull(pos, "Позиция должна существовать");
+        assertTrue(pos.isOpen(), "Позиция должна быть открыта");
+
         assertEquals(symbol, pos.getSymbol());
-        assertEquals(0, price.compareTo(pos.getAvgEntryPrice()), "Цена входа должна совпадать");
-        assertEquals(0, amount.compareTo(pos.getNetQuantity()), "Объем позиции должен совпадать с объемом сделки");
-        System.out.println("=== INTEGRATION TEST SUCCESS ===");
+        assertEquals(0, price.compareTo(pos.getAvgEntryPrice()));
+        assertEquals(0, amount.compareTo(pos.getNetQuantity()));
     }
 }
