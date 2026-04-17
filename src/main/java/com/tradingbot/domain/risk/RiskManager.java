@@ -21,9 +21,7 @@ public interface RiskManager {
      */
     RiskDecision check(OrderEntity order);
 
-    /**
-     * Проверяет, актуально ли еще одобрение ордера относительно текущего состояния риска.
-     * Используется как финальный затвор перед ExecutionEngine.
-     */
+    RiskDecision evaluate(com.tradingbot.domain.model.Signal signal);
+
     boolean isApprovalFresh(ApprovedOrder approvedOrder);
 }

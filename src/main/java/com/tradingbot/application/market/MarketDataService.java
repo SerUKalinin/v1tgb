@@ -1,4 +1,4 @@
-package com.tradingbot.application;
+package com.tradingbot.application.market;
 
 import com.tradingbot.application.event.CandleTransitionDetector;
 import com.tradingbot.domain.model.Candle;
@@ -12,7 +12,6 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -105,9 +104,8 @@ public class MarketDataService {
         }
 
         detector.detect(window).ifPresent(event -> {
-            Candle c = event.closedCandle();
-            log.info("[VERIFY] NEW_CANDLE: symbol={} openTime={} closeTime={} O={} H={} L={} C={} V={}",
-                    symbol, c.openTime(), c.getCloseTime(), c.getOpen(), c.getHigh(), c.getLow(), c.getClose(), c.getVolume());
+            log.info("[VERIFY] NEW_CANDLE: symbol={} closeTime={} O={} H={} L={} C={} V={}",
+                    symbol, event.closeTime(), event.open(), event.high(), event.low(), event.close(), event.volume());
             eventPublisher.publishEvent(event);
         });
     }

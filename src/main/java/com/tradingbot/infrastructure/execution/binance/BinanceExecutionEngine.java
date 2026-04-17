@@ -45,10 +45,11 @@ public class BinanceExecutionEngine implements ExecutionEngine {
             params.put("quantity", approvedOrder.getQuantity().toPlainString());
             params.put("newClientOrderId", approvedOrder.getClientOrderId());
 
-            Map response = binanceClient.get("/api/v3/order", params, Map.class, true);
+            Map response = binanceClient.post("/api/v3/order", params, Map.class, true);
+            log.info("[EXECUTION] Binance response: {}", response);
 
-            if (response != null && response.containsKey("orderId")) {
-                String exchangeOrderId = response.get("orderId").toString();
+            if (response != null && (response.containsKey("orderId") || response.containsKey("id"))) {
+                String exchangeOrderId = response.getOrDefault("orderId", response.get("id")).toString();
                 return ExecutionResult.success(
                         approvedOrder.getOrderId(),
                         exchangeOrderId,

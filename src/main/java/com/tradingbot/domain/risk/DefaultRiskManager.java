@@ -3,9 +3,9 @@ package com.tradingbot.domain.risk;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.domain.model.Signal;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import lombok.RequiredArgsConstructor;import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -65,6 +65,8 @@ public class DefaultRiskManager implements RiskManager {
                     OrderType.MARKET,
                     quantity,
                     signal.getPrice(),
+                    signal.getStopLoss(),
+                    signal.getTakeProfit(),
                     signal.getStrategyId(),
                     Instant.now(),
                     currentState.getVersion()
@@ -88,53 +90,65 @@ public class DefaultRiskManager implements RiskManager {
     }
 
     @Override
+    public RiskDecision evaluate(Signal signal) {
+        RiskState currentState = stateStore.getState();
+        if (currentState.isHalted()) {
+            return RiskDecision.reject("System is HALTED");
+        }
+
+        // Используем существующую логику расчета объема
+        BigDecimal quantity = calculateQuantity(signal, currentState);
+        
+        // В будущем здесь можно добавить проверку правил (rules)
+        for (RiskRule rule : rules) {
+            // Если правила поддерживают Signal, можно добавить проверку
+        }
+
+        return RiskDecision.approve(quantity);
+    }
+
+    @Override
     public boolean isApprovalFresh(ApprovedOrder approvedOrder) {
         RiskState currentState = stateStore.getState();
         
-        // 1. Проверка на Halt (самое критичное)
         if (currentState.isHalted()) {
             log.error("[RiskGate] Stale approval detected: System is HALTED. Order: {}", approvedOrder.getOrderId());
             return false;
         }
 
-        // 2. Проверка версии состояния (Version Check)
-        // Если версия изменилась, значит между одобрением и исполнением проскочило другое событие риска
         if (approvedOrder.getRiskStateVersion() != currentState.getVersion()) {
             log.warn("[RiskGate] Stale approval detected: Version mismatch. Order version: {}, Current version: {}", 
                     approvedOrder.getRiskStateVersion(), currentState.getVersion());
-            // В Stage 3 мы позволяем небольшое расхождение, если это не Halt, 
-            // но логируем это как потенциальный риск.
-            // Для жесткого режима: return false;
         }
 
         return true;
     }
 
-    private BigDecimal calculateQuantity(SignalEvent signal, RiskState state) {
+    private BigDecimal calculateQuantity(Signal signal, RiskState state) {
         // Simple sizing logic: 1% of equity per trade
         BigDecimal riskPercent = new BigDecimal("0.01");
         
-        // Используем максимум из Equity и Balance для обеспечения ликвидности расчетов
         BigDecimal baseCapital = state.getTotalEquity().max(state.getBalance());
         
         if (baseCapital.compareTo(BigDecimal.ZERO) <= 0 || signal.getPrice() == null || signal.getPrice().compareTo(BigDecimal.ZERO) <= 0) {
-            log.warn("[Risk] Base capital or price is invalid. Using default minimum quantity.");
             return new BigDecimal("0.001");
         }
 
         BigDecimal quantity = baseCapital.multiply(riskPercent).divide(signal.getPrice(), 8, RoundingMode.HALF_UP);
         
-        // Гарантируем минимальный объем (защита от 0E-8)
         BigDecimal minQty = new BigDecimal("0.001");
         if (quantity.compareTo(minQty) < 0) {
-            log.debug("[Risk] Calculated quantity {} is too low, rounding up to {}", quantity, minQty);
             return minQty;
         }
         
         return quantity;
     }
 
-    private BigDecimal applyConstraints(BigDecimal quantity, String symbol) {
+    private BigDecimal calculateQuantity(SignalEvent signal, RiskState state) {
+        // Переиспользуем логику для SignalEvent
+        Signal adapter = new Signal(signal.getSymbol(), signal.getStrategyId(), signal.getType(), signal.getPrice(), BigDecimal.ZERO);
+        return calculateQuantity(adapter, state);
+    }    private BigDecimal applyConstraints(BigDecimal quantity, String symbol) {
         return quantity;
     }
 }

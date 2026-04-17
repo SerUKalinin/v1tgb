@@ -1,4 +1,4 @@
-package com.tradingbot.application;
+package com.tradingbot.application.market;
 
 import com.tradingbot.domain.model.Candle;
 import com.tradingbot.domain.model.CandleWindow;

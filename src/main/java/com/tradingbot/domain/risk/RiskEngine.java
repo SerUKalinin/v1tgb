@@ -11,9 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.OffsetDateTime;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 @Slf4j
@@ -30,62 +28,47 @@ public class RiskEngine {
 
     @Transactional
     public void publish(RiskEvent event) {
-        int maxRetries = 3;
-        int retryCount = 0;
-        
-        while (retryCount < maxRetries) {
-            try {
-                processPublish(event);
-                return;
-            } catch (org.springframework.dao.DataIntegrityViolationException e) {
-                retryCount++;
-                if (retryCount >= maxRetries) {
-                    throw new RuntimeException("Failed to publish event after retries due to concurrency", e);
-                }
-                log.warn("Concurrency conflict for event {}. Retry {}/{}", event.getEventId(), retryCount, maxRetries);
-                // В реальной системе здесь можно добавить небольшую паузу (backoff)
-            }
-        }
-    }
-
-    private void processPublish(RiskEvent event) {
         RiskState state = riskStateStore.getState();
         UUID eventUuid = parseEventId(event.getEventId());
         
-        // 1. Guard: Kill Switch
         if (state.isHalted() && !(event instanceof RiskEvent.TradingHalted)) {
             log.warn("Risk Engine is HALTED. Ignoring event: {}", event.getEventId());
             return;
         }
 
-        // 2. Idempotency (Global check)
         if (eventRepository.existsByEventId(eventUuid)) {
-            log.info("Event {} already processed. Skipping (Idempotency).", event.getEventId());
+            log.info("Event {} already processed. Skipping.", event.getEventId());
             return;
         }
 
-        // 3. Persist (Append-only)
         try {
+            long nextVersion = state.getVersion() + 1;
+            long maxInDb = eventRepository.findMaxVersionByAggregateId(AGGREGATE_ID).orElse(0L);
+            if (nextVersion <= maxInDb) {
+                nextVersion = maxInDb + 1;
+            }
+
             RiskEventEntity entity = RiskEventEntity.builder()
                     .eventId(eventUuid)
                     .aggregateId(AGGREGATE_ID)
-                    .version(state.getVersion() + 1)
+                    .version(nextVersion)
                     .eventType(event.getClass().getSimpleName())
                     .payload(objectMapper.writeValueAsString(event))
                     .build();
+            
             eventRepository.save(entity);
+            
+            RiskState newState = reducer.reduce(state, event)
+                    .toBuilder()
+                    .version(nextVersion)
+                    .build();
+            riskStateStore.updateInternal(newState);
+            if (nextVersion % SNAPSHOT_THRESHOLD == 0) {
+                takeSnapshot(newState);
+            }
         } catch (Exception e) {
-            log.error("Failed to persist event {}. Possible concurrent write or DB error.", event.getEventId(), e);
-            return;
-        }
-
-        // 4. Apply (Pure state transformation)
-        RiskState newState = reducer.reduce(state, event);
-        riskStateStore.updateInternal(newState);
-
-        // 5. Snapshot (Adaptive)
-        if (newState.getVersion() % SNAPSHOT_THRESHOLD == 0) {
-            takeSnapshot(newState);
+            log.error("Failed to process risk event {}", event.getEventId(), e);
+            throw new RuntimeException("Risk Engine processing failed", e);
         }
     }
 

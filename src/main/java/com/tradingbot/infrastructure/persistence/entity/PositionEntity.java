@@ -30,15 +30,15 @@ public class PositionEntity {
     @Column(name = "avg_entry_price")
     private BigDecimal entryPrice;
     private BigDecimal realizedPnl;
-
+    private Long lastTradeId;
+    private BigDecimal stopLoss;
+    private BigDecimal takeProfit;
+    private String status;
+    private java.util.UUID closeRequestId;
     @Version
     private Long version;
-
-    @Column(name = "last_trade_id")
-    private Long lastTradeId;
-
-    @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
 
     @PrePersist
     public void onCreate() {

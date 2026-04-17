@@ -1,17 +1,15 @@
 package com.tradingbot.application.event;
 
-import com.tradingbot.domain.model.Candle;
-import com.tradingbot.domain.model.CandleWindow;
 
-/**
- * Событие, возникающее при обнаружении новой закрытой свечи.
- *
- * @param symbol         торговый символ
- * @param closedCandle   закрывшаяся свеча
- * @param windowSnapshot снапшот окна свечей на момент закрытия
- */
+import java.math.BigDecimal;
+import java.time.Instant;
+
 public record NewClosedCandleEvent(
         String symbol,
-        Candle closedCandle,
-        CandleWindow windowSnapshot
+        BigDecimal open,
+        BigDecimal high,
+        BigDecimal low,
+        BigDecimal close,
+        BigDecimal volume,
+        Instant closeTime
 ) {}
