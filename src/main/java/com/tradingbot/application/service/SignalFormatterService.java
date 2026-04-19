@@ -1,6 +1,6 @@
 package com.tradingbot.application.service;
 
-import com.tradingbot.infrastructure.persistence.entity.SignalEntity;
+import com.tradingbot.domain.event.SignalEntity;
 import com.tradingbot.domain.model.SubscriptionTier;
 import org.springframework.stereotype.Service;
 

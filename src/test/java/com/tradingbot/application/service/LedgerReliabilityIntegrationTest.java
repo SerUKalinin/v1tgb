@@ -1,8 +1,8 @@
 package com.tradingbot.application.service;
 
 import com.tradingbot.common.enums.OrderSide;
-import com.tradingbot.domain.event.OrderFilledEvent;
-import com.tradingbot.domain.model.Trade;
+import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.domain.event.OrderFilledEvent;import com.tradingbot.domain.model.Trade;
 import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
@@ -95,7 +95,7 @@ public class LedgerReliabilityIntegrationTest {
                 .strategyId("default")
                 .quantity(new BigDecimal(qty))
                 .price(new BigDecimal(price))
-                .status("FILLED")
+                .status(OrderStatus.FILLED)
                 .build());
 
         eventPublisher.publishEvent(new OrderFilledEvent(orderId, "EXT-" + tradeId, symbol, new BigDecimal(qty), new BigDecimal(price)));

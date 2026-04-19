@@ -1,18 +1,29 @@
 package com.tradingbot.application.pipeline;
 
-import com.tradingbot.common.enums.SignalType;
-import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.domain.model.Candle;
+import com.tradingbot.domain.market.MarketSnapshot;
 import com.tradingbot.domain.model.CandleWindow;
 import com.tradingbot.domain.model.Signal;
+import com.tradingbot.domain.position.PortfolioState;
 import com.tradingbot.domain.strategy.TradingStrategy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
+/**
+ * Trading Pipeline — routes CandleWindow through all registered strategies.
+ *
+ * Responsibilities:
+ * - Build MarketSnapshot and PortfolioState from available data
+ * - Fan out to all TradingStrategy implementations
+ * - Publish resulting signals as application events
+ *
+ * Does NOT: call Risk Engine, OMS, or Execution layer directly.
+ */
 @Service
 @Slf4j
 @RequiredArgsConstructor
@@ -20,37 +31,46 @@ public class TradingPipeline {
 
     private final List<TradingStrategy> strategies;
     private final ApplicationEventPublisher eventPublisher;
+    private final com.tradingbot.application.service.PositionService positionService;
 
+    /**
+     * Process a CandleWindow: build snapshot, run strategies, emit signals.
+     *
+     * @param window ready candle window for a symbol
+     */
     public void process(CandleWindow window) {
-        if (window == null || window.getCandles().isEmpty()) {
+        if (window == null || !window.isReady()) {
+            log.debug("[PIPELINE] Window for {} is null or not ready", window == null ? "?" : window.getSymbol());
             return;
         }
 
-        log.info("[PIPELINE] Processing symbol={} candles={}", 
-                window.getSymbol(), 
-                window.getCandles().size());
+        String symbol = window.getSymbol();
+        log.info("[PIPELINE] Processing symbol={} candles={}", symbol, window.size());
 
-        for (TradingStrategy strategy : strategies) {
-            Signal signal = strategy.analyze(window);
-            SignalType signalType = signal.getType();
+        MarketSnapshot snapshot = buildSnapshot(window);
 
-            if (signalType == SignalType.HOLD) {
-                continue;
+        PortfolioState portfolio = positionService.getPortfolioState();
+
+        for (TradingStrategy strategy : strategies) {            try {
+                strategy.decide(snapshot, portfolio).ifPresent(signal -> {
+                    log.info("[PIPELINE] Strategy {} emitted {} for {}",
+                            strategy.strategyId(), signal.getSide(), symbol);
+                    eventPublisher.publishEvent(signal);
+                });
+            } catch (Exception e) {
+                // Strategy errors must never crash the pipeline
+                log.error("[PIPELINE] Strategy {} threw an exception for {}",
+                        strategy.strategyId(), symbol, e);
             }
-
-            SignalEvent event = SignalEvent.builder()
-                    .symbol(window.getSymbol())
-                    .strategyId(signal.getStrategyId())
-                    .type(signalType)
-                    .price(signal.getPrice())
-                    .candleTime(window.getLast().getOpenTime())
-                    .build();
-
-            log.info("[PIPELINE] Emit signal: {} {} from {}",
-                    event.getSymbol(),
-                    event.getType(),
-                    event.getStrategyId());
-
-            eventPublisher.publishEvent(event);
         }
-    }}
+    }
+
+    private MarketSnapshot buildSnapshot(CandleWindow window) {
+        return new MarketSnapshot(
+                window.getSymbol(),
+                window.getLast().getClose(),
+                window.getCandles(),
+                Instant.now()
+        );
+    }
+}

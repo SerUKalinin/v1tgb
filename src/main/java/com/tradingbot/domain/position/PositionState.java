@@ -1,5 +1,7 @@
 package com.tradingbot.domain.position;
 
+import com.tradingbot.domain.model.PositionStatus;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 

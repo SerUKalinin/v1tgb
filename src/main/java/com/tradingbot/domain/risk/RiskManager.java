@@ -1,27 +1,32 @@
 package com.tradingbot.domain.risk;
 
-import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
+import com.tradingbot.domain.model.Signal;
 
 import java.util.Optional;
 
 /**
- * Интерфейс риск-менеджера.
+ * RiskManager — the single gatekeeper for all orders.
+ *
+ * Implementations must be:
+ * - Stateless (no fields mutated during approveSignal)
+ * - Deterministic (same inputs = same output)
+ * - Side-effect free (no DB writes, no HTTP calls)
  */
 public interface RiskManager {
 
     /**
-     * Принимает сигнал и возвращает одобренный ордер с рассчитанным объемом.
-     * Если риск-движок отклоняет сигнал, возвращает Optional.empty().
+     * Evaluate a signal against current risk state.
+     * Returns ApprovedOrder with sized quantity, or empty if rejected.
      */
-    Optional<ApprovedOrder> approveSignal(SignalEvent signal);
+    Optional<ApprovedOrder> approveSignal(Signal signal, RiskState state);
 
     /**
-     * Проверяет уже созданный ордер.
+     * Check that the approval is still valid against the current state.
+     * An approval goes stale if the risk state version changed since approval
+     * (e.g. a halt was issued, or exposure limits changed).
+     *
+     * @param order         the order approved at a previous risk state version
+     * @param currentState  the current risk state at time of execution
      */
-    RiskDecision check(OrderEntity order);
-
-    RiskDecision evaluate(com.tradingbot.domain.model.Signal signal);
-
-    boolean isApprovalFresh(ApprovedOrder approvedOrder);
+    boolean isApprovalFresh(ApprovedOrder order, RiskState currentState);
 }

@@ -1,6 +1,6 @@
 package com.tradingbot.application.service;
 
-import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
+import com.tradingbot.domain.model.OrderEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

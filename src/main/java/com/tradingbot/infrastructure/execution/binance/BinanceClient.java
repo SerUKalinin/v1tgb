@@ -158,6 +158,36 @@ public class BinanceClient {
     }
 
     /**
+     * Размещает ордер на бирже.
+     */
+    public com.tradingbot.domain.model.ExecutionResult placeOrder(com.tradingbot.domain.risk.ApprovedOrder order) {
+        Map<String, String> params = new HashMap<>();
+        params.put("symbol", order.getSymbol());
+        params.put("side", order.getSide().name());
+        params.put("type", "MARKET");
+        params.put("quantity", order.getQuantity().toPlainString());
+        params.put("newClientOrderId", order.getClientOrderId());
+
+        try {
+            Map response = post("/api/v3/order", params, Map.class, true);
+            String exchangeOrderId = response.get("orderId").toString();
+
+            return com.tradingbot.domain.model.ExecutionResult.builder()
+                    .orderId(order.getOrderId())
+                    .clientOrderId(order.getClientOrderId())
+                    .exchangeOrderId(exchangeOrderId)
+                    .symbol(order.getSymbol())
+                    .side(order.getSide())
+                    .executedQty(order.getQuantity())
+                    .success(true)
+                    .build();
+        } catch (Exception e) {
+            log.error("Binance API error: {}", e.getMessage());
+            return com.tradingbot.domain.model.ExecutionResult.failure(order.getOrderId(), e.getMessage());
+        }
+    }
+
+    /**
      * Получает информацию об аккаунте (балансы).
      */
     public Map getAccountInfo() {

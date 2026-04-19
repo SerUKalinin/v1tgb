@@ -1,7 +1,7 @@
 package com.tradingbot.infrastructure.persistence.mapper;
 
 import com.tradingbot.domain.model.Position;
-import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
+import com.tradingbot.domain.model.PositionEntity;
 import org.springframework.stereotype.Component;
 
 /**

@@ -1,12 +1,12 @@
 package com.tradingbot.application.service;
 
-import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Position;
+import com.tradingbot.domain.model.PositionEntity;
+import com.tradingbot.domain.model.PositionStatus;
 import com.tradingbot.domain.position.PositionReducer;
 import com.tradingbot.domain.position.PositionState;
 import com.tradingbot.infrastructure.concurrent.PartitionLockManager;
-import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.mapper.PositionMapper;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
 import jakarta.annotation.PostConstruct;
@@ -18,15 +18,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
 
 /**
  * Сервис управления торговыми позициями.
- * Использует Partitioning Lock для обеспечения детерминированности и исключения гонок.
  */
 @Service
 @Slf4j
@@ -57,10 +56,6 @@ public class PositionService {
         }
     }
 
-    /**
-     * Слушает события о создании сделок и обновляет состояние позиции.
-     * Гарантирует последовательную обработку через Striped Lock по символу и стратегии.
-     */
     @EventListener
     @Transactional
     public void onTradeCreated(TradeCreatedEvent event) {
@@ -74,14 +69,10 @@ public class PositionService {
             PositionEntity entity = repository.findBySymbolAndStrategyId(event.getSymbol(), event.getStrategyId())
                     .orElseGet(() -> createNewPositionEntity(event));
 
-            // 1. Strict Idempotency Check
             if (entity.getLastTradeId() != null && entity.getLastTradeId() >= event.getTradeId()) {
-                log.warn("[POSITIONS] Trade {} already processed or older. Skipping. (Last: {})", 
-                        event.getTradeId(), entity.getLastTradeId());
                 return;
             }
 
-            // 2. Pure State Transition
             PositionState currentState = new PositionState(
                     entity.getSymbol(),
                     entity.getStrategyId(),
@@ -91,14 +82,13 @@ public class PositionService {
                     entity.getRealizedPnl(),
                     entity.getStopLoss(),
                     entity.getTakeProfit(),
-                    entity.getStatus() != null ? com.tradingbot.domain.position.PositionStatus.valueOf(entity.getStatus()) : com.tradingbot.domain.position.PositionStatus.NEW,
+                    entity.getStatus() != null ? PositionStatus.valueOf(entity.getStatus()) : PositionStatus.NEW,
                     entity.getCloseRequestId(),
                     entity.getUpdatedAt()
             );
 
             PositionState newState = reducer.reduce(currentState, event);
 
-            // 3. Update Managed Entity
             entity.setQuantity(newState.netQuantity());
             entity.setEntryPrice(newState.averagePrice());
             entity.setRealizedPnl(newState.realizedPnl());
@@ -109,17 +99,9 @@ public class PositionService {
             entity.setCloseRequestId(newState.closeRequestId());
             entity.setUpdatedAt(newState.updatedAt());
 
-            // 4. Save & Sync Cache
             repository.save(entity);
             positions.put(lockKey, mapper.toDomain(entity));
 
-            log.info("[POSITIONS] Updated {}: Qty {} -> {}, PnL: +{}", 
-                    lockKey, currentState.netQuantity(), newState.netQuantity(), 
-                    newState.realizedPnl().subtract(currentState.realizedPnl()));
-
-        } catch (Exception e) {
-            log.error("[POSITIONS] Critical error processing trade {}: {}", event.getTradeId(), e.getMessage(), e);
-            throw e; // Rollback transaction
         } finally {
             lock.unlock();
         }
@@ -141,8 +123,8 @@ public class PositionService {
         return p != null && p.getNetQuantity().compareTo(BigDecimal.ZERO) != 0;
     }
 
-    public Position getPosition(String symbol, String strategyId) {
-        return positions.get(getCacheKey(symbol, strategyId));
+    public List<Position> getAllPositions() {
+        return List.copyOf(positions.values());
     }
 
     public BigDecimal calculatePnL(String symbol, String strategyId, BigDecimal currentPrice) {
@@ -154,7 +136,17 @@ public class PositionService {
                 .setScale(8, RoundingMode.HALF_UP);
     }
 
-    public List<Position> getAllPositions() {
-        return List.copyOf(positions.values());
+    public com.tradingbot.domain.model.Position getPosition(String symbol, String strategyId) {
+        return positions.get(getCacheKey(symbol, strategyId));
+    }
+
+    public com.tradingbot.domain.position.PortfolioState getPortfolioState() {
+        Map<String, com.tradingbot.domain.model.Position> activePositions = positions.entrySet().stream()
+                .filter(entry -> entry.getValue().getNetQuantity().compareTo(BigDecimal.ZERO) != 0)
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue
+                ));
+        return new com.tradingbot.domain.position.PortfolioState(activePositions);
     }
 }

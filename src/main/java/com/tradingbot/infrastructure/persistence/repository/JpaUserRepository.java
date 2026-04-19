@@ -9,4 +9,5 @@ import java.util.Optional;
 @Repository
 public interface JpaUserRepository extends JpaRepository<User, Long> {
     Optional<User> findByChatId(Long chatId);
+    java.util.List<User> findByActiveTrue();
 }

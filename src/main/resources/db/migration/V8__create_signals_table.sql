@@ -1,8 +1,0 @@
-CREATE TABLE signals (
-    id BIGSERIAL PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL,
-    type VARCHAR(10) NOT NULL,
-    price DECIMAL(20, 8) NOT NULL,
-    strategy_id VARCHAR(50),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);

@@ -8,6 +8,8 @@ import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.*;
 import com.tradingbot.domain.risk.ApprovedOrder;
 import com.tradingbot.domain.risk.RiskManager;
+import com.tradingbot.domain.position.PortfolioState;
+import com.tradingbot.domain.position.PositionState;
 import com.tradingbot.domain.strategy.TradingStrategy;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +21,7 @@ import org.springframework.test.context.ActiveProfiles;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -70,10 +73,16 @@ class TradingPipelineIntegrationTest {
         CandleWindow window = new CandleWindow(symbol, List.of(candle));
 
         // 1. Strategy mock
-        when(tradingStrategy.analyze(any())).thenReturn(
-                new Signal(symbol, strategyId,
-                        com.tradingbot.common.enums.SignalType.BUY,
-                        price, amount)
+        when(tradingStrategy.decide(any(), any())).thenReturn(
+                Optional.of(Signal.builder()
+                        .symbol(symbol)
+                        .strategyId(strategyId)
+                        .side(OrderSide.BUY)
+                        .price(price)
+                        .quantity(amount)
+                        .clientOrderId("c-test")
+                        .generatedAt(now)
+                        .build())
         );
 
         // 2. Risk mock
@@ -90,8 +99,8 @@ class TradingPipelineIntegrationTest {
                 .riskStateVersion(1L)
                 .build();
 
-        when(riskManager.approveSignal(any())).thenReturn(Optional.of(approvedOrder));
-        when(riskManager.isApprovalFresh(any())).thenReturn(true);
+        when(riskManager.approveSignal(any(), any())).thenReturn(Optional.of(approvedOrder));
+        when(riskManager.isApprovalFresh(any(), any())).thenReturn(true);
 
         // 3. Execution mock
         when(executionEngine.execute(any())).thenAnswer(invocation -> {

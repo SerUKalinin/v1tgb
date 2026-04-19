@@ -1,7 +1,8 @@
 package com.tradingbot.domain.risk;
 
-import com.tradingbot.common.enums.SignalType;
-import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.domain.market.ExchangeMetadataProvider;
+import com.tradingbot.domain.model.Signal;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -20,12 +21,19 @@ class FinancialSafetyTest {
     private DefaultRiskManager riskManager;
     private RiskStateStore stateStore;
     private RiskStateReducer reducer;
+    private ExchangeMetadataProvider metadataProvider;
 
     @BeforeEach
     void setUp() {
         stateStore = new RiskStateStore();
         reducer = new RiskStateReducer();
-        riskManager = new DefaultRiskManager(Collections.emptyList(), stateStore);
+        metadataProvider = mock(ExchangeMetadataProvider.class);
+        
+        // Mock default exchange constraints
+        when(metadataProvider.getLotSize(anyString())).thenReturn(new BigDecimal("0.01"));
+        when(metadataProvider.getQuantityPrecision(anyString())).thenReturn(2);
+
+        riskManager = new DefaultRiskManager(metadataProvider);
         
         RiskState initialState = RiskState.builder()
                 .totalEquity(new BigDecimal("10000"))
@@ -58,28 +66,32 @@ class FinancialSafetyTest {
         assertTrue(stateStore.getState().isHalted(), "System should be halted after 5% daily loss");
 
         // 2. Проверяем, что RiskManager отклоняет новые сигналы
-        SignalEvent signal = SignalEvent.builder()
+        Signal signal = Signal.builder()
                 .symbol("BTCUSDT")
-                .type(SignalType.BUY)
+                .side(OrderSide.BUY)
                 .price(new BigDecimal("10000"))
                 .strategyId("test-strat")
+                .clientOrderId("c1")
+                .generatedAt(Instant.now())
                 .build();
 
-        Optional<ApprovedOrder> approvedOrder = riskManager.approveSignal(signal);
+        Optional<ApprovedOrder> approvedOrder = riskManager.approveSignal(signal, stateStore.getState());
         assertTrue(approvedOrder.isEmpty(), "RiskManager should reject signals when halted");
     }
 
     @Test
     void testCentralizedSizingIntegrity() {
         // Equity = 10000, Risk = 1%, Price = 100 -> Qty should be 1.0
-        SignalEvent signal = SignalEvent.builder()
+        Signal signal = Signal.builder()
                 .symbol("ETHUSDT")
-                .type(SignalType.BUY)
+                .side(OrderSide.BUY)
                 .price(new BigDecimal("100"))
                 .strategyId("test-strat")
+                .clientOrderId("c2")
+                .generatedAt(Instant.now())
                 .build();
 
-        Optional<ApprovedOrder> approvedOrder = riskManager.approveSignal(signal);
+        Optional<ApprovedOrder> approvedOrder = riskManager.approveSignal(signal, stateStore.getState());
         
         assertTrue(approvedOrder.isPresent());
         assertEquals(0, new BigDecimal("1.00").compareTo(approvedOrder.get().getQuantity()), 

@@ -2,15 +2,11 @@ package com.tradingbot.domain.execution;
 
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.risk.ApprovedOrder;
+import com.tradingbot.common.enums.OrderStatus;
 
-/**
- * Интерфейс движка исполнения ордеров.
- */
 public interface ExecutionEngine {
-
-    /**
-     * Исполняет ордер, одобренный риск-менеджером.
-     * В Stage 3 это единственный входной контракт.
-     */
     ExecutionResult execute(ApprovedOrder approvedOrder);
+    boolean cancelOrder(String exchangeOrderId, String symbol);
+    com.tradingbot.common.enums.OrderStatus getStatus(String exchangeOrderId, String symbol);
+    com.tradingbot.common.enums.OrderStatus getStatusByClientOrderId(String clientOrderId, String symbol);
 }

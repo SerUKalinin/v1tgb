@@ -37,9 +37,8 @@ public class CandleTransitionDetector {
         }
 
         Candle lastCandle = window.getLast();
-        String symbol = window.symbol();
-        Instant openTime = lastCandle.openTime();
-
+        String symbol = window.getSymbol();
+        Instant openTime = lastCandle.getOpenTime();
         AtomicBoolean isNew = new AtomicBoolean(false);
 
         lastProcessed.compute(symbol, (key, current) -> {

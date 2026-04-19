@@ -2,7 +2,8 @@ package com.tradingbot.domain.model;
 
 import lombok.Builder;
 import lombok.AllArgsConstructor;
-import lombok.Value;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -10,9 +11,10 @@ import java.time.Instant;
 /**
  * Модель свечи (OHLCV).
  */
-@Value
+@Data
 @Builder
 @AllArgsConstructor
+@NoArgsConstructor
 public class Candle {
 
     /**
@@ -61,27 +63,7 @@ public class Candle {
     boolean isClosed;
 
     /**
-     * Возвращает время открытия свечи.
-     *
-     * @return время открытия
-     */
-    public Instant openTime() {
-        return openTime;
-    }
-
-    /**
      * Создаёт новую свечу.
-     *
-     * @param symbol    торговый символ
-     * @param open      цена открытия
-     * @param high      максимальная цена
-     * @param low       минимальная цена
-     * @param close     цена закрытия
-     * @param volume    объём
-     * @param openTime  время открытия
-     * @param closeTime время закрытия
-     * @param isClosed  флаг закрытости
-     * @return новая свеча
      */
     public static Candle of(String symbol, BigDecimal open, BigDecimal high, BigDecimal low,
                             BigDecimal close, BigDecimal volume, Instant openTime,

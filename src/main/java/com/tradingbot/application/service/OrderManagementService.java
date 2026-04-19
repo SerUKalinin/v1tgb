@@ -1,262 +1,117 @@
 package com.tradingbot.application.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.common.enums.OrderStatus;
-import com.tradingbot.common.enums.SignalType;
-import com.tradingbot.domain.event.OrderEvent;
-import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.domain.execution.ExecutionEngine;
-import com.tradingbot.domain.model.ExecutionResult;
-import com.tradingbot.domain.model.OrderRequest;
-import com.tradingbot.domain.model.Position;
-import com.tradingbot.domain.risk.RiskManager;import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
+import com.tradingbot.domain.model.OrderEntity;
+import com.tradingbot.domain.model.Signal;
+import com.tradingbot.domain.order.OrderEvent;
+import com.tradingbot.domain.order.OrderStateMachine;
+import com.tradingbot.domain.risk.ApprovedOrder;
+import com.tradingbot.domain.risk.RiskManager;
+import com.tradingbot.domain.risk.RiskStateStore;
+import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
+import com.tradingbot.infrastructure.persistence.repository.OutboxRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.UUID;
 
+/**
+ * Idempotent Transactional Orchestrator for Order Management.
+ *
+ * FIX: All status transitions go through OrderStateMachine.
+ * FIX: OrderEntity.id is set explicitly before save.
+ * FIX: Uses OrderStatus.APPROVED (now exists in enum).
+ */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class OrderManagementService {
 
     private final OrderRepository orderRepository;
-    private final TradeService tradeService;
-    private final PositionService positionService;
+    private final OutboxRepository outboxRepository;
     private final RiskManager riskManager;
-    private final ExecutionEngine executionEngine;
-    private final ApplicationEventPublisher eventPublisher;
-
-    private final Map<String, Boolean> processedSignals = new ConcurrentHashMap<>();
-
-    // =========================================================
-    // ENTRY POINT (DISABLED)
-    // =========================================================
+    private final RiskStateStore riskStateStore;
+    private final ObjectMapper objectMapper;
 
     @Transactional
-    @Deprecated
-    public ExecutionResult executeOrder(OrderRequest request) {
-        throw new IllegalStateException("Use SignalEvent pipeline only");
-    }
-
-    // =========================================================
-    // SIGNAL ENTRY POINT
-    // =========================================================
-
-    @EventListener
-    @Transactional
-    public void onSignal(SignalEvent event) {
-
-        if (event.getType() == SignalType.HOLD) {
+    public void processSignal(Signal signal) {
+        // 1. IDEMPOTENCY CHECK
+        if (orderRepository.existsByClientOrderId(signal.getClientOrderId())) {
+            log.warn("[OMS] Duplicate signal detected, skipping: {}", signal.getClientOrderId());
             return;
         }
 
-        // FIX 2: stable dedup key
-        String dedupeId = buildDedupeKey(event);
-
-        if (processedSignals.putIfAbsent(dedupeId, Boolean.TRUE) != null) {
-            log.debug("[OMS] Duplicate signal skipped: {}", dedupeId);
-            return;
-        }
-
-        log.info("[OMS] Processing signal {} {} @ {}",
-                event.getType(),
-                event.getSymbol(),
-                event.getPrice());
-
-        processSignal(event);
-    }
-
-    private String buildDedupeKey(SignalEvent event) {
-        return event.getSymbol()
-                + ":"
-                + event.getStrategyId()
-                + ":"
-                + event.getType()
-                + ":"
-                + (event.getCandleTime() != null
-                ? event.getCandleTime().toEpochMilli()
-                : System.currentTimeMillis());
-    }
-
-    // =========================================================
-    // CORE LOGIC
-    // =========================================================
-
-    private ExecutionResult processSignal(SignalEvent signal) {
-
-        // POSITION GUARD
-        Position position = positionService.getPosition(
-                signal.getSymbol(),
-                signal.getStrategyId()
-        );
-
-        if (position != null && position.isOpen()) {
-
-            boolean sameDirection =
-                    (position.getNetQuantity().signum() > 0 && signal.getType() == SignalType.BUY)
-                            || (position.getNetQuantity().signum() < 0 && signal.getType() == SignalType.SELL);
-
-            if (sameDirection) {
-                log.warn("[OMS] Skip signal: already in position {} {}", signal.getSymbol(), signal.getType());
-                return ExecutionResult.failure(null, "Already in position");
-            }
-        }
-        // RISK CHECK
-        Optional<com.tradingbot.domain.risk.ApprovedOrder> approvedOpt =
-                riskManager.approveSignal(signal);
-
-        if (approvedOpt.isEmpty()) {
-            log.warn("[OMS] Signal rejected by Risk: {}", signal);
-            return ExecutionResult.failure(null, "Rejected by Risk Engine");
-        }
-
-        com.tradingbot.domain.risk.ApprovedOrder approved = approvedOpt.get();
-
-        // DB IDEMPOTENCY (FIX 3)
-        if (orderRepository.existsByClientOrderId(approved.getClientOrderId())) {
-            log.warn("[OMS] Duplicate order blocked: {}", approved.getClientOrderId());
-            return ExecutionResult.failure(null, "Duplicate order");
-        }
-
-        OrderEntity order = createOrderEntity(approved);
-
-        order = orderRepository.save(order);
-
-        publishOrderEvent(order, "Approved by Risk Engine");
-
-        return executeInternal(order, approved);
-    }
-
-    // =========================================================
-    // EXECUTION
-    // =========================================================
-
-    private ExecutionResult executeInternal(
-            OrderEntity order,
-            com.tradingbot.domain.risk.ApprovedOrder approved
-    ) {
-        try {
-
-            if (!riskManager.isApprovalFresh(approved)) {
-                log.error("[OMS] Stale approval: {}", order.getId());
-
-                order.setStatus(OrderStatus.REJECTED.name());
-                orderRepository.save(order);
-
-                publishOrderEvent(order, "Rejected: stale approval");
-
-                return ExecutionResult.failure(order.getId(), "Stale approval");
-            }
-
-            ExecutionResult result = executionEngine.execute(approved);
-
-            if (result.isSuccess()) {
-
-                order.setStatus(OrderStatus.FILLED.name());
-                order.setExchangeOrderId(result.getExchangeOrderId());
-
-                orderRepository.save(order);
-
-                publishOrderEvent(order, "FILLED");
-
-                return result;
-            }
-
-            order.setStatus(OrderStatus.REJECTED.name());
-            orderRepository.save(order);
-
-            publishOrderEvent(order, "FAILED: " + result.getErrorMessage());
-
-            return result;
-
-        } catch (Exception e) {
-
-            log.error("[OMS] Execution error {}", order.getId(), e);
-
-            order.setStatus(OrderStatus.ERROR.name());
-            orderRepository.save(order);
-
-            publishOrderEvent(order, "ERROR: " + e.getMessage());
-
-            return ExecutionResult.failure(order.getId(), e.getMessage());
-        }
-    }
-
-    // =========================================================
-    // CLOSE POSITION
-    // =========================================================
-
-    @Transactional
-    public void closePosition(Position position) {
-
-        if (!position.isOpen()) {
-            log.warn("[OMS] Cannot close position {}", position.getSymbol());
-            return;
-        }
-
-        SignalType type = position.getNetQuantity().signum() > 0
-                ? SignalType.SELL
-                : SignalType.BUY;
-
-        SignalEvent closeSignal = SignalEvent.builder()
-                .symbol(position.getSymbol())
-                .strategyId(position.getStrategyId())
-                .type(type)
-                .price(BigDecimal.ZERO)
-                .candleTime(Instant.now())
-                .build();
-
-        processSignal(closeSignal);
-    }
-    // =========================================================
-    // ENTITY CREATION
-    // =========================================================
-
-    private OrderEntity createOrderEntity(
-            com.tradingbot.domain.risk.ApprovedOrder approved
-    ) {
-        return OrderEntity.builder()
-                .id(approved.getOrderId())
-                .clientOrderId(approved.getClientOrderId())
-                .symbol(approved.getSymbol())
-                .strategyId(approved.getStrategyId())
-                .side(approved.getSide())
-                .type(approved.getType())
-                .quantity(approved.getQuantity())
-                .price(approved.getPrice())
-                .stopLoss(approved.getStopLoss())
-                .takeProfit(approved.getTakeProfit())
-                .status(OrderStatus.VALIDATED.name())
+        // 2. CREATE INITIAL ORDER (NEW)
+        OrderEntity order = OrderEntity.builder()
+                .id(UUID.randomUUID().toString())
+                .clientOrderId(signal.getClientOrderId())
+                .symbol(signal.getSymbol())
+                .strategyId(signal.getStrategyId())
+                .side(signal.getSide())
+                .status(OrderStatus.NEW)
                 .createdAt(Instant.now())
+                .updatedAt(Instant.now())
                 .build();
+
+        orderRepository.save(order);
+        // 3. RISK CHECK
+        var currentState = riskStateStore.getCurrentState();
+        var decision = riskManager.approveSignal(signal, currentState);
+
+        if (decision.isEmpty()) {
+            log.warn("[OMS] Signal REJECTED by RiskManager: {}", signal.getClientOrderId());
+            // FIX: transition through FSM
+            transition(order, OrderEvent.RISK_CHECK_FAILED);
+            return;
+        }
+
+        ApprovedOrder approved = decision.get();
+
+        // 4. TRANSITION: NEW → ACCEPTED → APPROVED
+        transition(order, OrderEvent.RISK_CHECK_PASSED);   // → ACCEPTED
+        order.setQuantity(approved.getQuantity());
+        order.setPrice(approved.getPrice());
+        order.setRiskStateVersion(approved.getRiskStateVersion());
+        transition(order, OrderEvent.RISK_SIZED);           // → APPROVED
+        orderRepository.save(order);
+
+        // 5. ATOMIC OUTBOX ENTRY (same transaction — guaranteed at-least-once)
+        persistOutboxEvent(order, approved);
+
+        // 6. TRANSITION: APPROVED → PENDING_EXECUTION
+        transition(order, OrderEvent.OUTBOX_COMMITTED);    // → PENDING_EXECUTION
+        orderRepository.save(order);
+
+        log.info("[OMS] Order {} ready for execution (status={})",
+                order.getClientOrderId(), order.getStatus());
     }
 
-    // =========================================================
-    // EVENTS
-    // =========================================================
+    private void transition(OrderEntity order, OrderEvent event) {
+        OrderStatus current = order.getStatus();
+        OrderStatus next = OrderStateMachine.getNextStatus(current, event);
+        order.setStatus(next);
+        order.setUpdatedAt(Instant.now());
+    }
+    private void persistOutboxEvent(OrderEntity order, ApprovedOrder approved) {
+        try {
+            OutboxEventEntity event = OutboxEventEntity.builder()
+                    .eventId(UUID.randomUUID().toString())
+                    .clientOrderId(order.getClientOrderId())
+                    .type("ORDER_APPROVED")          // FIX: field is `type`, not `eventType`
+                    .payload(objectMapper.writeValueAsString(approved))
+                    .status("PENDING")
+                    .createdAt(Instant.now())
+                    .build();
 
-    private void publishOrderEvent(OrderEntity order, String message) {
-
-        eventPublisher.publishEvent(
-                OrderEvent.builder()
-                        .orderId(order.getId())
-                        .clientOrderId(order.getClientOrderId())
-                        .status(OrderStatus.valueOf(order.getStatus()))
-                        .symbol(order.getSymbol())
-                        .side(order.getSide())
-                        .quantity(order.getQuantity())
-                        .message(message)
-                        .timestamp(Instant.now())
-                        .build()
-        );
+            outboxRepository.save(event);
+        } catch (Exception e) {
+            log.error("[OMS] Failed to create outbox entry for {}", order.getClientOrderId(), e);
+            throw new RuntimeException("Outbox persistence failed — rolling back transaction", e);
+        }
     }
 }

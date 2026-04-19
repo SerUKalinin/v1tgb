@@ -1,8 +1,8 @@
 package com.tradingbot.application.service;
 
 import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.domain.model.PositionEntity;
 import com.tradingbot.domain.model.Trade;
-import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

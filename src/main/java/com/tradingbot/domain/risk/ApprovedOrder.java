@@ -15,7 +15,7 @@ import java.time.Instant;
  * It can only be created by the RiskEngine/RiskManager.
  */
 @Getter
-@Builder
+@Builder(toBuilder = true)
 @ToString
 public final class ApprovedOrder {
     private final String orderId;
@@ -30,11 +30,12 @@ public final class ApprovedOrder {
     private final String strategyId;
     private final Instant approvedAt;
     private final long riskStateVersion;
+    private final BigDecimal approvedExposure;
 
-    // Package-private constructor to restrict creation to the risk package
-    ApprovedOrder(String orderId, String clientOrderId, String symbol, OrderSide side, OrderType type, 
+    // Private constructor for immutability
+    private ApprovedOrder(String orderId, String clientOrderId, String symbol, OrderSide side, OrderType type,
                   BigDecimal quantity, BigDecimal price, BigDecimal stopLoss, BigDecimal takeProfit,
-                  String strategyId, Instant approvedAt, long riskStateVersion) {
+                  String strategyId, Instant approvedAt, long riskStateVersion, BigDecimal approvedExposure) {
         this.orderId = orderId;
         this.clientOrderId = clientOrderId;
         this.symbol = symbol;
@@ -47,5 +48,6 @@ public final class ApprovedOrder {
         this.strategyId = strategyId;
         this.approvedAt = approvedAt;
         this.riskStateVersion = riskStateVersion;
+        this.approvedExposure = approvedExposure;
     }
 }

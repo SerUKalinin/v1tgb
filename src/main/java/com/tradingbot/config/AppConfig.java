@@ -4,6 +4,7 @@ import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.infrastructure.execution.binance.BinanceExecutionEngine;
 import com.tradingbot.infrastructure.execution.fake.BacktestExecutionEngine;
 import com.tradingbot.infrastructure.execution.binance.BinanceClient;
+import com.tradingbot.infrastructure.persistence.repository.ExecutionIdempotencyRepository;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -23,14 +24,16 @@ public class AppConfig {
      * Активируется в профиле "prod".
      *
      * @param binanceClient клиент API Binance
+     * @param idempotencyRepository репозиторий для идемпотентности
      * @return экземпляр BinanceExecutionEngine
      */
     @Bean
     @Profile("prod")
-    public ExecutionEngine binanceExecutionEngine(BinanceClient binanceClient) {
-        return new BinanceExecutionEngine(binanceClient);
+    public ExecutionEngine binanceExecutionEngine(
+            BinanceClient binanceClient,
+            ExecutionIdempotencyRepository idempotencyRepository) {
+        return new BinanceExecutionEngine(binanceClient, idempotencyRepository);
     }
-
     /**
      * Создаёт исполнительный движок для бэктестирования.
      * <p>

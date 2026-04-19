@@ -32,4 +32,7 @@ public class UserService {
     public void save(User user) {
         userRepository.save(user);
     }
-}
+
+    public java.util.List<User> findAllActiveUsers() {
+        return userRepository.findByActiveTrue();
+    }}

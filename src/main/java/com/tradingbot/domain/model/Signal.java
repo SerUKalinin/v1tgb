@@ -1,18 +1,23 @@
 package com.tradingbot.domain.model;
 
-import com.tradingbot.common.enums.SignalType;
+import com.tradingbot.common.enums.OrderSide;
+import lombok.Builder;
 import lombok.Value;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 
 /**
- * Торговый сигнал, генерируемый стратегией.
+ * Pure Domain Signal model.
  */
 @Value
+@Builder
 public class Signal {
+    String clientOrderId;
     String symbol;
-    String strategyId;
-    SignalType type;
+    OrderSide side;
     BigDecimal price;
-    BigDecimal quantity;
+    BigDecimal quantity; // Optional
+    String strategyId;
+    Instant generatedAt;
 }

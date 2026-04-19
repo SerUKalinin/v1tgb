@@ -1,23 +1,23 @@
 package com.tradingbot.application.pipeline;
 
-import com.tradingbot.application.service.SignalRouter;
-import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.application.service.OrderManagementService;
+import com.tradingbot.domain.model.Signal;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
-@Slf4j
 @Component
+@Slf4j
 @RequiredArgsConstructor
-@org.springframework.context.annotation.Profile("!test")
 public class SignalEventListener {
 
-    private final SignalRouter signalRouter;
+    private final OrderManagementService orderManagementService;
 
     @EventListener
-    public void onSignal(SignalEvent event) {
-        log.info("[EVENT-LISTENER] Received signal event for symbol: {}", event.getSymbol());
-        signalRouter.route(event);
+    public void onSignal(Signal signal) {
+        log.info("[PIPELINE] Received signal for {}", signal.getSymbol());
+        orderManagementService.processSignal(signal);
     }
 }
+

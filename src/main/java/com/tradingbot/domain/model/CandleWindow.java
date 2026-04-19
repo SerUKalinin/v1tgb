@@ -1,6 +1,9 @@
 package com.tradingbot.domain.model;
 
-import lombok.Value;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -8,23 +11,24 @@ import java.util.List;
 /**
  * Окно свечей — контейнер для последовательности свечей.
  */
-@Value
+@Data
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
 public class CandleWindow {
 
     /**
      * Торговый символ.
      */
-    String symbol;
+    private String symbol;
 
     /**
      * Список свечей в хронологическом порядке.
      */
-    List<Candle> candles;
+    private List<Candle> candles;
 
     /**
      * Возвращает список цен закрытия всех свечей.
-     *
-     * @return список цен закрытия
      */
     public List<BigDecimal> getClosePrices() {
         return candles.stream()
@@ -34,12 +38,9 @@ public class CandleWindow {
 
     /**
      * Возвращает последнюю свечу в окне.
-     *
-     * @return последняя свеча
-     * @throws IllegalStateException если окно пустое
      */
     public Candle getLast() {
-        if (candles.isEmpty()) {
+        if (candles == null || candles.isEmpty()) {
             throw new IllegalStateException("Candle window is empty for symbol: " + symbol);
         }
         return candles.get(candles.size() - 1);
@@ -47,47 +48,16 @@ public class CandleWindow {
 
     /**
      * Проверяет, содержит ли окно достаточное количество свечей.
-     *
-     * @param minRequiredSize минимальное требуемое количество
-     * @return true, если размер окна не меньше указанного
      */
     public boolean isReady(int minRequiredSize) {
-        return candles.size() >= minRequiredSize;
+        return candles != null && candles.size() >= minRequiredSize;
     }
 
-    /**
-     * Возвращает количество свечей в окне.
-     *
-     * @return размер окна
-     */
     public int size() {
-        return candles.size();
+        return candles != null ? candles.size() : 0;
     }
 
-    /**
-     * Возвращает торговый символ.
-     *
-     * @return символ
-     */
-    public String symbol() {
-        return symbol;
-    }
-
-    /**
-     * Возвращает список свечей.
-     *
-     * @return список свечей
-     */
-    public List<Candle> candles() {
-        return candles;
-    }
-
-    /**
-     * Проверяет, не пустое ли окно.
-     *
-     * @return true, если окно содержит хотя бы одну свечу
-     */
     public boolean isReady() {
-        return !candles.isEmpty();
+        return candles != null && !candles.isEmpty();
     }
 }

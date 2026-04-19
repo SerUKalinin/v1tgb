@@ -16,44 +16,27 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class RiskEngineTest {
-    private RiskEventRepository eventRepository;
-    private RiskSnapshotRepository snapshotRepository;
     private RiskStateReducer reducer;
     private RiskStateStore riskStateStore;
     private RiskEngine riskEngine;
-    private ObjectMapper objectMapper;
 
     @BeforeEach
     void setUp() {
-        eventRepository = mock(RiskEventRepository.class);
-        snapshotRepository = mock(RiskSnapshotRepository.class);
         reducer = new RiskStateReducer();
         riskStateStore = new RiskStateStore();
-        objectMapper = new ObjectMapper();
-        objectMapper.findAndRegisterModules();
 
         riskEngine = new RiskEngine(
-            eventRepository,
-            snapshotRepository,
             reducer,
-            objectMapper,
             riskStateStore
         );
     }
 
     @Test
     void shouldBlockEventsWhenHalted() {
-        // 1. Halt the engine
-        RiskEvent haltEvent = new RiskEvent.TradingHalted(
-            UUID.randomUUID().toString(),
-            "Manual halt",
-            Instant.now()
-        );
-        riskEngine.publish(haltEvent);
+        RiskState state = RiskState.empty().toBuilder().halted(true).build();
+        riskStateStore.updateInternal(state);
 
-        assertTrue(riskEngine.getState().isHalted());
-
-        // 2. Try to publish trade
+        // Try to process trade
         RiskEvent tradeEvent = new RiskEvent.TradeExecuted(
             UUID.randomUUID().toString(),
             "BTCUSDT",
@@ -63,15 +46,16 @@ class RiskEngineTest {
             Instant.now()
         );
 
-        riskEngine.publish(tradeEvent);
+        RiskState result = riskEngine.process(state, tradeEvent);
 
-        // Verify version didn't increase (still 1 from halt event)
-        assertEquals(1, riskEngine.getState().getVersion());
-        verify(eventRepository, times(1)).save(any()); // Only halt event saved
+        // Verify state didn't change
+        assertTrue(result.isHalted());
+        assertEquals(state.getVersion(), result.getVersion());
     }
 
     @Test
     void shouldIncrementVersionAndPersist() {
+        RiskState state = riskEngine.getState();
         RiskEvent event = new RiskEvent.TradeExecuted(
                 UUID.randomUUID().toString(),
                 "BTCUSDT",
@@ -81,7 +65,9 @@ class RiskEngineTest {
                 Instant.now()
         );
 
-        riskEngine.publish(event);
+        riskEngine.process(state, event);
+        
+        assertTrue(riskEngine.getState().getVersion() > state.getVersion());
     }
 
     @Test
@@ -92,8 +78,8 @@ class RiskEngineTest {
         RiskEvent e2 = new RiskEvent.PriceUpdated(UUID.randomUUID().toString(), "BTC", new BigDecimal("51000"), now.plusSeconds(1));
         
         // 2. Process through engine
-        riskEngine.publish(e1);
-        riskEngine.publish(e2);
+        RiskState s1 = riskEngine.process(riskEngine.getState(), e1);
+        RiskState s2 = riskEngine.process(s1, e2);
         RiskState stateAfterPublish = riskEngine.getState();
 
         // 3. Manual replay through reducer starting from empty

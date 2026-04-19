@@ -50,4 +50,19 @@ public class BacktestExecutionEngine implements ExecutionEngine {
                 approvedOrder.getClientOrderId()
         );
     }
+
+    @Override
+    public boolean cancelOrder(String exchangeOrderId, String symbol) {
+        return true;
+    }
+
+    @Override
+    public com.tradingbot.common.enums.OrderStatus getStatus(String exchangeOrderId, String symbol) {
+        return com.tradingbot.common.enums.OrderStatus.FILLED;
+    }
+
+    @Override
+    public com.tradingbot.common.enums.OrderStatus getStatusByClientOrderId(String clientOrderId, String symbol) {
+        return com.tradingbot.common.enums.OrderStatus.FILLED;
+    }
 }

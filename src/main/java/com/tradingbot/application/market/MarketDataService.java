@@ -65,18 +65,17 @@ public class MarketDataService {
                 marketDataCache.updateOrAdd(symbol, candle);
             }
 
-            // Фильтрация и отправка в RiskEngine
-            BigDecimal currentPrice = candles.get(candles.size() - 1).getClose();
-            if (shouldUpdateRisk(symbol, currentPrice)) {
-                riskEngine.publish(new RiskEvent.PriceUpdated(
-                        UUID.randomUUID().toString(),
-                        symbol,
-                        currentPrice,
-                        Instant.now()
-                ));
-                lastRiskPrices.put(symbol, currentPrice);
-            }
-        } catch (Exception e) {
+        // Фильтрация и отправка в RiskEngine
+        BigDecimal currentPrice = candles.get(candles.size() - 1).getClose();
+        if (shouldUpdateRisk(symbol, currentPrice)) {
+            riskEngine.process(riskEngine.getState(), new RiskEvent.PriceUpdated(
+                    UUID.randomUUID().toString(),
+                    symbol,
+                    currentPrice,
+                    Instant.now()
+            ));
+            lastRiskPrices.put(symbol, currentPrice);
+        }        } catch (Exception e) {
             log.error("Ошибка при обновлении данных для {}", symbol, e);
         }
     }
@@ -98,11 +97,10 @@ public class MarketDataService {
             return;
         }
 
-        CandleWindow window = getWindow(symbol);
-        if (window == null || window.candles().isEmpty()) {
-            return;
-        }
-
+    CandleWindow window = getWindow(symbol);
+    if (window == null || window.getCandles().isEmpty()) {
+        return;
+    }
         detector.detect(window).ifPresent(event -> {
             log.info("[VERIFY] NEW_CANDLE: symbol={} closeTime={} O={} H={} L={} C={} V={}",
                     symbol, event.closeTime(), event.open(), event.high(), event.low(), event.close(), event.volume());

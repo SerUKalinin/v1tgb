@@ -2,7 +2,7 @@ package com.tradingbot.application.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.domain.risk.*;
-import com.tradingbot.infrastructure.persistence.entity.RiskEventEntity;
+import com.tradingbot.domain.event.RiskEventEntity;
 import com.tradingbot.infrastructure.persistence.entity.RiskSnapshotEntity;
 import com.tradingbot.infrastructure.persistence.repository.RiskEventRepository;
 import com.tradingbot.infrastructure.persistence.repository.RiskSnapshotRepository;

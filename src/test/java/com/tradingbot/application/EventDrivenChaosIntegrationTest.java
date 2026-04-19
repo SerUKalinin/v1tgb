@@ -1,11 +1,11 @@
 package com.tradingbot.application;
 
 import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.application.service.PositionService;
+import com.tradingbot.application.service.EquityService;
+import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.model.Position;
-import com.tradingbot.application.service.PositionService;
-import com.tradingbot.application.service.TradeService;
-import com.tradingbot.application.service.EquityService;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
 import com.tradingbot.infrastructure.persistence.repository.EquitySnapshotRepository;
@@ -51,7 +51,7 @@ public class EventDrivenChaosIntegrationTest {
         String orderId = UUID.randomUUID().toString();
         String externalTradeId = "ext-trade-123";
 
-        // 0. Предварительно создаем ордер в БД, так как TradeService теперь требует его наличия
+        // 0. Предварительно создаем ордер в БД
         orderRepository.save(com.tradingbot.infrastructure.persistence.entity.OrderEntity.builder()
                 .id(orderId)
                 .clientOrderId("C-" + orderId)
@@ -60,7 +60,7 @@ public class EventDrivenChaosIntegrationTest {
                 .strategyId(strategyId)
                 .quantity(new BigDecimal("1.0"))
                 .price(new BigDecimal("50000"))
-                .status("SENT")
+                .status(OrderStatus.PENDING_EXECUTION)
                 .build());
 
         // 1. Публикуем событие исполнения ордера (BUY)

@@ -4,7 +4,7 @@ import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.position.PositionReducer;
 import com.tradingbot.domain.position.PositionState;
-import com.tradingbot.domain.position.PositionStatus;
+import com.tradingbot.domain.model.PositionStatus;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;

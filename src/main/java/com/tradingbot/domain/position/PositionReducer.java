@@ -2,6 +2,7 @@ package com.tradingbot.domain.position;
 
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.domain.event.TradeCreatedEvent;
+import com.tradingbot.domain.model.PositionStatus;
 import org.springframework.stereotype.Component;
 import lombok.extern.slf4j.Slf4j;
 

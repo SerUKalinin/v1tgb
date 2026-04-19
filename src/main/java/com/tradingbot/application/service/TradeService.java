@@ -34,7 +34,6 @@ public class TradeService {
     /**
      * Слушает события об исполнении ордеров и регистрирует сделки.
      */
-    @EventListener
     @Transactional
     public void onOrderFilled(OrderFilledEvent event) {
         log.info("[TRADE-SERVICE] Handling OrderFilledEvent for order: {}", event.getOrderId());
@@ -57,20 +56,18 @@ public class TradeService {
         entity.setSide(order.getSide());
         entity.setStrategyId(order.getStrategyId());
         entity.setExecutedAt(java.time.Instant.now());
-        entity.setRealizedPnl(java.math.BigDecimal.ZERO); // В реальной системе здесь был бы расчет PnL
+        entity.setRealizedPnl(java.math.BigDecimal.ZERO); 
         
         TradeEntity saved = tradeRepository.save(entity);
-
         // Обновляем состояние риск-движка через единую точку входа
-        riskEngine.publish(new RiskEvent.TradeExecuted(
+        riskEngine.process(riskEngine.getState(), new RiskEvent.TradeExecuted(
                 saved.getExchangeTradeId(),
                 saved.getSymbol(),
                 saved.getQuantity(),
                 saved.getPrice(),
                 saved.getRealizedPnl(),
                 saved.getExecutedAt()
-        ));
-        
+        ));        
         eventPublisher.publishEvent(new TradeCreatedEvent(
                 saved.getId(),
                 saved.getOrderId(),

@@ -1,0 +1,44 @@
+# =============================================================================
+# application-local.yaml — Локальная разработка
+# Запуск: SPRING_PROFILES_ACTIVE=local ./gradlew bootRun
+#
+# Отличия от продакшена:
+# - Telegram Bot НЕ регистрируется (нет сети → не блокирует старт)
+# - Binance клиент → fake/stub
+# - show-sql: true для отладки
+# =============================================================================
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/trading
+    username: postgres
+    password: postgres
+
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  flyway:
+    clean-disabled: false  # Разрешаем flyway:clean локально для reset схемы
+
+# Telegram: пустой токен → TelegramConfig поймает исключение и вернёт null
+# Бот не будет работать, но приложение стартанёт
+telegram:
+  bot:
+    token: ${TELEGRAM_BOT_TOKEN:DISABLED}
+    username: ${TELEGRAM_BOT_USERNAME:local_bot}
+    admin-id: 0
+
+# Binance: fake ключи для локального профиля
+binance:
+  api-key: local-fake-key
+  secret-key: local-fake-secret
+  base-url: https://testnet.binance.vision
+  recv-window: 5000
+
+logging:
+  level:
+    com.tradingbot: DEBUG
+    org.hibernate.SQL: DEBUG

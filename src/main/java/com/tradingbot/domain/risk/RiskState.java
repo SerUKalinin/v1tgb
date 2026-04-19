@@ -2,10 +2,12 @@ package com.tradingbot.domain.risk;
 
 import lombok.Builder;
 import lombok.Value;
+import lombok.extern.slf4j.Slf4j;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Immutable state of the risk engine.
@@ -20,7 +22,8 @@ public class RiskState {
     BigDecimal maxDrawdown;
     Instant lastUpdateTimestamp;
     Map<String, BigDecimal> symbolExposures;
-    java.util.Set<String> processedEventIds;
+    Map<String, Instant> cooldowns;
+    Set<String> processedEventIds;
     boolean halted;
     long version;
     
@@ -33,7 +36,8 @@ public class RiskState {
                 .maxDrawdown(BigDecimal.ZERO)
                 .lastUpdateTimestamp(Instant.EPOCH)
                 .symbolExposures(Map.of())
-                .processedEventIds(java.util.Set.of())
+                .cooldowns(Map.of())
+                .processedEventIds(Set.of())
                 .halted(false)
                 .version(0L)
                 .build();
