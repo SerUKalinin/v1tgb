@@ -8,5 +8,5 @@ import java.util.List;
 
 @Repository
 public interface EquitySnapshotRepository extends JpaRepository<EquitySnapshotEntity, Long> {
-    List<EquitySnapshotEntity> findByStrategyIdOrderByTimestampDesc(String strategyId);
+    List<EquitySnapshotEntity> findTop10ByOrderByTimestampDesc();
 }

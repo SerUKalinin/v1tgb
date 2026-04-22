@@ -48,9 +48,8 @@ public class TradeService {
                 .orElseThrow(() -> new RuntimeException("Order not found: " + event.getOrderId()));
 
         TradeEntity entity = new TradeEntity();
-        entity.setOrderId(event.getOrderId());
-        entity.setClientOrderId(order.getClientOrderId());
-        entity.setExchangeTradeId(event.getExternalExecutionId());
+        entity.setOrder(order);
+        entity.setClientOrderId(order.getClientOrderId());        entity.setExchangeTradeId(event.getExternalExecutionId());
         entity.setSymbol(event.getSymbol());
         entity.setQuantity(event.getQuantity());
         entity.setPrice(event.getPrice());
@@ -73,9 +72,8 @@ public class TradeService {
         
         eventPublisher.publishEvent(new TradeCreatedEvent(
                 saved.getId(),
-                saved.getOrderId(),
-                saved.getSymbol(),
-                saved.getStrategyId(),
+                saved.getOrder().getId(),
+                saved.getSymbol(),                saved.getStrategyId(),
                 saved.getQuantity(),
                 saved.getPrice(),
                 saved.getSide(),

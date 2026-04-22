@@ -17,6 +17,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Map;
@@ -121,21 +122,29 @@ public class OrderManagementService {
 
         com.tradingbot.domain.risk.ApprovedOrder approved = approvedOpt.get();
 
-        // DB IDEMPOTENCY (FIX 3)
-        if (orderRepository.existsByClientOrderId(approved.getClientOrderId())) {
-            log.warn("[OMS] Duplicate order blocked: {}", approved.getClientOrderId());
-            return ExecutionResult.failure(null, "Duplicate order");
+        // DB IDEMPOTENCY (FIX 3) - DB-first approach
+        OrderEntity order;
+        try {
+            order = createOrderEntity(approved);
+            order = orderRepository.saveAndFlush(order);
+        } catch (DataIntegrityViolationException e) {
+            log.warn("[OMS] Duplicate order detected in DB: {}. Recovering existing.", approved.getClientOrderId());
+            return orderRepository.findByClientOrderId(approved.getClientOrderId())
+                    .map(existing -> ExecutionResult.builder()
+                            .orderId(existing.getId())
+                            .clientOrderId(existing.getClientOrderId())
+                            .exchangeOrderId(existing.getExchangeOrderId())
+                            .symbol(existing.getSymbol())
+                            .side(existing.getSide())
+                            .executedQty(existing.getQuantity())
+                            .success(true)
+                            .build())
+                    .orElseThrow(() -> new IllegalStateException("Order should exist but not found after collision", e));
         }
-
-        OrderEntity order = createOrderEntity(approved);
-
-        order = orderRepository.save(order);
-
         publishOrderEvent(order, "Approved by Risk Engine");
 
         return executeInternal(order, approved);
     }
-
     // =========================================================
     // EXECUTION
     // =========================================================

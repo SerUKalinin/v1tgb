@@ -17,14 +17,16 @@ public class User {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     
-    @Column(unique = true)
+    @Column(name = "chat_id", unique = true, nullable = false)
     private Long chatId;
     
+    @Column(name = "username")
     private String username;
     
     @Enumerated(EnumType.STRING)
+    @Column(name = "tier", nullable = false)
     private SubscriptionTier tier;
 
+    @Column(name = "active", nullable = false)
     private boolean active;
-
 }
