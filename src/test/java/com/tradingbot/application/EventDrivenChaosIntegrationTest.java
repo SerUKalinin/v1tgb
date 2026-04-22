@@ -57,12 +57,13 @@ public class EventDrivenChaosIntegrationTest {
                 .clientOrderId("C-" + orderId)
                 .symbol(symbol)
                 .side(OrderSide.BUY)
+                .type(com.tradingbot.common.enums.OrderType.MARKET)
                 .strategyId(strategyId)
                 .quantity(new BigDecimal("1.0"))
                 .price(new BigDecimal("50000"))
                 .status("SENT")
+                .createdAt(java.time.Instant.now())
                 .build());
-
         // 1. Публикуем событие исполнения ордера (BUY)
         OrderFilledEvent buyEvent = new OrderFilledEvent(
                 orderId,

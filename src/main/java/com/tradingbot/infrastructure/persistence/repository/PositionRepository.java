@@ -9,6 +9,7 @@ import java.util.Optional;
  * Репозиторий для работы с сущностью PositionEntity в базе данных.
  */
 @Repository
-public interface PositionRepository extends JpaRepository<PositionEntity, String> {
+public interface PositionRepository extends JpaRepository<PositionEntity, Long> {
     Optional<PositionEntity> findBySymbolAndStrategyId(String symbol, String strategyId);
+    Optional<PositionEntity> findBySymbol(String symbol);
 }

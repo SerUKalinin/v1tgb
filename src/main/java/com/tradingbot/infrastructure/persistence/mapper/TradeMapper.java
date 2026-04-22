@@ -1,6 +1,7 @@
 package com.tradingbot.infrastructure.persistence.mapper;
 
 import com.tradingbot.domain.model.Trade;
+import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.TradeEntity;
 import org.springframework.stereotype.Component;
 
@@ -14,7 +15,7 @@ public class TradeMapper {
 
         return TradeEntity.builder()
                 .id(domain.getId())
-                .orderId(domain.getOrderId())
+                .order(OrderEntity.builder().id(domain.getOrderId()).build())
                 .clientOrderId(domain.getClientOrderId())           // ✅ Теперь поле есть
                 .exchangeTradeId(domain.getExchangeTradeId())
                 .symbol(domain.getSymbol())
@@ -33,7 +34,7 @@ public class TradeMapper {
 
         return Trade.builder()
                 .id(entity.getId())
-                .orderId(entity.getOrderId())
+                .orderId(entity.getOrder() != null ? entity.getOrder().getId() : null)
                 .clientOrderId(entity.getClientOrderId())           // ✅ Теперь метод есть
                 .exchangeTradeId(entity.getExchangeTradeId())
                 .symbol(entity.getSymbol())
@@ -45,5 +46,4 @@ public class TradeMapper {
                 .feeAsset(entity.getCommissionAsset())
                 .executedAt(entity.getExecutedAt())
                 .build();
-    }
-}
+    }}

@@ -17,21 +17,9 @@ public class RiskStateSnapshotEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false)
-    private Instant timestamp;
+    @Column(name = "created_at", nullable = false)
+    private Instant createdAt;
 
-    @Column(nullable = false, precision = 20, scale = 8)
-    private BigDecimal balance;
-
-    @Column(nullable = false, precision = 20, scale = 8)
-    private BigDecimal equity;
-
-    @Column(nullable = false, precision = 20, scale = 8)
-    private BigDecimal dailyPnl;
-
-    @Column(nullable = false, precision = 20, scale = 8)
-    private BigDecimal maxEquity;
-
-    @Column(nullable = false, columnDefinition = "TEXT")
-    private String processedEventIds;
+    @Column(name = "snapshot_data", columnDefinition = "jsonb", nullable = false)
+    private String snapshotData;
 }

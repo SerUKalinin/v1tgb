@@ -48,7 +48,7 @@ public class PositionRebuildService {
                 .collect(Collectors.groupingBy(t -> t.getSymbol() + ":" + t.getStrategyId()));
 
         // 3. Очищаем текущий кэш позиций
-        positionRepository.deleteAll();
+        positionRepository.deleteAllInBatch();
 
         // 4. Пересчитываем каждую группу
         for (Map.Entry<String, List<Trade>> entry : tradesByGroup.entrySet()) {

@@ -17,67 +17,78 @@ import java.util.UUID;
 @Slf4j
 @RequiredArgsConstructor
 public class RiskEngine {
+
     private final RiskEventRepository eventRepository;
     private final RiskSnapshotRepository snapshotRepository;
     private final RiskStateReducer reducer;
     private final ObjectMapper objectMapper;
     private final RiskStateStore riskStateStore;
-    
+
     private static final String AGGREGATE_ID = "risk_core";
     private static final int SNAPSHOT_THRESHOLD = 500;
 
     @Transactional
     public void publish(RiskEvent event) {
+
         RiskState state = riskStateStore.getState();
-        UUID eventUuid = parseEventId(event.getEventId());
-        
+
+        // 🔴 HARD GATE: полный стоп системы
         if (state.isHalted() && !(event instanceof RiskEvent.TradingHalted)) {
-            log.warn("Risk Engine is HALTED. Ignoring event: {}", event.getEventId());
+            log.warn("Risk Engine HALTED. Event ignored: {}", event.getEventId());
             return;
         }
 
-        if (eventRepository.existsByEventId(eventUuid)) {
-            log.info("Event {} already processed. Skipping.", event.getEventId());
+        UUID eventId = parseEventId(event.getEventId());
+
+        // 🔒 идемпотентность
+        if (eventRepository.existsByEventId(eventId)) {
+            log.info("Duplicate event skipped: {}", event.getEventId());
             return;
         }
 
         try {
-            long nextVersion = state.getVersion() + 1;
-            long maxInDb = eventRepository.findMaxVersionByAggregateId(AGGREGATE_ID).orElse(0L);
-            if (nextVersion <= maxInDb) {
-                nextVersion = maxInDb + 1;
-            }
+            long nextVersion = resolveNextVersion(state);
 
+            // 1. persist event FIRST (event log is source of truth)
             RiskEventEntity entity = RiskEventEntity.builder()
-                    .eventId(eventUuid)
+                    .eventId(eventId)
                     .aggregateId(AGGREGATE_ID)
                     .version(nextVersion)
                     .eventType(event.getClass().getSimpleName())
                     .payload(objectMapper.writeValueAsString(event))
                     .build();
-            
-            eventRepository.save(entity);
-            
+
+            eventRepository.saveAndFlush(entity);
+
+            // 2. pure state transition
             RiskState newState = reducer.reduce(state, event)
                     .toBuilder()
                     .version(nextVersion)
                     .build();
+
             riskStateStore.updateInternal(newState);
-            if (nextVersion % SNAPSHOT_THRESHOLD == 0) {
+
+            // 3. snapshotting (optional optimization)
+            if (shouldSnapshot(nextVersion)) {
                 takeSnapshot(newState);
             }
+
         } catch (Exception e) {
-            log.error("Failed to process risk event {}", event.getEventId(), e);
-            throw new RuntimeException("Risk Engine processing failed", e);
+            log.error("RiskEngine failed for event {}", event.getEventId(), e);
+            throw new RuntimeException("RiskEngine failure", e);
         }
     }
 
-    private UUID parseEventId(String eventId) {
-        try {
-            return UUID.fromString(eventId);
-        } catch (IllegalArgumentException e) {
-            return UUID.nameUUIDFromBytes(eventId.getBytes());
-        }
+    private long resolveNextVersion(RiskState state) {
+        long stateVersion = state.getVersion();
+        long dbVersion = eventRepository.findMaxVersionByAggregateId(AGGREGATE_ID)
+                .orElse(0L);
+
+        return Math.max(stateVersion, dbVersion) + 1;
+    }
+
+    private boolean shouldSnapshot(long version) {
+        return version % SNAPSHOT_THRESHOLD == 0;
     }
 
     private void takeSnapshot(RiskState state) {
@@ -87,10 +98,21 @@ public class RiskEngine {
                     .lastVersion(state.getVersion())
                     .stateJson(objectMapper.writeValueAsString(state))
                     .build();
+
             snapshotRepository.save(snapshot);
-            log.info("Snapshot taken at version {}", state.getVersion());
+
+            log.info("Snapshot saved at version {}", state.getVersion());
+
         } catch (JsonProcessingException e) {
-            log.error("Failed to take snapshot", e);
+            log.error("Snapshot serialization failed", e);
+        }
+    }
+
+    private UUID parseEventId(String eventId) {
+        try {
+            return UUID.fromString(eventId);
+        } catch (Exception e) {
+            return UUID.nameUUIDFromBytes(eventId.getBytes());
         }
     }
 

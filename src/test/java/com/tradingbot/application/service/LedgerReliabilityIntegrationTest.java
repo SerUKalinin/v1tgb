@@ -63,7 +63,7 @@ public class LedgerReliabilityIntegrationTest {
         rebuildService.rebuildAllPositions();
 
         // 3. Then: Проверяем кэш позиций
-        Optional<PositionEntity> posOpt = positionRepository.findById("BTCUSDT");
+        Optional<PositionEntity> posOpt = positionRepository.findBySymbol("BTCUSDT");
         assertThat(posOpt).isPresent();
         PositionEntity pos = posOpt.get();
 
@@ -92,12 +92,13 @@ public class LedgerReliabilityIntegrationTest {
                 .clientOrderId(clientOrderId)
                 .symbol(symbol)
                 .side(side)
+                .type(com.tradingbot.common.enums.OrderType.MARKET)
                 .strategyId("default")
                 .quantity(new BigDecimal(qty))
                 .price(new BigDecimal(price))
                 .status("FILLED")
+                .createdAt(Instant.now())
                 .build());
 
         eventPublisher.publishEvent(new OrderFilledEvent(orderId, "EXT-" + tradeId, symbol, new BigDecimal(qty), new BigDecimal(price)));
-    }
-}
+    }}

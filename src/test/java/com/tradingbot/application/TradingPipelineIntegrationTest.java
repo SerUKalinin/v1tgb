@@ -122,7 +122,6 @@ class TradingPipelineIntegrationTest {
                     BigDecimal.ZERO, // fee
                     BigDecimal.ZERO  // realized pnl
             ));
-
             return result;
         });
 

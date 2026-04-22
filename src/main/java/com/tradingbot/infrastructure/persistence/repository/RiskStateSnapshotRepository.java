@@ -9,6 +9,5 @@ import java.util.Optional;
 
 @Repository
 public interface RiskStateSnapshotRepository extends JpaRepository<RiskStateSnapshotEntity, Long> {
-    @Query("SELECT s FROM RiskStateSnapshotEntity s ORDER BY s.timestamp DESC LIMIT 1")
-    Optional<RiskStateSnapshotEntity> findLatest();
-}
+    @Query("SELECT s FROM RiskStateSnapshotEntity s ORDER BY s.createdAt DESC LIMIT 1")
+    Optional<RiskStateSnapshotEntity> findLatest();}
