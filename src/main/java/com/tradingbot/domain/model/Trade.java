@@ -6,6 +6,7 @@ import lombok.Value;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * Чистая доменная модель сделки (Trade).
@@ -16,9 +17,8 @@ import java.time.Instant;
 public class Trade {
     Long id;
     String exchangeTradeId;
-    String orderId;
-    String clientOrderId;
-    String symbol;
+    UUID orderId;
+    String clientOrderId;    String symbol;
     String strategyId;
     OrderSide side;
     BigDecimal price;

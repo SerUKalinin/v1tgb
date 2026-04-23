@@ -23,12 +23,16 @@ public class RiskStateReducer {
                 case RiskEvent.TradeExecuted e -> handleTradeExecuted(currentState, e);
                 case RiskEvent.PriceUpdated e -> handlePriceUpdated(currentState, e);
                 case RiskEvent.TradingHalted e -> handleTradingHalted(currentState, e);
+                case RiskEvent.CapitalReserved e -> handleCapitalReserved(currentState, e);
+                case RiskEvent.CapitalReleased e -> handleCapitalReleased(currentState, e);
                 default -> currentState;
             };
 
+            // 2. Financial Invariant Guard
+            newState.validateInvariants();
+
             // Auto-Halt Logic
-            if (!newState.isHalted()) {
-                // 1. Daily Loss Limit > 5%
+            if (!newState.isHalted()) {                // 1. Daily Loss Limit > 5%
                 BigDecimal dailyLossLimit = newState.getTotalEquity().multiply(new BigDecimal("0.05"));
                 if (newState.getDailyPnl().compareTo(dailyLossLimit.negate()) < 0) {
                     log.error("[RiskReducer] AUTO-HALT: Daily loss limit exceeded (5%)");
@@ -96,6 +100,26 @@ public class RiskStateReducer {
         // В данной реализации обновляем только метку времени, 
         // расчет нереализованного PnL может быть добавлен здесь
         return state.toBuilder()
+                .lastUpdateTimestamp(event.timestamp())
+                .build();
+    }
+
+    private RiskState handleCapitalReserved(RiskState state, RiskEvent.CapitalReserved event) {
+        log.info("[RiskReducer] Reserving {} for order {}", event.amount(), event.orderId());
+        
+        return state.toBuilder()
+                .balance(state.getBalance().subtract(event.amount()))
+                .reserved(state.getReserved().add(event.amount()))
+                .lastUpdateTimestamp(event.timestamp())
+                .build();
+    }
+
+    private RiskState handleCapitalReleased(RiskState state, RiskEvent.CapitalReleased event) {
+        log.info("[RiskReducer] Releasing {} for order {} (Reason: {})", event.amount(), event.orderId(), event.reason());
+        
+        return state.toBuilder()
+                .balance(state.getBalance().add(event.amount()))
+                .reserved(state.getReserved().subtract(event.amount()))
                 .lastUpdateTimestamp(event.timestamp())
                 .build();
     }

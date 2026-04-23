@@ -5,6 +5,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Lock;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -15,6 +17,7 @@ public interface RiskEventRepository extends JpaRepository<RiskEventEntity, Long
     
     List<RiskEventEntity> findByAggregateIdAndVersionGreaterThanOrderByVersionAsc(String aggregateId, Long version);
     
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT MAX(e.version) FROM RiskEventEntity e WHERE e.aggregateId = :aggregateId")
     Optional<Long> findMaxVersionByAggregateId(String aggregateId);
 }

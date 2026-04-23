@@ -3,11 +3,12 @@ package com.tradingbot.domain.event;
 import com.tradingbot.common.enums.OrderSide;
 import lombok.Getter;
 import java.math.BigDecimal;
+import java.util.UUID;
 
 @Getter
 public class TradeCreatedEvent extends DomainEvent {
     private final Long tradeId;
-    private final String orderId;
+    private final UUID orderId;
     private final String symbol;
     private final String strategyId;
     private final BigDecimal quantity;
@@ -16,7 +17,7 @@ public class TradeCreatedEvent extends DomainEvent {
     private final BigDecimal stopLoss;
     private final BigDecimal takeProfit;
 
-    public TradeCreatedEvent(Long tradeId, String orderId, String symbol, String strategyId, 
+    public TradeCreatedEvent(Long tradeId, UUID orderId, String symbol, String strategyId, 
                              BigDecimal quantity, BigDecimal price, OrderSide side,
                              BigDecimal stopLoss, BigDecimal takeProfit) {
         super();

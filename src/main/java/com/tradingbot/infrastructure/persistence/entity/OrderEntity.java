@@ -14,6 +14,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.UUID;
 
 @Entity
 @Table(name = "orders",
@@ -29,7 +30,7 @@ import java.time.Instant;
 @Builder
 public class OrderEntity {
     @Id
-    private String id;
+    private UUID id;
 
     @Column(name = "client_order_id", nullable = false, unique = true, updatable = false)
     private String clientOrderId;
@@ -70,4 +71,7 @@ public class OrderEntity {
 
     @Column(name = "updated_at")
     private Instant updatedAt;
+
+    @Version
+    private Long version;
 }

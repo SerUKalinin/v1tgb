@@ -5,15 +5,15 @@ import lombok.Builder;
 import lombok.Value;
 
 import java.math.BigDecimal;
+import java.util.UUID;
 
 import com.tradingbot.common.enums.OrderType;
 
 @Value
 @Builder(toBuilder = true)
 public class OrderRequest {
-    String orderId;
-    String clientOrderId;
-    String symbol;
+    UUID orderId;
+    String clientOrderId;    String symbol;
     BigDecimal quantity;
     BigDecimal amount; // Alias for quantity to support legacy code
     OrderSide side;

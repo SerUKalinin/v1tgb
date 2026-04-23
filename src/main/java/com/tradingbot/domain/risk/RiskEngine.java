@@ -9,8 +9,10 @@ import com.tradingbot.infrastructure.persistence.repository.RiskSnapshotReposito
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.UUID;
 
 @Service
@@ -27,12 +29,16 @@ public class RiskEngine {
     private static final String AGGREGATE_ID = "risk_core";
     private static final int SNAPSHOT_THRESHOLD = 500;
 
+    // =========================
+    // MAIN EVENT PIPELINE
+    // =========================
+
     @Transactional
     public void publish(RiskEvent event) {
 
         RiskState state = riskStateStore.getState();
 
-        // 🔴 HARD GATE: полный стоп системы
+        // HARD HALT GATE
         if (state.isHalted() && !(event instanceof RiskEvent.TradingHalted)) {
             log.warn("Risk Engine HALTED. Event ignored: {}", event.getEventId());
             return;
@@ -40,16 +46,15 @@ public class RiskEngine {
 
         UUID eventId = parseEventId(event.getEventId());
 
-        // 🔒 идемпотентность
+        // IDEMPOTENCY
         if (eventRepository.existsByEventId(eventId)) {
             log.info("Duplicate event skipped: {}", event.getEventId());
             return;
         }
 
         try {
-            long nextVersion = resolveNextVersion(state);
+            long nextVersion = resolveNextVersion();
 
-            // 1. persist event FIRST (event log is source of truth)
             RiskEventEntity entity = RiskEventEntity.builder()
                     .eventId(eventId)
                     .aggregateId(AGGREGATE_ID)
@@ -60,7 +65,6 @@ public class RiskEngine {
 
             eventRepository.saveAndFlush(entity);
 
-            // 2. pure state transition
             RiskState newState = reducer.reduce(state, event)
                     .toBuilder()
                     .version(nextVersion)
@@ -68,30 +72,79 @@ public class RiskEngine {
 
             riskStateStore.updateInternal(newState);
 
-            // 3. snapshotting (optional optimization)
             if (shouldSnapshot(nextVersion)) {
                 takeSnapshot(newState);
             }
 
         } catch (Exception e) {
             log.error("RiskEngine failed for event {}", event.getEventId(), e);
-            throw new RuntimeException("RiskEngine failure", e);
+            throw new RuntimeException(e);
         }
     }
 
-    private long resolveNextVersion(RiskState state) {
-        long stateVersion = state.getVersion();
-        long dbVersion = eventRepository.findMaxVersionByAggregateId(AGGREGATE_ID)
+    // =========================
+    // CAPITAL RESERVATION FLOW
+    // =========================
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void reserve(UUID orderId, BigDecimal amount) {
+
+        RiskState state = riskStateStore.getState();
+
+        if (state.isHalted()) {
+            throw new IllegalStateException("Risk Engine is HALTED");
+        }
+
+        RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(
+                UUID.randomUUID().toString(),
+                orderId,
+                amount
+        );
+
+        publish(event);
+
+        log.info("[RISK] Capital reserved for order {}: {}", orderId, amount);
+    }
+
+    @Transactional
+    public void release(UUID orderId, BigDecimal amount, String reason) {
+
+        RiskEvent.CapitalReleased event = new RiskEvent.CapitalReleased(
+                UUID.randomUUID().toString(),
+                orderId,
+                amount,
+                reason
+        );
+
+        publish(event);
+
+        log.info("[RISK] Capital released for order {}: {} reason={}",
+                orderId, amount, reason);
+    }
+
+    // =========================
+    // VERSIONING (FIXED POINT)
+    // =========================
+
+    private long resolveNextVersion() {
+
+        long dbVersion = eventRepository
+                .findMaxVersionByAggregateId(AGGREGATE_ID)
                 .orElse(0L);
 
-        return Math.max(stateVersion, dbVersion) + 1;
+        return dbVersion + 1;
     }
+
+    // =========================
+    // SNAPSHOT LOGIC
+    // =========================
 
     private boolean shouldSnapshot(long version) {
         return version % SNAPSHOT_THRESHOLD == 0;
     }
 
     private void takeSnapshot(RiskState state) {
+
         try {
             RiskSnapshotEntity snapshot = RiskSnapshotEntity.builder()
                     .aggregateId(AGGREGATE_ID)
@@ -107,6 +160,10 @@ public class RiskEngine {
             log.error("Snapshot serialization failed", e);
         }
     }
+
+    // =========================
+    // UTIL
+    // =========================
 
     private UUID parseEventId(String eventId) {
         try {
