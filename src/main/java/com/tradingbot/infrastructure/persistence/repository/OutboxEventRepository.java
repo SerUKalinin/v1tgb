@@ -28,14 +28,13 @@ public interface OutboxEventRepository
     /**
      * Detect stuck processing events (crash recovery)
      */
-    @Query(value = """
-        SELECT *
-        FROM outbox_events
-        WHERE status = 'PROCESSING'
-          AND updated_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds'
-        """, nativeQuery = true)
-    List<OutboxEventEntity> findStaleProcessingEvents();
-    /**
+    @Query("""
+        SELECT e
+        FROM OutboxEventEntity e
+        WHERE e.status = com.tradingbot.infrastructure.outbox.OutboxStatus.PROCESSING
+          AND e.updatedAt < :threshold
+        """)
+    List<OutboxEventEntity> findStaleProcessingEvents(java.time.Instant threshold);    /**
      * Retry control handled in service layer, not SQL
      */
     List<OutboxEventEntity> findByStatusIn(List<OutboxStatus> statuses);

@@ -91,11 +91,10 @@ public class ReconciliationService {
     @Scheduled(fixedDelay = 30000)
     @Transactional
     public void reconcileOutbox() {
-        // findStaleProcessingEvents использует интервал 30 секунд в SQL
-        List<OutboxEventEntity> stuckEvents = outboxRepository.findStaleProcessingEvents();
+        Instant threshold = Instant.now().minusSeconds(30);
+        List<OutboxEventEntity> stuckEvents = outboxRepository.findStaleProcessingEvents(threshold);
         
-        if (!stuckEvents.isEmpty()) {
-            log.warn("[RECON] Found {} stuck outbox events in PROCESSING. Resetting to FAILED for retry.", stuckEvents.size());
+        if (!stuckEvents.isEmpty()) {            log.warn("[RECON] Found {} stuck outbox events in PROCESSING. Resetting to FAILED for retry.", stuckEvents.size());
             stuckEvents.forEach(event -> {
                 event.setStatus(OutboxStatus.FAILED);
                 event.setUpdatedAt(Instant.now());
