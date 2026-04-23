@@ -4,6 +4,8 @@ import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+
 /**
  * Реализация сервиса проверки состояния ордера на бирже.
  * На данном этапе является заглушкой (MOCK).
@@ -21,13 +23,12 @@ public class ExchangeOrderQueryServiceImpl implements ExchangeOrderQueryService 
     @Override
     public boolean isOrderAlreadyExecuted(String clientOrderId) {
         log.debug("[EXCHANGE-QUERY] Checking status for clientOrderId: {} (MOCK)", clientOrderId);
-        
-        // TODO: Интеграция с BinanceClient:
-        // try {
-        //     var order = binanceClient.getOrder(clientOrderId);
-        //     return order != null && (order.isFilled() || order.isPartiallyFilled() || order.isNew());
-        // } catch (Exception e) { return false; }
-        
         return false;
+    }
+
+    @Override
+    public BigDecimal getAvailableBalance(String asset) {
+        log.debug("[EXCHANGE-QUERY] Getting available balance for asset: {} (MOCK)", asset);
+        return new BigDecimal("10000"); // Mock balance
     }
 }

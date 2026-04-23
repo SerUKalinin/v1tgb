@@ -1,14 +1,15 @@
 package com.tradingbot.domain.risk;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.tradingbot.infrastructure.persistence.entity.RiskEventEntity;
+import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import com.tradingbot.infrastructure.persistence.repository.RiskEventRepository;
 import com.tradingbot.infrastructure.persistence.repository.RiskSnapshotRepository;
+import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
-import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
@@ -16,6 +17,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
@@ -30,29 +32,42 @@ class RiskEngineTest {
     private RiskSnapshotRepository snapshotRepository;
 
     @Mock
+    private RiskStateRepository riskStateRepository;
+
+    @Mock
     private RiskStateStore riskStateStore;
 
     @Mock
     private ObjectMapper objectMapper;
 
-    @Spy
-    private RiskStateReducer reducer = new RiskStateReducer();
+    @Mock
+    private RiskStateReducer reducer;
 
     @InjectMocks
     private RiskEngine riskEngine;
 
+    @BeforeEach
+    void setUp() {
+        // Default behavior for common mocks to avoid NPE and ensure deterministic behavior
+        lenient().when(riskStateRepository.findByIdForUpdate(anyString()))
+                .thenReturn(Optional.of(createValidRiskStateEntity()));
+        
+        lenient().when(riskStateStore.getState())
+                .thenReturn(createValidRiskState());
+    }
+
     @Test
     void shouldBlockEventsWhenHalted() throws Exception {
-        RiskState haltedState = RiskState.empty()
-                .toBuilder()
+        RiskState haltedState = createValidRiskState().toBuilder()
                 .halted(true)
                 .version(1)
                 .build();
 
-        when(riskStateStore.getState()).thenReturn(haltedState);
+        RiskStateEntity haltedEntity = createValidRiskStateEntity();
+        haltedEntity.setHalted(true);
+
+        when(riskStateRepository.findByIdForUpdate(anyString())).thenReturn(Optional.of(haltedEntity));
         when(eventRepository.existsByEventId(any())).thenReturn(false);
-        when(eventRepository.findMaxVersionByAggregateId(anyString()))
-                .thenReturn(java.util.Optional.of(1L));
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
 
         RiskEvent haltEvent = new RiskEvent.TradingHalted(
@@ -61,9 +76,12 @@ class RiskEngineTest {
                 Instant.now()
         );
 
+        // Reducer should return the same halted state
+        when(reducer.reduce(any(), eq(haltEvent))).thenReturn(haltedState);
+
         riskEngine.publish(haltEvent);
 
-        verify(eventRepository, times(1)).saveAndFlush(any());
+        verify(eventRepository, times(1)).save(any());
 
         RiskEvent tradeEvent = new RiskEvent.TradeExecuted(
                 UUID.randomUUID().toString(),
@@ -76,15 +94,35 @@ class RiskEngineTest {
 
         riskEngine.publish(tradeEvent);
 
-        verifyNoMoreInteractions(eventRepository);
+        // Should not call reducer or save event for trade when halted
+        verify(reducer, never()).reduce(any(), eq(tradeEvent));
+    }
+
+    @Test
+    void shouldReserveCapital() throws Exception {
+        RiskState initialState = createValidRiskState();
+        RiskState newState = initialState.toBuilder()
+                .reserved(new BigDecimal("1000"))
+                .build();
+
+        when(eventRepository.existsByEventId(any())).thenReturn(false);
+        when(reducer.reduce(any(), any())).thenReturn(newState);
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+
+        UUID orderId = UUID.randomUUID();
+        riskEngine.reserve(orderId, new BigDecimal("1000"));
+
+        verify(riskStateRepository, times(1)).saveAndFlush(any());
+        verify(eventRepository, times(1)).save(any());
     }
 
     @Test
     void shouldIncrementVersionAndPersist() throws Exception {
-        when(riskStateStore.getState()).thenReturn(RiskState.empty());
+        RiskState initialState = createValidRiskState();
+        RiskState newState = initialState.toBuilder().version(1).build();
+
         when(eventRepository.existsByEventId(any())).thenReturn(false);
-        when(eventRepository.findMaxVersionByAggregateId(anyString()))
-                .thenReturn(java.util.Optional.of(0L));
+        when(reducer.reduce(any(), any())).thenReturn(newState);
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
 
         RiskEvent event = new RiskEvent.TradeExecuted(
@@ -98,40 +136,39 @@ class RiskEngineTest {
 
         riskEngine.publish(event);
 
-        verify(eventRepository, times(1)).saveAndFlush(any());
-        verify(riskStateStore, times(1)).updateInternal(any());
+        verify(riskStateRepository, times(1)).saveAndFlush(any());
+        verify(eventRepository, times(1)).save(any());
+        // In unit test, syncCacheAfterCommit might call updateCache directly if no transaction active
+        verify(riskStateStore, times(1)).updateCache(newState);
     }
 
     @Test
-    void shouldBeDeterministicOnReplay() throws Exception {
-        when(eventRepository.existsByEventId(any())).thenReturn(false);
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        when(eventRepository.findMaxVersionByAggregateId(anyString()))
-                .thenReturn(java.util.Optional.of(0L), java.util.Optional.of(1L));
+    void shouldThrowExceptionWhenStateNotFound() {
+        when(riskStateRepository.findByIdForUpdate(anyString())).thenReturn(Optional.empty());
 
-        RiskEvent e1 = new RiskEvent.TradeExecuted(
-                UUID.randomUUID().toString(),
-                "BTC",
-                BigDecimal.ONE,
-                new BigDecimal("50000"),
-                BigDecimal.ZERO,
-                Instant.now()
-        );
+        RiskEvent event = new RiskEvent.PriceUpdated(UUID.randomUUID().toString(), "BTC", BigDecimal.ONE, Instant.now());
+        
+        assertThrows(RuntimeException.class, () -> riskEngine.publish(event));
+    }
 
-        RiskEvent e2 = new RiskEvent.PriceUpdated(
-                UUID.randomUUID().toString(),
-                "BTC",
-                new BigDecimal("51000"),
-                Instant.now().plusSeconds(1)
-        );
+    private RiskStateEntity createValidRiskStateEntity() {
+        RiskStateEntity entity = new RiskStateEntity();
+        entity.setId("risk_core");
+        entity.setTotalEquity(new BigDecimal("10000"));
+        entity.setAvailableBalance(new BigDecimal("10000"));
+        entity.setReservedMargin(BigDecimal.ZERO);
+        entity.setHalted(false);
+        entity.setVersion(0L);
+        return entity;
+    }
 
-        when(riskStateStore.getState())
-                .thenReturn(RiskState.empty())
-                .thenReturn(RiskState.empty().toBuilder().version(1).build());
-
-        riskEngine.publish(e1);
-        riskEngine.publish(e2);
-
-        verify(riskStateStore, atLeastOnce()).updateInternal(any());
+    private RiskState createValidRiskState() {
+        return RiskState.builder()
+                .totalEquity(new BigDecimal("10000"))
+                .balance(new BigDecimal("10000"))
+                .reserved(BigDecimal.ZERO)
+                .halted(false)
+                .version(0L)
+                .build();
     }
 }

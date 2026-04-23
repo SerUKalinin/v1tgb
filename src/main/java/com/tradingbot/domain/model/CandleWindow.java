@@ -1,6 +1,8 @@
 package com.tradingbot.domain.model;
 
-import lombok.Value;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -8,18 +10,20 @@ import java.util.List;
 /**
  * Окно свечей — контейнер для последовательности свечей.
  */
-@Value
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
 public class CandleWindow {
 
     /**
      * Торговый символ.
      */
-    String symbol;
+    private String symbol;
 
     /**
      * Список свечей в хронологическом порядке.
      */
-    List<Candle> candles;
+    private List<Candle> candles;
 
     /**
      * Возвращает список цен закрытия всех свечей.
@@ -39,7 +43,7 @@ public class CandleWindow {
      * @throws IllegalStateException если окно пустое
      */
     public Candle getLast() {
-        if (candles.isEmpty()) {
+        if (candles == null || candles.isEmpty()) {
             throw new IllegalStateException("Candle window is empty for symbol: " + symbol);
         }
         return candles.get(candles.size() - 1);
@@ -52,7 +56,7 @@ public class CandleWindow {
      * @return true, если размер окна не меньше указанного
      */
     public boolean isReady(int minRequiredSize) {
-        return candles.size() >= minRequiredSize;
+        return candles != null && candles.size() >= minRequiredSize;
     }
 
     /**
@@ -61,7 +65,7 @@ public class CandleWindow {
      * @return размер окна
      */
     public int size() {
-        return candles.size();
+        return candles != null ? candles.size() : 0;
     }
 
     /**
@@ -69,7 +73,7 @@ public class CandleWindow {
      *
      * @return символ
      */
-    public String symbol() {
+    public String getSymbol() {
         return symbol;
     }
 
@@ -78,7 +82,7 @@ public class CandleWindow {
      *
      * @return список свечей
      */
-    public List<Candle> candles() {
+    public List<Candle> getCandles() {
         return candles;
     }
 
@@ -88,6 +92,6 @@ public class CandleWindow {
      * @return true, если окно содержит хотя бы одну свечу
      */
     public boolean isReady() {
-        return !candles.isEmpty();
+        return candles != null && !candles.isEmpty();
     }
 }

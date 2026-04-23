@@ -22,12 +22,11 @@ import java.time.Instant;
 public class TradeEntity {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private java.util.UUID id;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)    @JoinColumn(name = "order_id", nullable = false)
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "order_id", nullable = false)
     private OrderEntity order;
-
     @Column(name = "client_order_id", nullable = false)
     private String clientOrderId;
 
@@ -38,10 +37,10 @@ public class TradeEntity {
     @Column(nullable = false)
     private OrderSide side;
 
-    @Column(nullable = false)
+    @Column(nullable = false, precision = 18, scale = 8)
     private BigDecimal quantity;
 
-    @Column(nullable = false)
+    @Column(nullable = false, precision = 18, scale = 8)
     private BigDecimal price;
 
     @Column(name = "exchange_trade_id", unique = true)
@@ -50,15 +49,14 @@ public class TradeEntity {
     @Column(name = "strategy_id")
     private String strategyId;
 
-    @Column(name = "commission")
+    @Column(name = "commission", precision = 18, scale = 8)
     private BigDecimal commission;
 
     @Column(name = "commission_asset")
     private String commissionAsset;
 
-    @Column(name = "realized_pnl")
+    @Column(name = "realized_pnl", precision = 18, scale = 8)
     private BigDecimal realizedPnl;
-
     @Column(name = "sequence_id", insertable = false, updatable = false)
     private Long sequenceId;
 

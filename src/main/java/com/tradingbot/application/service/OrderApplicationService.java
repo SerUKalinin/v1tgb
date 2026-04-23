@@ -30,30 +30,26 @@ public class OrderApplicationService {
     private final RiskManager riskManager;
     private final ObjectMapper objectMapper;
 
-    @Transactional
-    public void placeOrder(SignalEvent signal) {
-
-        // 1. Risk approval (The ONLY way to get a valid Order ID)
+    @Transactional // Единая граница транзакции
+    public void onSignalReceived(SignalEvent signal) {
+        // 1. Валидация (Read-only, не меняет состояние)
         ApprovedOrder approved = riskManager.approveSignal(signal)
-                .orElseThrow(() ->
-                        new IllegalStateException("Signal rejected by risk")
-                );
+                .orElseThrow(() -> new IllegalStateException("Signal rejected by risk"));
 
-        // 2. Mandatory Transactional Gate: Reserve capital
+        // 2. Резервирование капитала (Первая запись в БД)
         riskEngine.reserve(
                 approved.getOrderId(),
                 approved.getQuantity().multiply(approved.getPrice())
         );
 
-        // 3. Create Order (Atomic Intent)
+        // 3. Создание ордера (Вторая запись в БД)
         OrderEntity order = createFromApproved(approved);
-
         orderRepository.save(order);
 
-        // 4. Outbox (same transaction)
-        saveOutbox(order);
+        // 4. Запись в Outbox (Третья запись в БД)
+        saveOutbox(order.getId(), "ORDER", "ORDER_CREATED", order);
 
-        log.info("[ORDER-APP] Atomic intent committed: {}", order.getId());
+        log.info("[FINANCIAL-CORE] Atomic transaction committed for order: {}", order.getId());
     }
 
     private OrderEntity createFromApproved(ApprovedOrder approved) {
@@ -71,29 +67,27 @@ public class OrderApplicationService {
                 .build();
     }
 
-    private void saveOutbox(OrderEntity order) {        try {
-            OutboxPayload payload = new OutboxPayload(
-                    order.getId(),
-                    order.getClientOrderId(),
-                    order.getSymbol(),
-                    order.getStatus(),
-                    order.getCreatedAt()
-            );
-
+    private void saveOutbox(UUID aggregateId, String aggregateType, String eventType, Object payload) {
+        try {
             OutboxEventEntity event = OutboxEventEntity.builder()
                     .id(UUID.randomUUID())
-                    .aggregateId(order.getId())
-                    .aggregateType("ORDER")
-                    .eventType("ORDER_CREATED")
+                    .aggregateId(aggregateId != null ? aggregateId : UUID.randomUUID())
+                    .aggregateType(aggregateType)
+                    .eventType(eventType)
                     .payload(objectMapper.writeValueAsString(payload))
+                    .status(com.tradingbot.infrastructure.outbox.OutboxStatus.NEW)
                     .createdAt(Instant.now())
                     .build();
 
             outboxRepository.save(event);
-
         } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Outbox serialization failed", e);
+            throw new RuntimeException("Critical: Outbox serialization failed for " + aggregateType, e);
         }
+    }
+
+    @Deprecated
+    private void saveOutbox(String strategyId, String aggregateType, String eventType, Object payload) {
+        saveOutbox((UUID) null, aggregateType, eventType, payload);
     }
 
     record OutboxPayload(

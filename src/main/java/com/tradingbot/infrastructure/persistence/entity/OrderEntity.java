@@ -49,17 +49,17 @@ public class OrderEntity {
     @Column(nullable = false)
     private OrderType type;
 
-    @Column(nullable = false)
+    @Column(nullable = false, precision = 18, scale = 8)
     private BigDecimal quantity;
 
+    @Column(precision = 18, scale = 8)
     private BigDecimal price;
 
-    @Column(name = "stop_loss")
+    @Column(name = "stop_loss", precision = 18, scale = 8)
     private BigDecimal stopLoss;
 
-    @Column(name = "take_profit")
+    @Column(name = "take_profit", precision = 18, scale = 8)
     private BigDecimal takeProfit;
-
     @Column(name = "strategy_id", nullable = false)
     private String strategyId;
 

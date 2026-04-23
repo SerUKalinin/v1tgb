@@ -13,6 +13,7 @@ import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
 import java.lang.reflect.Method;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -57,11 +58,10 @@ class ArchitectureInvarianceTest {
         // Данный тест скорее документальный, подтверждающий инкапсуляцию.
         
         ApprovedOrder order = ApprovedOrder.builder()
-                .orderId("test")
+                .orderId(UUID.randomUUID())
                 .symbol("BTCUSDT")
                 .quantity(BigDecimal.ONE)
-                .build();
-        
+                .build();        
         assertNotNull(order, "ApprovedOrder should be creatable within risk package");
     }
 }

@@ -4,15 +4,20 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.infrastructure.persistence.entity.RiskEventEntity;
 import com.tradingbot.infrastructure.persistence.entity.RiskSnapshotEntity;
+import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import com.tradingbot.infrastructure.persistence.repository.RiskEventRepository;
 import com.tradingbot.infrastructure.persistence.repository.RiskSnapshotRepository;
+import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.UUID;
 
 @Service
@@ -22,6 +27,7 @@ public class RiskEngine {
 
     private final RiskEventRepository eventRepository;
     private final RiskSnapshotRepository snapshotRepository;
+    private final RiskStateRepository riskStateRepository;
     private final RiskStateReducer reducer;
     private final ObjectMapper objectMapper;
     private final RiskStateStore riskStateStore;
@@ -35,10 +41,14 @@ public class RiskEngine {
 
     @Transactional
     public void publish(RiskEvent event) {
+        // 1. LOCK AUTHORITY: Блокируем строку агрегата в БД (Pessimistic Lock)
+        RiskStateEntity entity = riskStateRepository.findByIdForUpdate(AGGREGATE_ID)
+                .orElseThrow(() -> new IllegalStateException("Risk state not initialized in DB"));
 
-        RiskState state = riskStateStore.getState();
+        // 2. SYNC: Приводим доменное состояние к состоянию из БД
+        RiskState state = mapToDomain(entity);
 
-        // HARD HALT GATE
+        // HARD HALT GATE: Fail-closed защита
         if (state.isHalted() && !(event instanceof RiskEvent.TradingHalted)) {
             log.warn("Risk Engine HALTED. Event ignored: {}", event.getEventId());
             return;
@@ -53,26 +63,32 @@ public class RiskEngine {
         }
 
         try {
-            long nextVersion = resolveNextVersion();
+            // 3. REDUCE: Вычисляем новое состояние через чистую функцию
+            RiskState newState = reducer.reduce(state, event);
 
-            RiskEventEntity entity = RiskEventEntity.builder()
+            // 4. PERSIST STATE: Обновляем Lock Authority в БД
+            entity.setTotalEquity(newState.getTotalEquity());
+            entity.setAvailableBalance(newState.getAvailableBalance());
+            entity.setReservedMargin(newState.getReservedMargin());
+            entity.setHalted(newState.isHalted());
+            entity.setUpdatedAt(Instant.now());
+            riskStateRepository.saveAndFlush(entity);
+
+            // 5. PERSIST EVENT: Сохраняем событие для истории и аудита
+            RiskEventEntity eventEntity = RiskEventEntity.builder()
                     .eventId(eventId)
                     .aggregateId(AGGREGATE_ID)
-                    .version(nextVersion)
+                    .version(entity.getVersion())
                     .eventType(event.getClass().getSimpleName())
                     .payload(objectMapper.writeValueAsString(event))
                     .build();
+            eventRepository.save(eventEntity);
 
-            eventRepository.saveAndFlush(entity);
+            // 6. SYNC CACHE: Обновляем read-only кэш строго ПОСЛЕ коммита транзакции
+            syncCacheAfterCommit(newState);
 
-            RiskState newState = reducer.reduce(state, event)
-                    .toBuilder()
-                    .version(nextVersion)
-                    .build();
-
-            riskStateStore.updateInternal(newState);
-
-            if (shouldSnapshot(nextVersion)) {
+            // Snapshot logic
+            if (shouldSnapshot(entity.getVersion())) {
                 takeSnapshot(newState);
             }
 
@@ -82,14 +98,26 @@ public class RiskEngine {
         }
     }
 
+    private void syncCacheAfterCommit(RiskState newState) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    riskStateStore.updateCache(newState);
+                }
+            });
+        } else {
+            riskStateStore.updateCache(newState);
+        }
+    }
+
     // =========================
     // CAPITAL RESERVATION FLOW
     // =========================
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void reserve(UUID orderId, BigDecimal amount) {
-
-        RiskState state = riskStateStore.getState();
+        RiskState state = getState();
 
         if (state.isHalted()) {
             throw new IllegalStateException("Risk Engine is HALTED");
@@ -102,13 +130,11 @@ public class RiskEngine {
         );
 
         publish(event);
-
         log.info("[RISK] Capital reserved for order {}: {}", orderId, amount);
     }
 
     @Transactional
     public void release(UUID orderId, BigDecimal amount, String reason) {
-
         RiskEvent.CapitalReleased event = new RiskEvent.CapitalReleased(
                 UUID.randomUUID().toString(),
                 orderId,
@@ -117,53 +143,68 @@ public class RiskEngine {
         );
 
         publish(event);
-
-        log.info("[RISK] Capital released for order {}: {} reason={}",
-                orderId, amount, reason);
+        log.info("[RISK] Capital released for order {}: {} reason={}", orderId, amount, reason);
     }
 
     // =========================
-    // VERSIONING (FIXED POINT)
+    // RECONCILIATION & EMERGENCY
     // =========================
 
-    private long resolveNextVersion() {
+    @Transactional
+    public void syncBalance(BigDecimal actualBalance) {
+        RiskStateEntity entity = riskStateRepository.findByIdForUpdate(AGGREGATE_ID)
+                .orElseThrow(() -> new IllegalStateException("Risk state not initialized"));
 
-        long dbVersion = eventRepository
-                .findMaxVersionByAggregateId(AGGREGATE_ID)
-                .orElse(0L);
+        log.info("[RISK] Syncing balance: {} -> {}", entity.getAvailableBalance(), actualBalance);
+        entity.setAvailableBalance(actualBalance);
+        entity.setUpdatedAt(Instant.now());
+        riskStateRepository.saveAndFlush(entity);
+        syncCacheAfterCommit(mapToDomain(entity));
+    }
 
-        return dbVersion + 1;
+    @Transactional
+    public void emergencyStop(String reason) {
+        RiskStateEntity entity = riskStateRepository.findByIdForUpdate(AGGREGATE_ID)
+                .orElseThrow(() -> new IllegalStateException("Risk state not initialized"));
+
+        log.warn("[RISK] EMERGENCY STOP TRIGGERED: {}", reason);
+        entity.setHalted(true);
+        entity.setUpdatedAt(Instant.now());
+        riskStateRepository.saveAndFlush(entity);
+        syncCacheAfterCommit(mapToDomain(entity));
     }
 
     // =========================
-    // SNAPSHOT LOGIC
+    // UTIL & SNAPSHOTS
     // =========================
+
+    public RiskState mapToDomain(RiskStateEntity entity) {
+        return RiskState.builder()
+                .totalEquity(entity.getTotalEquity())
+                .balance(entity.getAvailableBalance())
+                .reserved(entity.getReservedMargin())
+                .halted(entity.isHalted())
+                .version(entity.getVersion())
+                .build();
+    }
 
     private boolean shouldSnapshot(long version) {
-        return version % SNAPSHOT_THRESHOLD == 0;
+        return version > 0 && version % SNAPSHOT_THRESHOLD == 0;
     }
 
     private void takeSnapshot(RiskState state) {
-
         try {
             RiskSnapshotEntity snapshot = RiskSnapshotEntity.builder()
                     .aggregateId(AGGREGATE_ID)
                     .lastVersion(state.getVersion())
                     .stateJson(objectMapper.writeValueAsString(state))
                     .build();
-
             snapshotRepository.save(snapshot);
-
             log.info("Snapshot saved at version {}", state.getVersion());
-
         } catch (JsonProcessingException e) {
             log.error("Snapshot serialization failed", e);
         }
     }
-
-    // =========================
-    // UTIL
-    // =========================
 
     private UUID parseEventId(String eventId) {
         try {
@@ -178,6 +219,6 @@ public class RiskEngine {
     }
 
     public void initialize(RiskState initialState) {
-        riskStateStore.updateInternal(initialState);
+        riskStateStore.updateCache(initialState);
     }
 }

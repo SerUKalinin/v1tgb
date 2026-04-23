@@ -21,7 +21,6 @@ public interface OutboxEventRepository
         FROM outbox_events
         WHERE status IN ('NEW', 'FAILED')
         ORDER BY created_at
-        FOR UPDATE SKIP LOCKED
         LIMIT 50
         """, nativeQuery = true)
     List<OutboxEventEntity> claimBatch();
@@ -33,10 +32,9 @@ public interface OutboxEventRepository
         SELECT *
         FROM outbox_events
         WHERE status = 'PROCESSING'
-          AND updated_at < now() - interval '30 seconds'
+          AND updated_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds'
         """, nativeQuery = true)
     List<OutboxEventEntity> findStaleProcessingEvents();
-
     /**
      * Retry control handled in service layer, not SQL
      */

@@ -8,7 +8,7 @@ CREATE TABLE users (
 );
 
 CREATE TABLE orders (
-    id VARCHAR(255) PRIMARY KEY,
+    id UUID PRIMARY KEY,
     client_order_id VARCHAR(255) NOT NULL UNIQUE,
     exchange_order_id VARCHAR(255),
     symbol VARCHAR(50) NOT NULL,
@@ -23,13 +23,12 @@ CREATE TABLE orders (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE
 );
-
 CREATE INDEX idx_orders_client_order_id ON orders(client_order_id);
 CREATE INDEX idx_orders_strategy_id ON orders(strategy_id);
 
 CREATE TABLE trades (
-    id BIGSERIAL PRIMARY KEY,
-    order_id VARCHAR(255) NOT NULL REFERENCES orders(id),
+    id UUID PRIMARY KEY,
+    order_id UUID NOT NULL REFERENCES orders(id),
     client_order_id VARCHAR(255) NOT NULL,
     symbol VARCHAR(50) NOT NULL,
     side VARCHAR(20) NOT NULL,
@@ -43,20 +42,19 @@ CREATE TABLE trades (
     sequence_id BIGINT,
     executed_at TIMESTAMP WITH TIME ZONE NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL
-);
-CREATE INDEX idx_trades_order_id ON trades(order_id);
+);CREATE INDEX idx_trades_order_id ON trades(order_id);
 CREATE INDEX idx_trades_client_order_id ON trades(client_order_id);
 CREATE INDEX idx_trades_exchange_trade_id ON trades(exchange_trade_id);
 CREATE INDEX idx_trades_symbol_executed ON trades(symbol, executed_at);
 
 CREATE TABLE positions (
-    id BIGSERIAL PRIMARY KEY,
+    id UUID PRIMARY KEY,
     symbol VARCHAR(50) NOT NULL,
     strategy_id VARCHAR(255) NOT NULL,
     net_quantity DECIMAL(38, 18) NOT NULL,
     avg_entry_price DECIMAL(38, 18) NOT NULL,
     realized_pnl DECIMAL(38, 18),
-    last_trade_id BIGINT,
+    last_trade_id UUID,
     stop_loss DECIMAL(38, 18),    take_profit DECIMAL(38, 18),
     status VARCHAR(50) NOT NULL,
     close_request_id UUID,
@@ -64,7 +62,6 @@ CREATE TABLE positions (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
     UNIQUE (symbol, strategy_id)
 );
-
 CREATE TABLE signals (
     id BIGSERIAL PRIMARY KEY,
     symbol VARCHAR(50) NOT NULL,

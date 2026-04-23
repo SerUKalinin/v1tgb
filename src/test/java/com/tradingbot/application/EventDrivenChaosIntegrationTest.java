@@ -1,5 +1,6 @@
 package com.tradingbot.application;
 
+import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.model.Position;
@@ -22,9 +23,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@ActiveProfiles("test")
-public class EventDrivenChaosIntegrationTest {
+public class EventDrivenChaosIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private ApplicationEventPublisher eventPublisher;
@@ -44,11 +43,14 @@ public class EventDrivenChaosIntegrationTest {
     @Autowired
     private EquityService equityService;
 
+    @Autowired
+    private TradeService tradeService;
+
     @Test
     public void testFullFlowWithDuplicateEvents() throws InterruptedException {
         String symbol = "BTCUSDT";
         String strategyId = "chaos-test-strat";
-        String orderId = UUID.randomUUID().toString();
+        UUID orderId = UUID.randomUUID();
         String externalTradeId = "ext-trade-123";
 
         // 0. Предварительно создаем ордер в БД, так как TradeService теперь требует его наличия
@@ -63,8 +65,7 @@ public class EventDrivenChaosIntegrationTest {
                 .price(new BigDecimal("50000"))
                 .status("SENT")
                 .createdAt(java.time.Instant.now())
-                .build());
-        // 1. Публикуем событие исполнения ордера (BUY)
+                .build());        // 1. Публикуем событие исполнения ордера (BUY)
         OrderFilledEvent buyEvent = new OrderFilledEvent(
                 orderId,
                 externalTradeId,
@@ -74,10 +75,11 @@ public class EventDrivenChaosIntegrationTest {
         );
 
         eventPublisher.publishEvent(buyEvent);
+        tradeService.onOrderFilled(buyEvent);
 
         // 2. Имитируем ДУБЛИКАТ того же события (Chaos Check)
         // Система должна проигнорировать его на уровне TradeService или PositionService
-        eventPublisher.publishEvent(buyEvent);
+        tradeService.onOrderFilled(buyEvent);
 
         // Даем немного времени на асинхронную обработку (хотя в Spring Events по умолчанию синхронно)
         Thread.sleep(100);

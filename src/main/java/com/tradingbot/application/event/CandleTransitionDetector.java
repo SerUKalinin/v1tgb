@@ -37,8 +37,8 @@ public class CandleTransitionDetector {
         }
 
         Candle lastCandle = window.getLast();
-        String symbol = window.symbol();
-        Instant openTime = lastCandle.openTime();
+        String symbol = window.getSymbol();
+        Instant openTime = lastCandle.getOpenTime();
 
         AtomicBoolean isNew = new AtomicBoolean(false);
 
@@ -67,7 +67,6 @@ public class CandleTransitionDetector {
 
         return Optional.empty();
     }
-
     /**
      * Сбрасывает состояние обработки для указанного символа.
      *

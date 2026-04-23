@@ -15,10 +15,9 @@ import java.util.UUID;
 @Value
 @Builder
 public class Trade {
-    Long id;
+    UUID id;
     String exchangeTradeId;
-    UUID orderId;
-    String clientOrderId;    String symbol;
+    UUID orderId;    String clientOrderId;    String symbol;
     String strategyId;
     OrderSide side;
     BigDecimal price;

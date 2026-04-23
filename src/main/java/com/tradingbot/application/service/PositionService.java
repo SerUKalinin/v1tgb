@@ -6,13 +6,13 @@ import com.tradingbot.domain.model.Position;
 import com.tradingbot.domain.position.PositionReducer;
 import com.tradingbot.domain.position.PositionState;
 import com.tradingbot.infrastructure.concurrent.PartitionLockManager;
+import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.mapper.PositionMapper;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.UUID;
 
 /**
  * Сервис управления торговыми позициями.
@@ -36,6 +37,7 @@ public class PositionService {
     private final PositionMapper mapper;
     private final PartitionLockManager lockManager;
     private final PositionReducer reducer;
+    private final IdempotencyService idempotencyService;
     private final Map<String, Position> positions = new ConcurrentHashMap<>();
 
     private String getCacheKey(String symbol, String strategyId) {
@@ -58,28 +60,25 @@ public class PositionService {
     }
 
     /**
-     * Слушает события о создании сделок и обновляет состояние позиции.
-     * Гарантирует последовательную обработку через Striped Lock по символу и стратегии.
+     * Обновляет состояние позиции на основе сделки.
+     * Теперь вызывается через Outbox Consumer (PositionProjectionHandler).
      */
-    @EventListener
     @Transactional
-    public void onTradeCreated(TradeCreatedEvent event) {
+    public void updatePosition(TradeCreatedEvent event) {
         String lockKey = event.getStrategyId() + ":" + event.getSymbol();
         ReentrantLock lock = lockManager.getLock(lockKey);
-
         lock.lock();
         try {
-            log.info("[POSITIONS] Processing trade {} for {}", event.getTradeId(), lockKey);
+            log.info("[POSITIONS] Updating projection for trade {} on {}", event.getTradeId(), lockKey);
+
+            // 1. Production-grade Idempotency Guard (Global Processed Events)
+            if (idempotencyService.isAlreadyProcessed(event.getTradeId())) {
+                log.warn("[POSITIONS] Trade {} already processed globally. Skipping.", event.getTradeId());
+                return;
+            }
 
             PositionEntity entity = repository.findBySymbolAndStrategyId(event.getSymbol(), event.getStrategyId())
                     .orElseGet(() -> createNewPositionEntity(event));
-
-            // 1. Strict Idempotency Check
-            if (entity.getLastTradeId() != null && entity.getLastTradeId() >= event.getTradeId()) {
-                log.warn("[POSITIONS] Trade {} already processed or older. Skipping. (Last: {})", 
-                        event.getTradeId(), entity.getLastTradeId());
-                return;
-            }
 
             // 2. Pure State Transition
             PositionState currentState = new PositionState(
@@ -111,15 +110,9 @@ public class PositionService {
 
             // 4. Save & Sync Cache
             repository.save(entity);
+            idempotencyService.markAsProcessed(event.getTradeId(), "PositionService");
             positions.put(lockKey, mapper.toDomain(entity));
 
-            log.info("[POSITIONS] Updated {}: Qty {} -> {}, PnL: +{}", 
-                    lockKey, currentState.netQuantity(), newState.netQuantity(), 
-                    newState.realizedPnl().subtract(currentState.realizedPnl()));
-
-        } catch (Exception e) {
-            log.error("[POSITIONS] Critical error processing trade {}: {}", event.getTradeId(), e.getMessage(), e);
-            throw e; // Rollback transaction
         } finally {
             lock.unlock();
         }
@@ -127,6 +120,7 @@ public class PositionService {
 
     private PositionEntity createNewPositionEntity(TradeCreatedEvent event) {
         return PositionEntity.builder()
+                .id(UUID.randomUUID())
                 .symbol(event.getSymbol())
                 .strategyId(event.getStrategyId())
                 .quantity(BigDecimal.ZERO)
@@ -142,7 +136,18 @@ public class PositionService {
     }
 
     public Position getPosition(String symbol, String strategyId) {
-        return positions.get(getCacheKey(symbol, strategyId));
+        String key = getCacheKey(symbol, strategyId);
+        Position cached = positions.get(key);
+        if (cached != null) return cached;
+
+        // Fallback: try to load from DB if cache is empty (e.g. during integration tests)
+        return repository.findBySymbolAndStrategyId(symbol, strategyId)
+                .map(entity -> {
+                    Position domain = mapper.toDomain(entity);
+                    positions.put(key, domain);
+                    return domain;
+                })
+                .orElse(null);
     }
 
     public BigDecimal calculatePnL(String symbol, String strategyId, BigDecimal currentPrice) {
