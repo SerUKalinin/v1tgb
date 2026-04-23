@@ -8,6 +8,7 @@ import lombok.ToString;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * Immutable object representing an order that has been approved by the Risk Engine.
@@ -18,7 +19,7 @@ import java.time.Instant;
 @Builder
 @ToString
 public final class ApprovedOrder {
-    private final String orderId;
+    private final UUID orderId;
     private final String clientOrderId;
     private final String symbol;
     private final OrderSide side;
@@ -32,7 +33,7 @@ public final class ApprovedOrder {
     private final long riskStateVersion;
 
     // Package-private constructor to restrict creation to the risk package
-    ApprovedOrder(String orderId, String clientOrderId, String symbol, OrderSide side, OrderType type, 
+    ApprovedOrder(UUID orderId, String clientOrderId, String symbol, OrderSide side, OrderType type, 
                   BigDecimal quantity, BigDecimal price, BigDecimal stopLoss, BigDecimal takeProfit,
                   String strategyId, Instant approvedAt, long riskStateVersion) {
         this.orderId = orderId;

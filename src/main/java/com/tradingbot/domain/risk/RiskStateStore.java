@@ -16,26 +16,20 @@ import java.util.function.UnaryOperator;
 @Component
 public class RiskStateStore {
 
-    private final AtomicReference<RiskState> globalState;
-    private final Map<String, AtomicReference<RiskState>> symbolStates = new ConcurrentHashMap<>();
-
-    public RiskStateStore() {
-        this.globalState = new AtomicReference<>(RiskState.empty());
-    }
+    private final AtomicReference<RiskState> globalCache = new AtomicReference<>(RiskState.empty());
 
     public RiskState getState() {
-        return globalState.get();
-    }
-
-    public RiskState getSymbolState(String symbol) {
-        return symbolStates.computeIfAbsent(symbol, k -> new AtomicReference<>(RiskState.empty())).get();
+        return globalCache.get();
     }
 
     /**
-     * Internal update only for RiskEngine.
+     * Обновление кэша. Вызывается только после успешного коммита в БД.
      */
-    protected void updateInternal(RiskState newState) {
-        globalState.set(newState);
-        // Note: Symbol-specific state segments can be updated here if needed
+    public void updateCache(RiskState newState) {
+        globalCache.set(newState);
+    }
+
+    public void updateInternal(RiskState newState) {
+        updateCache(newState);
     }
 }

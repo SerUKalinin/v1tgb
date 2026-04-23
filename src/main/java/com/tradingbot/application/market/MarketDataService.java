@@ -99,7 +99,7 @@ public class MarketDataService {
         }
 
         CandleWindow window = getWindow(symbol);
-        if (window == null || window.candles().isEmpty()) {
+        if (window == null || window.getCandles().isEmpty()) {
             return;
         }
 
@@ -107,8 +107,7 @@ public class MarketDataService {
             log.info("[VERIFY] NEW_CANDLE: symbol={} closeTime={} O={} H={} L={} C={} V={}",
                     symbol, event.closeTime(), event.open(), event.high(), event.low(), event.close(), event.volume());
             eventPublisher.publishEvent(event);
-        });
-    }
+        });    }
 
     private boolean shouldUpdateRisk(String symbol, BigDecimal currentPrice) {
         BigDecimal lastPrice = lastRiskPrices.get(symbol);

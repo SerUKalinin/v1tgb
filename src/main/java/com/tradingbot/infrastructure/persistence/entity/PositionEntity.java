@@ -21,12 +21,10 @@ import java.time.Instant;
 public class PositionEntity {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-
+    @GeneratedValue(strategy = GenerationType.AUTO)
+    private java.util.UUID id;
     @Column(nullable = false)
     private String symbol;
-
     @Column(name = "strategy_id", nullable = false)
     private String strategyId;
 
@@ -40,8 +38,7 @@ public class PositionEntity {
     private BigDecimal realizedPnl;
 
     @Column(name = "last_trade_id")
-    private Long lastTradeId;
-
+    private java.util.UUID lastTradeId;
     @Column(name = "stop_loss")
     private BigDecimal stopLoss;
 

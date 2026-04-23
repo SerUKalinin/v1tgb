@@ -11,9 +11,8 @@ import java.time.Instant;
 import java.util.List;
 
 @Repository
-public interface TradeRepository extends JpaRepository<TradeEntity, Long> {
-    List<TradeEntity> findAllByExecutedAtAfter(Instant executedAt);
-    boolean existsByExchangeTradeId(String exchangeTradeId);
+public interface TradeRepository extends JpaRepository<TradeEntity, java.util.UUID> {
+    List<TradeEntity> findAllByExecutedAtAfter(Instant executedAt);    boolean existsByExchangeTradeId(String exchangeTradeId);
     List<TradeEntity> findBySymbolAndStrategyIdOrderByExecutedAtAsc(String symbol, String strategyId);
     List<TradeEntity> findAllByOrderByExecutedAtAsc();
 }

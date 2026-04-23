@@ -35,3 +35,13 @@ CREATE TABLE equity_snapshots (
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL
 );
 CREATE INDEX idx_equity_snapshots_timestamp ON equity_snapshots(timestamp);
+
+CREATE TABLE risk_state (
+    id VARCHAR(255) PRIMARY KEY,
+    total_equity DECIMAL(38, 18),
+    available_balance DECIMAL(38, 18),
+    reserved_margin DECIMAL(38, 18),
+    halted BOOLEAN,
+    version BIGINT,
+    updated_at TIMESTAMP WITH TIME ZONE
+);

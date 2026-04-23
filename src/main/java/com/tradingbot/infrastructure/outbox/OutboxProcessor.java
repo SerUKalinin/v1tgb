@@ -1,0 +1,100 @@
+package com.tradingbot.infrastructure.outbox;
+
+import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
+import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class OutboxProcessor {
+
+    private final OutboxEventRepository outboxRepository;
+    private final OutboxDispatcher dispatcher;
+    private final OutboxRetryPolicy retryPolicy;
+    private final IdempotencyService idempotencyService;
+
+    @Scheduled(fixedDelayString = "${app.outbox.scan-interval:500}")
+    public void processOutbox() {
+        List<OutboxEventEntity> events = claimBatch();
+        if (events.isEmpty()) return;
+
+        log.debug("[OUTBOX] Processing batch of {} events", events.size());
+
+        for (OutboxEventEntity event : events) {
+            processSingleEvent(event);
+        }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    protected void processSingleEvent(OutboxEventEntity event) {
+        try {
+            if (idempotencyService.isAlreadyProcessed(event.getId())) {
+                log.info("[OUTBOX] Event {} already processed globally. Skipping.", event.getId());
+                finalizeProcessed(event);
+                return;
+            }
+
+            dispatcher.dispatch(event);
+            idempotencyService.markAsProcessed(event.getId(), "GlobalOutboxProcessor");
+            finalizeProcessed(event);
+            
+        } catch (Exception e) {
+            log.error("[OUTBOX] Failed to process event {}: {}", event.getId(), e.getMessage());
+            handleFailureInternal(event.getId());
+        }
+    }
+
+    private void finalizeProcessed(OutboxEventEntity event) {
+        event.setStatus(OutboxStatus.PROCESSED);
+        event.setProcessedAt(Instant.now());
+        outboxRepository.save(event);
+    }
+
+    @Transactional
+    protected List<OutboxEventEntity> claimBatch() {
+        List<OutboxEventEntity> events = outboxRepository.claimBatch();
+        events.forEach(e -> {
+            e.setStatus(OutboxStatus.PROCESSING);
+            e.setUpdatedAt(Instant.now());
+        });
+        return outboxRepository.saveAll(events);
+    }
+
+    private void handleFailureInternal(UUID eventId) {
+        outboxRepository.findById(eventId).ifPresent(event -> {
+            event.setRetryCount(event.getRetryCount() + 1);
+            event.setUpdatedAt(Instant.now());
+
+            if (retryPolicy.shouldRetry(event)) {
+                event.setStatus(OutboxStatus.FAILED);
+                log.info("[OUTBOX] Event {} marked for retry ({})", eventId, event.getRetryCount());
+            } else {
+                event.setStatus(OutboxStatus.DEAD);
+                log.error("[OUTBOX] Event {} moved to DEAD letter (retries exhausted)", eventId);
+            }
+            outboxRepository.save(event);
+        });
+    }
+
+    @Deprecated
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    protected void markProcessed(UUID eventId) {
+        // Use processSingleEvent logic instead
+    }
+
+    @Deprecated
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    protected void handleFailure(UUID eventId) {
+        // Use processSingleEvent logic instead
+    }
+}

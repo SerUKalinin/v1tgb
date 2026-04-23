@@ -58,9 +58,8 @@ public class DefaultRiskManager implements RiskManager {
 
             // 5. Create ApprovedOrder
             ApprovedOrder approvedOrder = new ApprovedOrder(
-                    UUID.randomUUID().toString(),
-                    "c-" + UUID.randomUUID().toString().substring(0, 8),
-                    signal.getSymbol(),
+                    UUID.randomUUID(),
+                    "c-" + UUID.randomUUID().toString().substring(0, 8),                    signal.getSymbol(),
                     signal.getType() == com.tradingbot.common.enums.SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,
                     OrderType.MARKET,
                     quantity,

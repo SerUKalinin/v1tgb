@@ -2,7 +2,8 @@ package com.tradingbot.domain.model;
 
 import lombok.Builder;
 import lombok.AllArgsConstructor;
-import lombok.Value;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -10,9 +11,10 @@ import java.time.Instant;
 /**
  * Модель свечи (OHLCV).
  */
-@Value
+@Data
 @Builder
 @AllArgsConstructor
+@NoArgsConstructor
 public class Candle {
 
     /**
@@ -65,7 +67,7 @@ public class Candle {
      *
      * @return время открытия
      */
-    public Instant openTime() {
+    public Instant getOpenTime() {
         return openTime;
     }
 

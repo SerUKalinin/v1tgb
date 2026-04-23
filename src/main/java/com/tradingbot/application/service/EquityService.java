@@ -7,10 +7,8 @@ import com.tradingbot.infrastructure.persistence.repository.EquitySnapshotReposi
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
@@ -29,10 +27,8 @@ public class EquityService {
     private final Map<String, BigDecimal> strategyBalances = new ConcurrentHashMap<>();
     private static final BigDecimal INITIAL_BALANCE = new BigDecimal("10000");
 
-    @EventListener
     @Transactional
-    public void onTradeCreated(TradeCreatedEvent event) {
-        log.info("[EQUITY] Updating balance for strategy {} after trade {}", event.getStrategyId(), event.getTradeId());
+    public void onTradeCreated(TradeCreatedEvent event) {        log.info("[EQUITY] Updating balance for strategy {} after trade {}", event.getStrategyId(), event.getTradeId());
         
         strategyBalances.putIfAbsent(event.getStrategyId(), INITIAL_BALANCE);
         

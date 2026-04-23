@@ -9,11 +9,10 @@ import org.springframework.stereotype.Service;
 
 @Service
 @Slf4j
-@RequiredArgsConstructor(onConstructor_ = {@Lazy})
+@RequiredArgsConstructor
 public class AdminNotificationService {
 
-    private final TradingTelegramBot telegramBot;
-
+    private final @Lazy TradingTelegramBot telegramBot;
     @Value("${telegram.bot.admin-id}")
     private Long adminChatId;
 
@@ -39,5 +38,9 @@ public class AdminNotificationService {
     public void notifyRiskEvent(String message) {
         String alertMessage = "🛡 *RISK EVENT*\n\n" + message;
         telegramBot.sendMessage(adminChatId, alertMessage);
+    }
+
+    public void sendCritical(String message) {
+        notifyCriticalError("SYSTEM", message);
     }
 }

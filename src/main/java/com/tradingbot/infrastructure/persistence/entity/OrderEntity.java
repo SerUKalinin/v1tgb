@@ -14,6 +14,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.UUID;
 
 @Entity
 @Table(name = "orders",
@@ -29,7 +30,7 @@ import java.time.Instant;
 @Builder
 public class OrderEntity {
     @Id
-    private String id;
+    private UUID id;
 
     @Column(name = "client_order_id", nullable = false, unique = true, updatable = false)
     private String clientOrderId;
@@ -48,17 +49,17 @@ public class OrderEntity {
     @Column(nullable = false)
     private OrderType type;
 
-    @Column(nullable = false)
+    @Column(nullable = false, precision = 18, scale = 8)
     private BigDecimal quantity;
 
+    @Column(precision = 18, scale = 8)
     private BigDecimal price;
 
-    @Column(name = "stop_loss")
+    @Column(name = "stop_loss", precision = 18, scale = 8)
     private BigDecimal stopLoss;
 
-    @Column(name = "take_profit")
+    @Column(name = "take_profit", precision = 18, scale = 8)
     private BigDecimal takeProfit;
-
     @Column(name = "strategy_id", nullable = false)
     private String strategyId;
 
@@ -70,4 +71,7 @@ public class OrderEntity {
 
     @Column(name = "updated_at")
     private Instant updatedAt;
+
+    @Version
+    private Long version;
 }

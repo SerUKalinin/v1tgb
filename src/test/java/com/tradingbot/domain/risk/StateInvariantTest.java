@@ -35,13 +35,13 @@ class StateInvariantTest {
                 "BTCUSDT",                    // symbol
                 "strat-1",                   // strategyId
                 BigDecimal.ZERO,             // netQuantity
-                BigDecimal.ZERO,             // avgEntryPrice
-                0L,                          // version
+                BigDecimal.ZERO,             // averagePrice
+                UUID.randomUUID(),           // lastTradeId
                 BigDecimal.ZERO,             // realizedPnL
-                BigDecimal.ZERO,             // unrealizedPnL
-                BigDecimal.ZERO,             // fees
+                null,                        // stopLoss
+                null,                        // takeProfit
                 PositionStatus.NEW,          // status
-                UUID.randomUUID(),           // positionId
+                null,                        // closeRequestId
                 Instant.now()                // updatedAt
         );
 
@@ -50,8 +50,8 @@ class StateInvariantTest {
 
         // 3. TradeCreatedEvent (НОВАЯ СИГНАТУРА)
         TradeCreatedEvent event = new TradeCreatedEvent(
-                1L,
-                "order-1",
+                UUID.randomUUID(),
+                UUID.randomUUID(),
                 "BTCUSDT",
                 "strat-1",
                 qty,
@@ -60,7 +60,6 @@ class StateInvariantTest {
                 BigDecimal.ZERO, // realizedPnL
                 BigDecimal.ZERO  // fees
         );
-
         // 4. Reduce
         PositionReducer reducer = new PositionReducer();
         PositionState nextState = reducer.reduce(positionState, event);

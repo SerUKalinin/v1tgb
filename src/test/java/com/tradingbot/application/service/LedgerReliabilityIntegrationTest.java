@@ -19,13 +19,12 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@ActiveProfiles("backtest")
 @Transactional
-public class LedgerReliabilityIntegrationTest {
+public class LedgerReliabilityIntegrationTest extends com.tradingbot.BaseIntegrationTest {
 
     @Autowired
     private TradeService tradeService;
@@ -45,11 +44,16 @@ public class LedgerReliabilityIntegrationTest {
     @Autowired
     private OrderRepository orderRepository;
 
+    @Autowired
+    private jakarta.persistence.EntityManager entityManager;
+
     @BeforeEach
     void setUp() {
         tradeRepository.deleteAll();
         positionRepository.deleteAll();
         orderRepository.deleteAll();
+        entityManager.flush();
+        entityManager.clear();
     }
 
     @Test
@@ -85,20 +89,28 @@ public class LedgerReliabilityIntegrationTest {
     }
 
     private void publishTrade(String tradeId, String symbol, OrderSide side, String qty, String price) {
-        String orderId = "O-" + tradeId;
+        UUID orderId = UUID.nameUUIDFromBytes(tradeId.getBytes()); // Deterministic UUID for tests
         String clientOrderId = "C-" + tradeId;
-        orderRepository.save(com.tradingbot.infrastructure.persistence.entity.OrderEntity.builder()
-                .id(orderId)
-                .clientOrderId(clientOrderId)
-                .symbol(symbol)
-                .side(side)
-                .type(com.tradingbot.common.enums.OrderType.MARKET)
-                .strategyId("default")
-                .quantity(new BigDecimal(qty))
-                .price(new BigDecimal(price))
-                .status("FILLED")
-                .createdAt(Instant.now())
-                .build());
+        
+        if (!orderRepository.existsById(orderId)) {
+            com.tradingbot.infrastructure.persistence.entity.OrderEntity order = com.tradingbot.infrastructure.persistence.entity.OrderEntity.builder()
+                    .id(orderId)
+                    .clientOrderId(clientOrderId)
+                    .symbol(symbol)
+                    .side(side)
+                    .type(com.tradingbot.common.enums.OrderType.MARKET)
+                    .strategyId("default")
+                    .quantity(new BigDecimal(qty))
+                    .price(new BigDecimal(price))
+                    .status("FILLED")
+                    .version(0L)
+                    .createdAt(Instant.now())
+                    .build();
+            orderRepository.saveAndFlush(order);
+        }
 
-        eventPublisher.publishEvent(new OrderFilledEvent(orderId, "EXT-" + tradeId, symbol, new BigDecimal(qty), new BigDecimal(price)));
-    }}
+        // Вызываем сервис напрямую, так как в новой архитектуре он не слушает события Spring автоматически
+        tradeService.onOrderFilled(new OrderFilledEvent(orderId, "EXT-" + tradeId, symbol, new BigDecimal(qty), new BigDecimal(price)));
+        entityManager.flush();
+    }
+}

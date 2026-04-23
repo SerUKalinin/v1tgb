@@ -7,6 +7,7 @@ import lombok.Value;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * Результат исполнения торгового ордера.
@@ -15,7 +16,7 @@ import java.time.Instant;
 @Builder
 @AllArgsConstructor
 public class ExecutionResult {
-    String orderId;
+    UUID orderId;
     String clientOrderId;
     String exchangeOrderId;
     String exchangeTradeId;
@@ -31,7 +32,7 @@ public class ExecutionResult {
     Instant executedAt = Instant.now();
 
     public static ExecutionResult success(
-            String orderId,
+            UUID orderId,
             String exchangeOrderId,
             String exchangeTradeId,
             String symbol,
@@ -56,11 +57,10 @@ public class ExecutionResult {
                 .success(true)
                 .build();
     }
-    public static ExecutionResult failure(String orderId, String errorMessage) {
+    public static ExecutionResult failure(UUID orderId, String errorMessage) {
         return ExecutionResult.builder()
                 .orderId(orderId)
                 .success(false)
                 .errorMessage(errorMessage)
                 .build();
-    }
-}
+    }}

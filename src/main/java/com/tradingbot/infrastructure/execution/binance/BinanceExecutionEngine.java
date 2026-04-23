@@ -63,10 +63,9 @@ public class BinanceExecutionEngine implements ExecutionEngine {
                         approvedOrder.getClientOrderId()
                 );
             }
-            return ExecutionResult.failure(approvedOrder.getSymbol(), "Invalid response from Binance");
+            return ExecutionResult.failure(approvedOrder.getOrderId(), "Invalid response from Binance");
         } catch (Exception e) {
             log.error("[EXECUTION] Failed to execute order for {}", approvedOrder.getSymbol(), e);
-            return ExecutionResult.failure(approvedOrder.getSymbol(), e.getMessage());
-        }
-    }
+            return ExecutionResult.failure(approvedOrder.getOrderId(), e.getMessage());
+        }    }
 }
