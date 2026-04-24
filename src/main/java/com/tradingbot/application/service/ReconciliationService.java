@@ -38,9 +38,13 @@ public class ReconciliationService {
     private final ExchangeOrderQueryService exchangeQueryService;
     private final RiskEngine riskEngine;
     private final AdminNotificationService notifications;
+    private final PositionRebuildService positionRebuildService;
     
     private static final Duration STALE_THRESHOLD = Duration.ofMinutes(2);
+    private static final Duration DRIFT_DETECTION_WINDOW = Duration.ofSeconds(45);
     private static final BigDecimal DRIFT_THRESHOLD = new BigDecimal("0.01"); // 1%
+
+    private Instant lastReconcileTimestamp = Instant.now();
 
     @EventListener(ApplicationReadyEvent.class)
     public void onStartup() {
@@ -63,20 +67,35 @@ public class ReconciliationService {
             BigDecimal exchangeBalance = exchangeQueryService.getAvailableBalance("USDT");
             BigDecimal internalBalance = riskEngine.getState().availableBalance();
 
-            if (internalBalance.signum() == 0) return;
+            if (internalBalance.signum() == 0 && exchangeBalance.signum() == 0) return;
 
             BigDecimal diff = exchangeBalance.subtract(internalBalance).abs();
-            BigDecimal driftPercent = diff.divide(internalBalance, 4, RoundingMode.HALF_UP);
+            BigDecimal driftPercent = internalBalance.signum() != 0 
+                ? diff.divide(internalBalance, 4, RoundingMode.HALF_UP)
+                : BigDecimal.ONE;
 
-            if (driftPercent.compareTo(DRIFT_THRESHOLD) > 0) {
-                log.error("[RECON-FATAL] Critical balance drift: Exchange={}, Internal={}, Drift={}%", 
-                    exchangeBalance, internalBalance, driftPercent.multiply(new BigDecimal("100")));
-                
-                riskEngine.emergencyStop("Critical balance drift detected: " + driftPercent);
-                notifications.sendCritical("Trading HALTED: Balance drift exceeds 1%");
-            } else if (diff.signum() != 0) {
-                log.warn("[RECON] Minor drift detected. Auto-repairing RiskState. Diff={}", diff);
-                riskEngine.syncBalance(exchangeBalance);
+            if (diff.signum() != 0) {
+                Instant now = Instant.now();
+                if (now.isBefore(lastReconcileTimestamp.plus(DRIFT_DETECTION_WINDOW))) {
+                    log.debug("[RECON] Within drift window, skipping repair to allow eventual consistency.");
+                    return;
+                }
+
+                if (driftPercent.compareTo(DRIFT_THRESHOLD) > 0) {
+                    log.error("[RECON-CRITICAL] CRITICAL balance drift detected: Exchange={}, Internal={}, Drift={}%", 
+                        exchangeBalance, internalBalance, driftPercent.multiply(new BigDecimal("100")));
+                    
+                    notifications.sendCritical("Trading HALTED: Balance drift exceeds 1%");
+                    riskEngine.emergencyStop("Critical balance drift: " + driftPercent);
+                    
+                    log.warn("[RECON-CRITICAL] Triggering emergency Position Rebuild due to critical drift.");
+                    positionRebuildService.rebuildAllPositions();
+                } else {
+                    log.error("[RECON-CRITICAL] Minor drift detected. CRITICAL: Auto-repairing RiskState and Rebuilding Positions. Diff={}", diff);
+                    riskEngine.syncBalance(exchangeBalance);
+                    positionRebuildService.rebuildAllPositions();
+                }
+                lastReconcileTimestamp = now;
             }
         } catch (Exception e) {
             log.error("[RECON] Failed to reconcile balances", e);

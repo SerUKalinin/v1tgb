@@ -3,6 +3,7 @@ package com.tradingbot.application.service;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.risk.ApprovedOrder;
+import com.tradingbot.domain.risk.RiskDecision;
 import com.tradingbot.domain.risk.RiskEngine;
 import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
@@ -30,28 +31,47 @@ public class OrderApplicationService {
     private final RiskManager riskManager;
     private final ObjectMapper objectMapper;
 
-    @Transactional // Единая граница транзакции
+    @Transactional
     public void onSignalReceived(SignalEvent signal) {
-        // 1. Валидация (Read-only, не меняет состояние)
+        // 1. Валидация (Read-only, без внешних вызовов внутри транзакции, если RiskManager локален)
         ApprovedOrder approved = riskManager.approveSignal(signal)
                 .orElseThrow(() -> new IllegalStateException("Signal rejected by risk"));
 
-        // 2. Резервирование капитала (Первая запись в БД)
-        riskEngine.reserve(
+        // 2. Резервирование капитала (Включает проверки лимитов и запись RiskEvent)
+        RiskDecision decision = riskEngine.reserve(
                 approved.getOrderId(),
                 approved.getQuantity().multiply(approved.getPrice())
         );
 
-        // 3. Создание ордера (Вторая запись в БД)
-        OrderEntity order = createFromApproved(approved);
+        if (!decision.isApproved()) {
+            log.warn("[FINANCIAL-CORE] Capital reservation failed for order {}: {} - {}", 
+                    approved.getOrderId(), decision.getReason(), decision.getMessage());
+            throw new IllegalStateException("Risk reservation failed: " + decision.getReason());
+        }
+
+        // 3. Создание ордера
+        String clientOrderId = "bot_" + approved.getOrderId().toString();
+        OrderEntity order = OrderEntity.builder()
+                .id(approved.getOrderId())
+                .clientOrderId(clientOrderId)
+                .symbol(approved.getSymbol())
+                .strategyId(approved.getStrategyId())
+                .side(approved.getSide())
+                .type(approved.getType())
+                .quantity(approved.getQuantity())
+                .price(approved.getPrice())
+                .status(OrderStatus.PENDING_EXECUTION.name())
+                .createdAt(Instant.now())
+                .build();
+        
         orderRepository.save(order);
 
-        // 4. Запись в Outbox (Третья запись в БД)
+        // 4. Запись в Outbox (Атомарно с OrderEntity и RiskEvent внутри publish)
         saveOutbox(order.getId(), "ORDER", "ORDER_CREATED", order);
 
-        log.info("[FINANCIAL-CORE] Atomic transaction committed for order: {}", order.getId());
+        log.info("[FINANCIAL-CORE] Atomic transaction committed for order: {} (clientOrderId: {}). Risk trace: {}", 
+                order.getId(), clientOrderId, decision.getTrace());
     }
-
     private OrderEntity createFromApproved(ApprovedOrder approved) {
         return OrderEntity.builder()
                 .id(approved.getOrderId())
