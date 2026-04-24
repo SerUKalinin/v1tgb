@@ -46,6 +46,8 @@ public class CandleTransitionDetector {
             if (current == null || !current.equals(openTime)) {
                 if (processedCandleRepository.markAsProcessed(symbol, openTime)) {
                     isNew.set(true);
+
+
                     return openTime;
                 }
             }
