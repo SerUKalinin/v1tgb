@@ -4,10 +4,14 @@ import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationContextAware;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+
+import org.springframework.data.domain.PageRequest;
 
 import java.time.Instant;
 import java.util.List;
@@ -16,12 +20,22 @@ import java.util.UUID;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class OutboxProcessor {
+public class OutboxProcessor implements ApplicationContextAware {
 
     private final OutboxEventRepository outboxRepository;
     private final OutboxDispatcher dispatcher;
     private final OutboxRetryPolicy retryPolicy;
     private final IdempotencyService idempotencyService;
+    private ApplicationContext applicationContext;
+
+    @Override
+    public void setApplicationContext(ApplicationContext applicationContext) {
+        this.applicationContext = applicationContext;
+    }
+
+    private OutboxProcessor self() {
+        return applicationContext.getBean(OutboxProcessor.class);
+    }
 
     @Scheduled(fixedDelayString = "${app.outbox.scan-interval:500}")
     public void processOutbox() {
@@ -31,12 +45,12 @@ public class OutboxProcessor {
         log.debug("[OUTBOX] Processing batch of {} events", events.size());
 
         for (OutboxEventEntity event : events) {
-            processSingleEvent(event);
+            self().processSingleEvent(event);
         }
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected void processSingleEvent(OutboxEventEntity event) {
+    public void processSingleEvent(OutboxEventEntity event) {
         try {
             if (idempotencyService.isAlreadyProcessed(event.getId())) {
                 log.info("[OUTBOX] Event {} already processed globally. Skipping.", event.getId());
@@ -62,12 +76,12 @@ public class OutboxProcessor {
 
     @Transactional
     protected List<OutboxEventEntity> claimBatch() {
-        List<OutboxEventEntity> events = outboxRepository.claimBatch();
+        List<OutboxEventEntity> events = outboxRepository.claimBatchWithLock(50);
         events.forEach(e -> {
             e.setStatus(OutboxStatus.PROCESSING);
             e.setUpdatedAt(Instant.now());
         });
-        return outboxRepository.saveAll(events);
+        return outboxRepository.saveAllAndFlush(events);
     }
 
     private void handleFailureInternal(UUID eventId) {

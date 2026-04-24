@@ -17,15 +17,24 @@ public interface OutboxEventRepository
     List<OutboxEventEntity> findByStatus(OutboxStatus status);
 
     @Query(value = """
-        SELECT *
-        FROM outbox_events
+        SELECT * FROM outbox_events
         WHERE status IN ('NEW', 'FAILED')
-        ORDER BY created_at
-        LIMIT 50
+        ORDER BY created_at ASC
+        LIMIT :limit
+        FOR UPDATE SKIP LOCKED
         """, nativeQuery = true)
-    List<OutboxEventEntity> claimBatch();
+    List<OutboxEventEntity> claimBatchWithLock(@org.springframework.data.repository.query.Param("limit") int limit);
 
-    /**
+    @Deprecated
+    @Query("""
+        SELECT e FROM OutboxEventEntity e
+        WHERE e.status IN (
+            com.tradingbot.infrastructure.outbox.OutboxStatus.NEW,
+            com.tradingbot.infrastructure.outbox.OutboxStatus.FAILED
+        )
+        ORDER BY e.createdAt ASC
+        """)
+    List<OutboxEventEntity> claimBatch(org.springframework.data.domain.Pageable pageable);    /**
      * Detect stuck processing events (crash recovery)
      */
     @Query("""
@@ -38,4 +47,6 @@ public interface OutboxEventRepository
      * Retry control handled in service layer, not SQL
      */
     List<OutboxEventEntity> findByStatusIn(List<OutboxStatus> statuses);
+
+    long countByStatus(OutboxStatus status);
 }
