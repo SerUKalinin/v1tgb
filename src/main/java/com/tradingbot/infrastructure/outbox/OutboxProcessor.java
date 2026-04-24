@@ -51,6 +51,11 @@ public class OutboxProcessor implements ApplicationContextAware {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void processSingleEvent(OutboxEventEntity event) {
+        if (event.getStatus() == OutboxStatus.DEAD) {
+            log.warn("[OUTBOX] Skipping DEAD event {}", event.getId());
+            return;
+        }
+
         try {
             if (idempotencyService.isAlreadyProcessed(event.getId())) {
                 log.info("[OUTBOX] Event {} already processed globally. Skipping.", event.getId());
@@ -64,13 +69,14 @@ public class OutboxProcessor implements ApplicationContextAware {
             
         } catch (Exception e) {
             log.error("[OUTBOX] Failed to process event {}: {}", event.getId(), e.getMessage());
-            handleFailureInternal(event.getId());
+            handleFailureInternal(event.getId(), e.getMessage());
         }
     }
 
     private void finalizeProcessed(OutboxEventEntity event) {
         event.setStatus(OutboxStatus.PROCESSED);
         event.setProcessedAt(Instant.now());
+        event.setLastError(null);
         outboxRepository.save(event);
     }
 
@@ -84,22 +90,22 @@ public class OutboxProcessor implements ApplicationContextAware {
         return outboxRepository.saveAllAndFlush(events);
     }
 
-    private void handleFailureInternal(UUID eventId) {
+    private void handleFailureInternal(UUID eventId, String errorMessage) {
         outboxRepository.findById(eventId).ifPresent(event -> {
             event.setRetryCount(event.getRetryCount() + 1);
             event.setUpdatedAt(Instant.now());
+            event.setLastError(errorMessage);
 
             if (retryPolicy.shouldRetry(event)) {
                 event.setStatus(OutboxStatus.FAILED);
                 log.info("[OUTBOX] Event {} marked for retry ({})", eventId, event.getRetryCount());
             } else {
                 event.setStatus(OutboxStatus.DEAD);
-                log.error("[OUTBOX] Event {} moved to DEAD letter (retries exhausted)", eventId);
+                log.error("[OUTBOX] Event {} moved to DEAD letter (retries exhausted). Reason: {}", eventId, errorMessage);
             }
             outboxRepository.save(event);
         });
     }
-
     @Deprecated
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     protected void markProcessed(UUID eventId) {

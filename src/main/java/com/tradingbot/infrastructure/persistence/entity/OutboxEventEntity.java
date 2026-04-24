@@ -46,8 +46,10 @@ public class OutboxEventEntity {
     @Column(name = "processed_at")
     private Instant processedAt;
 
-    @PrePersist
-    protected void onCreate() {
+    @Column(name = "last_error", columnDefinition = "TEXT")
+    private String lastError;
+
+    @PrePersist    protected void onCreate() {
         if (status == null) status = OutboxStatus.NEW;
         if (createdAt == null) createdAt = Instant.now();
         updatedAt = createdAt;
