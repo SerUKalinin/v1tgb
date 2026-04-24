@@ -26,8 +26,8 @@ public class OutboxProcessor implements ApplicationContextAware {
     private final OutboxDispatcher dispatcher;
     private final OutboxRetryPolicy retryPolicy;
     private final IdempotencyService idempotencyService;
+    private final DeadLetterAlertService alertService;
     private ApplicationContext applicationContext;
-
     @Override
     public void setApplicationContext(ApplicationContext applicationContext) {
         this.applicationContext = applicationContext;
@@ -102,9 +102,9 @@ public class OutboxProcessor implements ApplicationContextAware {
             } else {
                 event.setStatus(OutboxStatus.DEAD);
                 log.error("[OUTBOX] Event {} moved to DEAD letter (retries exhausted). Reason: {}", eventId, errorMessage);
+                alertService.sendAlert(event);
             }
-            outboxRepository.save(event);
-        });
+            outboxRepository.save(event);        });
     }
     @Deprecated
     @Transactional(propagation = Propagation.REQUIRES_NEW)
