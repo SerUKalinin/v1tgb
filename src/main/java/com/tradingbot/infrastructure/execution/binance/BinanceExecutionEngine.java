@@ -54,34 +54,110 @@ public class BinanceExecutionEngine implements ExecutionEngine {
             Map response = binanceClient.post("/api/v3/order", params, Map.class, true);
             log.info("[EXECUTION] Ответ Binance: {}", response);
 
-            if (response != null && (response.containsKey("orderId") || response.containsKey("id"))) {
-                String exchangeOrderId = response.getOrDefault("orderId", response.get("id")).toString();
-                return ExecutionResult.success(
-                        approvedOrder.getOrderId(),
-                        exchangeOrderId,
-                        "trade-" + exchangeOrderId,
-                        approvedOrder.getSymbol(),
-                        approvedOrder.getSide(),
-                        approvedOrder.getQuantity(),
-                        approvedOrder.getPrice(),
-                        BigDecimal.ZERO,
-                        "USDT",
-                        approvedOrder.getClientOrderId()
-                );
-            }
-            return ExecutionResult.failure(approvedOrder.getOrderId(), "Некорректный ответ от Binance");
+            return parseResponse(response, approvedOrder);
 
         } catch (Exception e) {
-            // 3. Обработка ошибок дублирования (если биржа вернула ошибку о существующем clientOrderId)
-            if (e.getMessage() != null && e.getMessage().contains("Duplicate order sent")) {
-                log.warn("[EXECUTION] Биржа сообщила о дубликате ордера {}. Синхронизируем состояние.", approvedOrder.getClientOrderId());
-                // Здесь в реальной системе должен быть вызов GET /api/v3/order для получения статуса
-                return ExecutionResult.failure(approvedOrder.getOrderId(), "Duplicate order on exchange: " + e.getMessage());
+            String errorMsg = e.getMessage() != null ? e.getMessage() : "";
+            boolean isTimeout = e instanceof java.util.concurrent.TimeoutException || errorMsg.contains("timeout");
+            boolean isDuplicate = errorMsg.contains("-2010") || errorMsg.contains("Duplicate");
+
+            if (isTimeout || isDuplicate) {
+                log.warn("[VERIFY][FLOW] type={} orderId={} result=STARTING_RECOVERY", 
+                        isTimeout ? "TIMEOUT" : "DUPLICATE", approvedOrder.getClientOrderId());
+                
+                OrderStatusResponse verify = verifyOrder(approvedOrder.getClientOrderId());
+                
+                if ("FILLED".equals(verify.getStatus()) || "PARTIALLY_FILLED".equals(verify.getStatus())) {
+                    log.info("[VERIFY][FLOW] type={} orderId={} result=RECOVERED_SUCCESS", 
+                            isTimeout ? "TIMEOUT" : "DUPLICATE", approvedOrder.getClientOrderId());
+                    return ExecutionResult.success(
+                            approvedOrder.getOrderId(),
+                            verify.getExchangeOrderId(),
+                            "trade-" + verify.getExchangeOrderId(),
+                            approvedOrder.getSymbol(),
+                            approvedOrder.getSide(),
+                            verify.getExecutedQty(),
+                            approvedOrder.getPrice(),
+                            BigDecimal.ZERO,
+                            "USDT",
+                            approvedOrder.getClientOrderId()
+                    );
+                }
+                
+                if (OrderStatusResponse.ORDER_NOT_FOUND.equals(verify.getStatus())) {
+                    log.error("[VERIFY][FLOW] type={} orderId={} result=ORDER_NOT_FOUND", 
+                            isTimeout ? "TIMEOUT" : "DUPLICATE", approvedOrder.getClientOrderId());
+                    return ExecutionResult.failure(approvedOrder.getOrderId(), "Order not found after " + (isTimeout ? "timeout" : "duplicate"));
+                }
             }
 
-            log.error("[EXECUTION] Ошибка при исполнении ордера {}: {}", approvedOrder.getSymbol(), e.getMessage());
-            return ExecutionResult.failure(approvedOrder.getOrderId(), e.getMessage());
+            log.error("[EXECUTION] Ошибка при исполнении ордера {}: {}", approvedOrder.getSymbol(), errorMsg);
+            return ExecutionResult.failure(approvedOrder.getOrderId(), errorMsg);
         }
+    }
+    /**
+     * Проверяет статус ордера на Binance по clientOrderId.
+     * Чистый read-only метод.
+     */
+    public OrderStatusResponse verifyOrder(String clientOrderId) {
+        try {
+            Map<String, String> params = new HashMap<>();
+            params.put("origClientOrderId", clientOrderId);
+
+            Map response = binanceClient.get("/api/v3/order", params, Map.class, true);
+            
+            if (response == null) {
+                return OrderStatusResponse.builder().status(OrderStatusResponse.UNKNOWN).build();
+            }
+
+            String status = response.get("status").toString();
+            BigDecimal executedQty = new BigDecimal(response.get("executedQty").toString());
+            String exchangeOrderId = response.get("orderId").toString();
+
+            log.info("[VERIFY][BINANCE] orderId={} status={}", clientOrderId, status);
+
+            return OrderStatusResponse.builder()
+                    .status(status)
+                    .executedQty(executedQty)
+                    .exchangeOrderId(exchangeOrderId)
+                    .clientOrderId(clientOrderId)
+                    .build();
+
+        } catch (Exception e) {
+            if (e.getMessage() != null && (e.getMessage().contains("404") || e.getMessage().contains("Order does not exist"))) {
+                log.warn("[VERIFY][BINANCE] Order {} not found on exchange", clientOrderId);
+                return OrderStatusResponse.builder().status(OrderStatusResponse.ORDER_NOT_FOUND).build();
+            }
+            if (e instanceof java.util.concurrent.TimeoutException || (e.getMessage() != null && e.getMessage().contains("timeout"))) {
+                log.error("[VERIFY][BINANCE] Timeout verifying order {}", clientOrderId);
+                return OrderStatusResponse.builder().status(OrderStatusResponse.UNKNOWN).build();
+            }
+            log.error("[VERIFY][BINANCE] Error verifying order {}: {}", clientOrderId, e.getMessage());
+            return OrderStatusResponse.builder().status(OrderStatusResponse.UNKNOWN).build();
+        }
+    }
+
+    private ExecutionResult parseResponse(Map response, ApprovedOrder approvedOrder) {
+        if (response != null && (response.containsKey("orderId") || response.containsKey("id"))) {
+            String exchangeOrderId = response.getOrDefault("orderId", response.get("id")).toString();
+            BigDecimal executedQty = response.containsKey("executedQty") 
+                    ? new BigDecimal(response.get("executedQty").toString())
+                    : approvedOrder.getQuantity();
+
+            return ExecutionResult.success(
+                    approvedOrder.getOrderId(),
+                    exchangeOrderId,
+                    "trade-" + exchangeOrderId,
+                    approvedOrder.getSymbol(),
+                    approvedOrder.getSide(),
+                    executedQty,
+                    approvedOrder.getPrice(),
+                    BigDecimal.ZERO,
+                    "USDT",
+                    approvedOrder.getClientOrderId()
+            );
+        }
+        return ExecutionResult.failure(approvedOrder.getOrderId(), "Некорректный ответ от Binance");
     }
 
     private ExecutionResult mapToResult(OrderEntity entity, ApprovedOrder approved) {

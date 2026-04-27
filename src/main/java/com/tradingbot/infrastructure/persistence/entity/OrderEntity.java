@@ -80,22 +80,46 @@ public class OrderEntity {
     /**
      * Переводит ордер в статус FILLED (исполнен).
      */
-    public void markAsFilled(String exchangeOrderId) {
+    public void markAsFilled(String exchangeOrderId, BigDecimal executedQty) {
         validateTransition(com.tradingbot.common.enums.OrderStatus.FILLED.name());
         this.exchangeOrderId = exchangeOrderId;
+        this.quantity = executedQty;
         this.status = com.tradingbot.common.enums.OrderStatus.FILLED.name();
         this.updatedAt = Instant.now();
-        log.info("[ORDER-DOMAIN] Ордер {} переведен в статус FILLED. ExchangeID: {}", this.id, exchangeOrderId);
+        log.info("[ORDER-DOMAIN] Ордер {} переведен в статус FILLED. ExchangeID: {}, Qty: {}", this.id, exchangeOrderId, executedQty);
+    }
+
+    /**
+     * Переводит ордер в статус PARTIALLY_FILLED.
+     */
+    public void markAsPartiallyFilled(String exchangeOrderId, BigDecimal executedQty) {
+        validateTransition(com.tradingbot.common.enums.OrderStatus.PARTIALLY_FILLED.name());
+        this.exchangeOrderId = exchangeOrderId;
+        this.quantity = executedQty;
+        this.status = com.tradingbot.common.enums.OrderStatus.PARTIALLY_FILLED.name();
+        this.updatedAt = Instant.now();
+        log.info("[ORDER-DOMAIN] Ордер {} частично исполнен. Qty: {}", this.id, executedQty);
     }
 
     /**
      * Переводит ордер в статус REJECTED (отклонен).
-     */
-    public void markAsRejected(String reason) {
+     */    public void markAsRejected(String reason) {
         validateTransition(com.tradingbot.common.enums.OrderStatus.REJECTED.name());
         this.status = com.tradingbot.common.enums.OrderStatus.REJECTED.name();
         this.updatedAt = Instant.now();
         log.warn("[ORDER-DOMAIN] Ордер {} отклонен. Причина: {}", this.id, reason);
+    }
+
+    /**
+     * Принудительно переводит ордер в статус FILLED, игнорируя текущее состояние.
+     * Используется только при рассинхронизации с биржей (Binance Source of Truth).
+     */
+    public void forceMarkAsFilled(String exchangeOrderId, BigDecimal executedQty) {
+        this.exchangeOrderId = exchangeOrderId;
+        this.quantity = executedQty;
+        this.status = com.tradingbot.common.enums.OrderStatus.FILLED.name();
+        this.updatedAt = Instant.now();
+        log.warn("[ORDER-DOMAIN][DESYNC FIX] Ордер {} ПРИНУДИТЕЛЬНО переведен в FILLED. ExchangeID: {}", this.id, exchangeOrderId);
     }
 
     private void validateTransition(String newStatus) {

@@ -23,12 +23,16 @@ public class IdempotencyService {
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void markAsProcessed(UUID eventId, String consumerName) {
-        ProcessedEventEntity entity = ProcessedEventEntity.builder()
-                .eventId(eventId)
-                .processedAt(Instant.now())
-                .consumerName(consumerName)
-                .build();
-        repository.save(entity);
-        log.debug("[IDEMPOTENCY] Event {} marked as processed by {}", eventId, consumerName);
-    }
-}
+        try {
+            ProcessedEventEntity entity = ProcessedEventEntity.builder()
+                    .eventId(eventId)
+                    .processedAt(Instant.now())
+                    .consumerName(consumerName)
+                    .build();
+            repository.saveAndFlush(entity);
+            log.debug("[IDEMPOTENCY] Event {} marked as processed by {}", eventId, consumerName);
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            log.warn("[IDEMPOTENCY] Event already processed eventId={}", eventId);
+            // Игнорируем ошибку дубликата, так как это означает, что событие уже обработано
+        }
+    }}

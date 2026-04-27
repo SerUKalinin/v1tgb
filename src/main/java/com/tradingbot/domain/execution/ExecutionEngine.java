@@ -10,15 +10,11 @@ import com.tradingbot.domain.risk.ApprovedOrder;
  * Интерфейс исполнительного движка.
  * Реализации ДОЛЖНЫ обеспечивать идемпотентность исполнения на основе clientOrderId.
  */
-public interface ExecutionEngine {
+import com.tradingbot.infrastructure.execution.binance.OrderStatusResponse;
+import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.risk.ApprovedOrder;
 
-    /**
-     * Выполняет торговый ордер.
-     * 
-     * @param approvedOrder ордер, одобренный риск-менеджером. 
-     *                      Поле clientOrderId ДОЛЖНО использоваться как ключ идемпотентности.
-     * @return результат исполнения. Повторные вызовы с тем же clientOrderId 
-     *         ДОЛЖНЫ возвращать детерминированный результат.
-     */
+public interface ExecutionEngine {
     ExecutionResult execute(ApprovedOrder approvedOrder);
+    OrderStatusResponse verifyOrder(String clientOrderId);
 }
