@@ -1,10 +1,10 @@
 package com.tradingbot.application.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.risk.ApprovedOrder;
+import com.tradingbot.infrastructure.execution.binance.OrderStatusResponse;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
@@ -29,7 +29,6 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
     private final ExecutionEngine executionEngine;
     private final OrderRepository orderRepository;
-    private final ObjectMapper objectMapper;
 
     private static final String EVENT_TYPE = "ORDER_CREATED";
 
@@ -59,7 +58,6 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
     /**
      * Фаза 1: preFlight. Только чтение из БД.
-     * Проверяет актуальный статус ордера для обеспечения идемпотентности.
      */
     @Transactional(readOnly = true)
     public Optional<OrderEntity> preFlight(UUID orderId) {
@@ -67,23 +65,22 @@ public class OrderExecutionHandler implements OutboxConsumer {
                 .orElseThrow(() -> new IllegalStateException("Ордер не найден в БД: " + orderId));
 
         if (!OrderStatus.PENDING_EXECUTION.name().equals(currentOrder.getStatus())) {
-            log.warn("[EXECUTION][PRE-FLIGHT] Skip execution for orderId={}, status={}", 
+            log.warn("[EXECUTION][PRE-FLIGHT] Skip execution for orderId={}, status={}",
                     orderId, currentOrder.getStatus());
             return Optional.empty();
         }
-        
+
         return Optional.of(currentOrder);
     }
+
     /**
      * Фаза 2: execute. Чистый IO слой.
-     * Выполняет сетевой вызов к бирже вне транзакции.
      */
     private ExecutionResult execute(ApprovedOrder approvedOrder) throws Exception {
         log.info("[EXECUTION][IO] Sending order to exchange id={}", approvedOrder.getOrderId());
         try {
             return executionEngine.execute(approvedOrder);
         } catch (Exception e) {
-            // Проверяем на таймаут через сообщение или тип, если это RuntimeException
             if (e.getMessage() != null && e.getMessage().contains("timeout")) {
                 log.error("[EXECUTION][IO] Timeout detected for order id={}", approvedOrder.getOrderId());
                 return ExecutionResult.timeout(approvedOrder.getOrderId());
@@ -91,9 +88,10 @@ public class OrderExecutionHandler implements OutboxConsumer {
             log.error("[EXECUTION][IO] Critical error for order id={}: {}", approvedOrder.getOrderId(), e.getMessage());
             throw e;
         }
-    }    /**
+    }
+
+    /**
      * Фаза 3: commitResult. Фиксация результата в БД.
-     * Выполняется в новой транзакции.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void commitResult(UUID orderId, ExecutionResult result) {
@@ -101,7 +99,6 @@ public class OrderExecutionHandler implements OutboxConsumer {
             internalCommit(orderId, result);
         } catch (org.springframework.orm.ObjectOptimisticLockingFailureException e) {
             log.warn("[EXECUTION][LOCK] Retry commit for orderId={}", orderId);
-            // Один повтор при конфликте версий
             internalCommit(orderId, result);
         }
     }
@@ -110,26 +107,58 @@ public class OrderExecutionHandler implements OutboxConsumer {
         OrderEntity order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new IllegalStateException("Ордер не найден при коммите: " + orderId));
 
-        // Idempotency guard: если статус уже финальный, ничего не делаем
-        String currentStatus = order.getStatus();
-        if (OrderStatus.FILLED.name().equals(currentStatus) || OrderStatus.REJECTED.name().equals(currentStatus)) {
-            log.info("[EXECUTION][COMMIT] Order {} already in final status {}. Skipping.", orderId, currentStatus);
-            return;
+        if (!result.isSuccess() && "TIMEOUT".equals(result.getErrorMessage())) {
+            log.warn("[EXECUTION][COMMIT] Result is UNKNOWN for order {}. Fetching source of truth from Binance...", orderId);
+            OrderStatusResponse binanceState = executionEngine.verifyOrder(order.getClientOrderId());
+
+            if ("FILLED".equals(binanceState.getStatus()) || "PARTIALLY_FILLED".equals(binanceState.getStatus())) {
+                String currentStatus = order.getStatus();
+                if (OrderStatus.REJECTED.name().equals(currentStatus) || "CANCELED".equals(currentStatus)) {
+                    log.error("[VERIFY][FLOW] type=DESYNC_FIX orderId={} result=DB_OVERRIDE_FROM_{}_TO_FILLED",
+                            orderId, currentStatus);
+                    order.forceMarkAsFilled(binanceState.getExchangeOrderId(), binanceState.getExecutedQty());
+                } else {
+                    log.info("[VERIFY][FLOW] type=RECONCILIATION orderId={} result=STATE_SYNCED", orderId);
+                    applyBinanceResult(order, binanceState);
+                }
+            } else if (OrderStatusResponse.ORDER_NOT_FOUND.equals(binanceState.getStatus())) {
+                log.error("[VERIFY][FLOW] type=RECONCILIATION orderId={} result=ORDER_NOT_FOUND_ON_EXCHANGE", orderId);
+                order.markAsRejected("Not found on exchange after timeout");
+            } else {
+                log.warn("[EXECUTION][RECON] Order {} still in status {} on Binance. Leaving for reconciliation.", orderId, binanceState.getStatus());
+                return;
+            }
+        } else {
+            String currentStatus = order.getStatus();
+            if (OrderStatus.FILLED.name().equals(currentStatus) || OrderStatus.REJECTED.name().equals(currentStatus)) {
+                log.info("[EXECUTION][COMMIT] Order {} already in final status {}. Skipping.", orderId, currentStatus);
+                return;
+            }
+
+            if (result.isSuccess()) {
+                order.markAsFilled(result.getExchangeOrderId(), result.getExecutedQty());
+                log.info("[EXECUTION][COMMIT] Order {} marked as FILLED", orderId);
+            } else if ("PARTIAL".equals(result.getErrorMessage())) {
+                order.markAsPartiallyFilled(result.getExchangeOrderId(), result.getExecutedQty());
+                log.info("[EXECUTION][COMMIT] Order {} marked as PARTIALLY_FILLED", orderId);
+            } else {
+                order.markAsRejected(result.getErrorMessage());
+                log.warn("[EXECUTION][COMMIT] Order {} marked as REJECTED: {}", orderId, result.getErrorMessage());
+            }
         }
 
-        if (result.isSuccess()) {
-            order.markAsFilled(result.getExchangeOrderId(), result.getExecutedQty());
-            log.info("[EXECUTION][COMMIT] Order {} marked as FILLED", orderId);
-        } else if ("PARTIAL".equals(result.getErrorMessage())) {
-            order.markAsPartiallyFilled(result.getExchangeOrderId(), result.getExecutedQty());
-            log.info("[EXECUTION][COMMIT] Order {} marked as PARTIALLY_FILLED", orderId);
-        } else {
-            order.markAsRejected(result.getErrorMessage());
-            log.warn("[EXECUTION][COMMIT] Order {} marked as REJECTED: {}", orderId, result.getErrorMessage());
-        }
-        
         orderRepository.saveAndFlush(order);
-    }    private ApprovedOrder mapToApproved(OrderEntity entity) {
+    }
+
+    private void applyBinanceResult(OrderEntity order, OrderStatusResponse binanceState) {
+        if ("FILLED".equals(binanceState.getStatus())) {
+            order.markAsFilled(binanceState.getExchangeOrderId(), binanceState.getExecutedQty());
+        } else {
+            order.markAsPartiallyFilled(binanceState.getExchangeOrderId(), binanceState.getExecutedQty());
+        }
+    }
+
+    private ApprovedOrder mapToApproved(OrderEntity entity) {
         return ApprovedOrder.builder()
                 .orderId(entity.getId())
                 .clientOrderId(entity.getClientOrderId())

@@ -5,6 +5,7 @@ import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.risk.ApprovedOrder;
+import com.tradingbot.infrastructure.execution.binance.OrderStatusResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
@@ -48,5 +49,16 @@ public class BacktestExecutionEngine implements ExecutionEngine {
                 "USDT",
                 approvedOrder.getClientOrderId()
         );
+    }
+    @Override
+    public OrderStatusResponse verifyOrder(String clientOrderId) {
+        log.info("[FAKE-EXEC] Verifying order: {}", clientOrderId);
+        // В режиме бэктеста считаем, что если мы здесь, то ордер был исполнен
+        return OrderStatusResponse.builder()
+                .status("FILLED")
+                .clientOrderId(clientOrderId)
+                .exchangeOrderId("fake-recon-" + clientOrderId)
+                .executedQty(BigDecimal.ZERO) // Упрощение для бэктеста
+                .build();
     }
 }

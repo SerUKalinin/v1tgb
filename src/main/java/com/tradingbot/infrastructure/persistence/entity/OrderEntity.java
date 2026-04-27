@@ -110,6 +110,18 @@ public class OrderEntity {
         log.warn("[ORDER-DOMAIN] Ордер {} отклонен. Причина: {}", this.id, reason);
     }
 
+    /**
+     * Принудительно переводит ордер в статус FILLED, игнорируя текущее состояние.
+     * Используется только при рассинхронизации с биржей (Binance Source of Truth).
+     */
+    public void forceMarkAsFilled(String exchangeOrderId, BigDecimal executedQty) {
+        this.exchangeOrderId = exchangeOrderId;
+        this.quantity = executedQty;
+        this.status = com.tradingbot.common.enums.OrderStatus.FILLED.name();
+        this.updatedAt = Instant.now();
+        log.warn("[ORDER-DOMAIN][DESYNC FIX] Ордер {} ПРИНУДИТЕЛЬНО переведен в FILLED. ExchangeID: {}", this.id, exchangeOrderId);
+    }
+
     private void validateTransition(String newStatus) {
         String currentStatus = this.status;
         if (com.tradingbot.common.enums.OrderStatus.FILLED.name().equals(currentStatus) || 
