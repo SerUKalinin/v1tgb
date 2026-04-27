@@ -151,7 +151,7 @@ public class ReconciliationService {
 
             if (existsOnExchange) {
                 log.info("[RECON] Order {} found on exchange. Marking as FILLED (manual check required for partials).", order.getId());
-                order.setStatus(OrderStatus.FILLED.name());
+                order.markAsFilled("RECON-SYNC");
                 // В реальной реализации здесь нужно получить детали исполнения (qty, price)
             } else {
                 log.warn("[RECON] Order {} NOT FOUND on exchange. Releasing capital and rejecting.", order.getId());
@@ -161,9 +161,8 @@ public class ReconciliationService {
                         : BigDecimal.ZERO;
                 
                 riskEngine.release(order.getId(), releaseAmount, "Reconciliation: Order not found on exchange");
-                order.setStatus(OrderStatus.REJECTED.name());
-            }
-            
+                order.markAsRejected("Not found on exchange during reconciliation");
+            }            
             orderRepository.save(order);
             
         } catch (Exception e) {

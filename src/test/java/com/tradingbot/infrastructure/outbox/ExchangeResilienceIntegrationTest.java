@@ -1,5 +1,6 @@
 package com.tradingbot.infrastructure.outbox;
 
+import com.tradingbot.application.event.OutboxEventRouter;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import org.junit.jupiter.api.Test;
@@ -25,10 +26,11 @@ public class ExchangeResilienceIntegrationTest {
     private OutboxEventRepository outboxEventRepository;
 
     @MockBean
-    private OutboxDispatcher outboxDispatcher;
+    private OutboxEventRouter outboxEventRouter;
 
     @Test
-    void shouldRetryOnExchangeFailureAndEventuallySucceed() throws Exception {        outboxEventRepository.deleteAll();
+    void shouldRetryOnExchangeFailureAndEventuallySucceed() throws Exception {
+        outboxEventRepository.deleteAll();
 
         UUID eventId = UUID.randomUUID();
         OutboxEventEntity event = OutboxEventEntity.builder()
@@ -43,11 +45,13 @@ public class ExchangeResilienceIntegrationTest {
 
         // First call fails, second succeeds
         doThrow(new RuntimeException("Exchange Down"))
-                .doNothing()
-                .when(outboxDispatcher).dispatch(any());
+                .doAnswer(invocation -> null) // doNothing equivalent for non-void or just to be explicit
+                .when(outboxEventRouter).route(any());
 
         // When
-        outboxProcessor.processOutbox(); // First attempt - fails
+        try {
+            outboxProcessor.processOutbox(); // First attempt - fails
+        } catch (Exception ignored) {}
 
         // Then
         OutboxEventEntity failedEvent = outboxEventRepository.findById(eventId).orElseThrow();

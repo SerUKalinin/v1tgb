@@ -2,9 +2,10 @@ package com.tradingbot.config;
 
 import com.tradingbot.application.service.TradeService;
 import com.tradingbot.domain.execution.ExecutionEngine;
+import com.tradingbot.infrastructure.execution.binance.BinanceClient;
 import com.tradingbot.infrastructure.execution.binance.BinanceExecutionEngine;
 import com.tradingbot.infrastructure.execution.fake.BacktestExecutionEngine;
-import com.tradingbot.infrastructure.execution.binance.BinanceClient;
+import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -23,14 +24,14 @@ public class AppConfig {
      * Активируется в профиле "prod".
      *
      * @param binanceClient клиент API Binance
+     * @param orderRepository репозиторий ордеров
      * @return экземпляр BinanceExecutionEngine
      */
     @Bean
     @Profile("prod")
-    public ExecutionEngine binanceExecutionEngine(BinanceClient binanceClient) {
-        return new BinanceExecutionEngine(binanceClient);
+    public ExecutionEngine binanceExecutionEngine(BinanceClient binanceClient, OrderRepository orderRepository) {
+        return new BinanceExecutionEngine(binanceClient, orderRepository);
     }
-
     /**
      * Создаёт исполнительный движок для бэктестирования.
      * <p>
