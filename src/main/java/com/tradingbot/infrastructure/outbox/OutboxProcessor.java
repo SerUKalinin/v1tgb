@@ -1,5 +1,6 @@
 package com.tradingbot.infrastructure.outbox;
 
+import com.tradingbot.application.event.OutboxEventRouter;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import lombok.RequiredArgsConstructor;
@@ -11,8 +12,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import org.springframework.data.domain.PageRequest;
-
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -23,10 +22,18 @@ import java.util.UUID;
 public class OutboxProcessor implements ApplicationContextAware {
 
     private final OutboxEventRepository outboxRepository;
-    private final OutboxDispatcher dispatcher;
+    private final OutboxEventRouter router;
     private final OutboxRetryPolicy retryPolicy;
-    private final IdempotencyService idempotencyService;
+    private final DeadLetterAlertService alertService;
     private ApplicationContext applicationContext;
+    
+    private volatile boolean shuttingDown = false;
+
+    @jakarta.annotation.PreDestroy
+    public void shutdown() {
+        this.shuttingDown = true;
+        log.info("[OUTBOX] Получен сигнал завершения. Остановка процессора...");
+    }
 
     @Override
     public void setApplicationContext(ApplicationContext applicationContext) {
@@ -39,38 +46,44 @@ public class OutboxProcessor implements ApplicationContextAware {
 
     @Scheduled(fixedDelayString = "${app.outbox.scan-interval:500}")
     public void processOutbox() {
+        if (shuttingDown) return;
+        
         List<OutboxEventEntity> events = claimBatch();
         if (events.isEmpty()) return;
 
-        log.debug("[OUTBOX] Processing batch of {} events", events.size());
+        log.debug("[OUTBOX] Обработка батча из {} событий", events.size());
 
         for (OutboxEventEntity event : events) {
+            if (shuttingDown) break;
             self().processSingleEvent(event);
         }
     }
 
+    /**
+     * Обрабатывает одиночное событие в отдельной транзакции.
+     * Ответственность за бизнес-идемпотентность лежит на хендлерах.
+     */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void processSingleEvent(OutboxEventEntity event) {
-        try {
-            if (idempotencyService.isAlreadyProcessed(event.getId())) {
-                log.info("[OUTBOX] Event {} already processed globally. Skipping.", event.getId());
-                finalizeProcessed(event);
-                return;
-            }
+        if (event.getStatus() == OutboxStatus.DEAD) return;
 
-            dispatcher.dispatch(event);
-            idempotencyService.markAsProcessed(event.getId(), "GlobalOutboxProcessor");
+        try {
+            // 1. Выполнение (Execution) - хендлер сам управляет своей транзакцией и идемпотентностью
+            router.route(event);
+
+            // 2. Завершение статуса Outbox события
             finalizeProcessed(event);
             
         } catch (Exception e) {
-            log.error("[OUTBOX] Failed to process event {}: {}", event.getId(), e.getMessage());
-            handleFailureInternal(event.getId());
+            log.error("[OUTBOX] Ошибка при обработке события {}: {}", event.getId(), e.getMessage());
+            handleFailureInternal(event.getId(), e.getMessage());
         }
     }
 
     private void finalizeProcessed(OutboxEventEntity event) {
         event.setStatus(OutboxStatus.PROCESSED);
         event.setProcessedAt(Instant.now());
+        event.setLastError(null);
         outboxRepository.save(event);
     }
 
@@ -84,31 +97,21 @@ public class OutboxProcessor implements ApplicationContextAware {
         return outboxRepository.saveAllAndFlush(events);
     }
 
-    private void handleFailureInternal(UUID eventId) {
+    private void handleFailureInternal(UUID eventId, String errorMessage) {
         outboxRepository.findById(eventId).ifPresent(event -> {
             event.setRetryCount(event.getRetryCount() + 1);
             event.setUpdatedAt(Instant.now());
+            event.setLastError(errorMessage);
 
             if (retryPolicy.shouldRetry(event)) {
                 event.setStatus(OutboxStatus.FAILED);
                 log.info("[OUTBOX] Event {} marked for retry ({})", eventId, event.getRetryCount());
             } else {
                 event.setStatus(OutboxStatus.DEAD);
-                log.error("[OUTBOX] Event {} moved to DEAD letter (retries exhausted)", eventId);
+                log.error("[OUTBOX] Event {} moved to DEAD letter (retries exhausted). Reason: {}", eventId, errorMessage);
+                alertService.sendAlert(event);
             }
             outboxRepository.save(event);
         });
-    }
-
-    @Deprecated
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected void markProcessed(UUID eventId) {
-        // Use processSingleEvent logic instead
-    }
-
-    @Deprecated
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected void handleFailure(UUID eventId) {
-        // Use processSingleEvent logic instead
     }
 }

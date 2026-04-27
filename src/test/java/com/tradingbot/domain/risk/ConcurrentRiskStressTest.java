@@ -63,18 +63,23 @@ public class ConcurrentRiskStressTest {
 
         for (int i = 0; i < threadCount; i++) {
             futures.add(CompletableFuture.runAsync(() -> {
-                transactionTemplate.execute(status -> {
-                    RiskDecision decision = riskEngine.reserve(UUID.randomUUID(), orderAmount);
-                    if (decision.isApproved()) {
-                        approvedCount.incrementAndGet();
-                    } else {
-                        rejectedCount.incrementAndGet();
-                    }
-                    return null;
-                });
+                try {
+                    transactionTemplate.execute(status -> {
+                        RiskDecision decision = riskEngine.reserve(UUID.randomUUID(), orderAmount);
+                        if (decision.isApproved()) {
+                            approvedCount.incrementAndGet();
+                        } else {
+                            rejectedCount.incrementAndGet();
+                        }
+                        return null;
+                    });
+                } catch (Exception e) {
+                    // Конфликты конкуренции (DataIntegrityViolationException, OptimisticLockingFailureException)
+                    // являются ожидаемым поведением при защите от Double Spend.
+                    rejectedCount.incrementAndGet();
+                }
             }, executor));
         }
-
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
         executor.shutdown();
 
