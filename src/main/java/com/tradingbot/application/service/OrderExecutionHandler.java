@@ -5,6 +5,7 @@ import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.risk.ApprovedOrder;
 import com.tradingbot.infrastructure.execution.binance.OrderStatusResponse;
+import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
@@ -29,6 +30,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
     private final ExecutionEngine executionEngine;
     private final OrderRepository orderRepository;
+    private final IdempotencyService idempotencyService;
 
     private static final String EVENT_TYPE = "ORDER_CREATED";
 
@@ -52,8 +54,8 @@ public class OrderExecutionHandler implements OutboxConsumer {
         log.info("[ИСПОЛНЕНИЕ] Вызов ExecutionEngine для ордера {}", order.getId());
         ExecutionResult result = execute(approvedOrder);
 
-        // 3. Фаза commitResult: сохранение результата в отдельной транзакции
-        commitResult(order.getId(), result);
+        // 3. Фаза commitResult: сохранение результата и фиксация идемпотентности в одной транзакции
+        commitResult(order.getId(), result, event.getId());
     }
 
     /**
@@ -94,25 +96,33 @@ public class OrderExecutionHandler implements OutboxConsumer {
      * Фаза 3: commitResult. Фиксация результата в БД.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void commitResult(UUID orderId, ExecutionResult result) {
+    public void commitResult(UUID orderId, ExecutionResult result, UUID eventId) {
         try {
-            internalCommit(orderId, result);
+            internalCommit(orderId, result, eventId);
         } catch (org.springframework.orm.ObjectOptimisticLockingFailureException e) {
             log.warn("[EXECUTION][LOCK] Retry commit for orderId={}", orderId);
-            internalCommit(orderId, result);
+            internalCommit(orderId, result, eventId);
         }
     }
 
-    private void internalCommit(UUID orderId, ExecutionResult result) {
+    private void internalCommit(UUID orderId, ExecutionResult result, UUID eventId) {
         OrderEntity order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new IllegalStateException("Ордер не найден при коммите: " + orderId));
 
-        // Защита идемпотентности: если статус уже финальный, выходим
         String currentStatus = order.getStatus();
-        if (OrderStatus.FILLED.name().equals(currentStatus) || 
-            OrderStatus.REJECTED.name().equals(currentStatus) || 
-            "CANCELED".equals(currentStatus)) {
-            log.info("[COMMIT][SKIP] already finalized orderId={}", orderId);
+        boolean isFinalStatus = OrderStatus.FILLED.name().equals(currentStatus) ||
+                OrderStatus.REJECTED.name().equals(currentStatus) ||
+                "CANCELED".equals(currentStatus);
+
+        // Защита идемпотентности
+        if (isFinalStatus && idempotencyService.isAlreadyProcessed(eventId)) {
+            log.info("[COMMIT][IDEMPOTENT] skip duplicate processing orderId={}, eventId={}", orderId, eventId);
+            return;
+        }
+
+        if (isFinalStatus) {
+            log.info("[COMMIT][SKIP] already finalized orderId={}, marking event as processed", orderId);
+            idempotencyService.markAsProcessed(eventId, "OrderExecutionHandler");
             return;
         }
 
@@ -120,7 +130,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
         if (!result.isSuccess() && "TIMEOUT".equals(result.getErrorMessage())) {
             log.warn("[COMMIT][VERIFY] sync from Binance orderId={}", orderId);
             OrderStatusResponse binanceState = executionEngine.verifyOrder(order.getClientOrderId());
-            
+
             if ("FILLED".equals(binanceState.getStatus())) {
                 if (OrderStatus.REJECTED.name().equals(currentStatus) || "CANCELED".equals(currentStatus)) {
                     log.error("[DESYNC OVERRIDE] Local state overridden by Binance truth for orderId={}", orderId);
@@ -153,8 +163,9 @@ public class OrderExecutionHandler implements OutboxConsumer {
                 log.warn("[EXECUTION][COMMIT] Order {} marked as REJECTED: {}", orderId, result.getErrorMessage());
             }
         }
-        
+
         orderRepository.saveAndFlush(order);
+        idempotencyService.markAsProcessed(eventId, "OrderExecutionHandler");
     }
 
     private ApprovedOrder mapToApproved(OrderEntity entity) {

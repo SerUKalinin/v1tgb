@@ -24,7 +24,6 @@ public class OutboxProcessor implements ApplicationContextAware {
     private final OutboxEventRepository outboxRepository;
     private final OutboxEventRouter router;
     private final OutboxRetryPolicy retryPolicy;
-    private final IdempotencyService idempotencyService;
     private final DeadLetterAlertService alertService;
     private ApplicationContext applicationContext;
     
@@ -47,9 +46,7 @@ public class OutboxProcessor implements ApplicationContextAware {
 
     @Scheduled(fixedDelayString = "${app.outbox.scan-interval:500}")
     public void processOutbox() {
-        if (shuttingDown) {
-            return;
-        }
+        if (shuttingDown) return;
         
         List<OutboxEventEntity> events = claimBatch();
         if (events.isEmpty()) return;
@@ -61,41 +58,20 @@ public class OutboxProcessor implements ApplicationContextAware {
             self().processSingleEvent(event);
         }
     }
+
     /**
      * Обрабатывает одиночное событие в отдельной транзакции.
-     * 
-     * ПОРЯДОК ОПЕРАЦИЙ (Гарантия идемпотентности):
-     * 1. Проверка в таблице processed_events (idempotency check).
-     * 2. Выполнение бизнес-логики (router.route) -> Включает сетевой вызов к бирже.
-     * 3. Запись в processed_events (markAsProcessed).
-     * 4. Обновление статуса самого события (finalizeProcessed).
-     * 
-     * Если система упадет на шаге 2, событие останется в статусе PROCESSING/FAILED и будет переповторено.
-     * Если система упадет на шаге 3 или 4, при повторе сработает шаг 1.
+     * Ответственность за бизнес-идемпотентность лежит на хендлерах.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void processSingleEvent(OutboxEventEntity event) {
-        if (event.getStatus() == OutboxStatus.DEAD) {
-            log.warn("[OUTBOX] Пропуск DEAD события {}", event.getId());
-            return;
-        }
+        if (event.getStatus() == OutboxStatus.DEAD) return;
 
         try {
-            // 1. Проверка на дубликат (Idempotency Check)
-            if (idempotencyService.isAlreadyProcessed(event.getId())) {
-                log.info("[OUTBOX] Событие {} уже было успешно обработано ранее. Пропуск.", event.getId());
-                finalizeProcessed(event);
-                return;
-            }
-
-            // 2. Выполнение (Execution) - может содержать сетевые вызовы
+            // 1. Выполнение (Execution) - хендлер сам управляет своей транзакцией и идемпотентностью
             router.route(event);
 
-            // 3. Фиксация успешной обработки (Idempotency Commit)
-            // Выполняется в той же транзакции, что и обновление статуса ордера (если хендлер транзакционен)
-            idempotencyService.markAsProcessed(event.getId(), "GlobalOutboxProcessor");
-
-            // 4. Завершение
+            // 2. Завершение статуса Outbox события
             finalizeProcessed(event);
             
         } catch (Exception e) {
@@ -103,6 +79,7 @@ public class OutboxProcessor implements ApplicationContextAware {
             handleFailureInternal(event.getId(), e.getMessage());
         }
     }
+
     private void finalizeProcessed(OutboxEventEntity event) {
         event.setStatus(OutboxStatus.PROCESSED);
         event.setProcessedAt(Instant.now());
@@ -134,17 +111,7 @@ public class OutboxProcessor implements ApplicationContextAware {
                 log.error("[OUTBOX] Event {} moved to DEAD letter (retries exhausted). Reason: {}", eventId, errorMessage);
                 alertService.sendAlert(event);
             }
-            outboxRepository.save(event);        });
-    }
-    @Deprecated
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected void markProcessed(UUID eventId) {
-        // Use processSingleEvent logic instead
-    }
-
-    @Deprecated
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected void handleFailure(UUID eventId) {
-        // Use processSingleEvent logic instead
+            outboxRepository.save(event);
+        });
     }
 }
