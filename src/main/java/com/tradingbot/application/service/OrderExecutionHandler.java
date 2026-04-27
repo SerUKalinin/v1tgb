@@ -107,34 +107,41 @@ public class OrderExecutionHandler implements OutboxConsumer {
         OrderEntity order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new IllegalStateException("Ордер не найден при коммите: " + orderId));
 
-        if (!result.isSuccess() && "TIMEOUT".equals(result.getErrorMessage())) {
-            log.warn("[EXECUTION][COMMIT] Result is UNKNOWN for order {}. Fetching source of truth from Binance...", orderId);
-            OrderStatusResponse binanceState = executionEngine.verifyOrder(order.getClientOrderId());
+        // Защита идемпотентности: если статус уже финальный, выходим
+        String currentStatus = order.getStatus();
+        if (OrderStatus.FILLED.name().equals(currentStatus) || 
+            OrderStatus.REJECTED.name().equals(currentStatus) || 
+            "CANCELED".equals(currentStatus)) {
+            log.info("[COMMIT][SKIP] already finalized orderId={}", orderId);
+            return;
+        }
 
-            if ("FILLED".equals(binanceState.getStatus()) || "PARTIALLY_FILLED".equals(binanceState.getStatus())) {
-                String currentStatus = order.getStatus();
+        // Обработка UNKNOWN результата через прямую сверку с биржей
+        if (!result.isSuccess() && "TIMEOUT".equals(result.getErrorMessage())) {
+            log.warn("[COMMIT][VERIFY] sync from Binance orderId={}", orderId);
+            OrderStatusResponse binanceState = executionEngine.verifyOrder(order.getClientOrderId());
+            
+            if ("FILLED".equals(binanceState.getStatus())) {
                 if (OrderStatus.REJECTED.name().equals(currentStatus) || "CANCELED".equals(currentStatus)) {
-                    log.error("[VERIFY][FLOW] type=DESYNC_FIX orderId={} result=DB_OVERRIDE_FROM_{}_TO_FILLED",
-                            orderId, currentStatus);
-                    order.forceMarkAsFilled(binanceState.getExchangeOrderId(), binanceState.getExecutedQty());
+                    log.error("[DESYNC OVERRIDE] Local state overridden by Binance truth for orderId={}", orderId);
                 } else {
-                    log.info("[VERIFY][FLOW] type=RECONCILIATION orderId={} result=STATE_SYNCED", orderId);
-                    applyBinanceResult(order, binanceState);
+                    log.info("[EXECUTION][RECON] Binance confirms FILLED for {}. Overwriting state.", orderId);
                 }
+                order.forceMarkAsFilled(binanceState.getExchangeOrderId(), binanceState.getExecutedQty());
+            } else if ("PARTIALLY_FILLED".equals(binanceState.getStatus())) {
+                log.info("[EXECUTION][RECON] Binance confirms PARTIALLY_FILLED for {}. Overwriting state.", orderId);
+                order.markAsPartiallyFilled(binanceState.getExchangeOrderId(), binanceState.getExecutedQty());
+            } else if ("CANCELED".equals(binanceState.getStatus()) || "EXPIRED".equals(binanceState.getStatus())) {
+                log.warn("[EXECUTION][RECON] Binance confirms {} for {}. Rejecting.", binanceState.getStatus(), orderId);
+                order.markAsRejected("Exchange status: " + binanceState.getStatus());
             } else if (OrderStatusResponse.ORDER_NOT_FOUND.equals(binanceState.getStatus())) {
-                log.error("[VERIFY][FLOW] type=RECONCILIATION orderId={} result=ORDER_NOT_FOUND_ON_EXCHANGE", orderId);
-                order.markAsRejected("Not found on exchange after timeout");
+                log.error("[EXECUTION][RECON] Order {} NOT_FOUND_ON_EXCHANGE. Rejecting.", orderId);
+                order.markAsRejected("UNKNOWN_STATE");
             } else {
                 log.warn("[EXECUTION][RECON] Order {} still in status {} on Binance. Leaving for reconciliation.", orderId, binanceState.getStatus());
                 return;
             }
         } else {
-            String currentStatus = order.getStatus();
-            if (OrderStatus.FILLED.name().equals(currentStatus) || OrderStatus.REJECTED.name().equals(currentStatus)) {
-                log.info("[EXECUTION][COMMIT] Order {} already in final status {}. Skipping.", orderId, currentStatus);
-                return;
-            }
-
             if (result.isSuccess()) {
                 order.markAsFilled(result.getExchangeOrderId(), result.getExecutedQty());
                 log.info("[EXECUTION][COMMIT] Order {} marked as FILLED", orderId);
@@ -146,16 +153,8 @@ public class OrderExecutionHandler implements OutboxConsumer {
                 log.warn("[EXECUTION][COMMIT] Order {} marked as REJECTED: {}", orderId, result.getErrorMessage());
             }
         }
-
+        
         orderRepository.saveAndFlush(order);
-    }
-
-    private void applyBinanceResult(OrderEntity order, OrderStatusResponse binanceState) {
-        if ("FILLED".equals(binanceState.getStatus())) {
-            order.markAsFilled(binanceState.getExchangeOrderId(), binanceState.getExecutedQty());
-        } else {
-            order.markAsPartiallyFilled(binanceState.getExchangeOrderId(), binanceState.getExecutedQty());
-        }
     }
 
     private ApprovedOrder mapToApproved(OrderEntity entity) {
