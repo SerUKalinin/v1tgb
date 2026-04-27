@@ -19,10 +19,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.Optional;
 import java.util.UUID;
 
-/**
- * Обработчик исполнения ордеров.
- * Реализует Execution Protocol v2.0: разделение на фазы preFlight, execute и commit.
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -43,24 +39,18 @@ public class OrderExecutionHandler implements OutboxConsumer {
     public void consume(OutboxEventEntity event) throws Exception {
         log.info("[ИСПОЛНЕНИЕ] Начало обработки события {} для агрегата {}", event.getEventType(), event.getAggregateId());
 
-        // 1. Фаза preFlight: только чтение
         Optional<OrderEntity> orderOpt = preFlight(event.getAggregateId());
         if (orderOpt.isEmpty()) return;
 
         OrderEntity order = orderOpt.get();
         ApprovedOrder approvedOrder = mapToApproved(order);
 
-        // 2. Фаза execute: сетевой вызов вне транзакции
         log.info("[ИСПОЛНЕНИЕ] Вызов ExecutionEngine для ордера {}", order.getId());
         ExecutionResult result = execute(approvedOrder);
 
-        // 3. Фаза commitResult: сохранение результата и фиксация идемпотентности в одной транзакции
         commitResult(order.getId(), result, event.getId());
     }
 
-    /**
-     * Фаза 1: preFlight. Только чтение из БД.
-     */
     @Transactional(readOnly = true)
     public Optional<OrderEntity> preFlight(UUID orderId) {
         OrderEntity currentOrder = orderRepository.findById(orderId)
@@ -71,36 +61,57 @@ public class OrderExecutionHandler implements OutboxConsumer {
                     orderId, currentOrder.getStatus());
             return Optional.empty();
         }
-
         return Optional.of(currentOrder);
     }
 
-    /**
-     * Фаза 2: execute. Чистый IO слой.
-     */
     private ExecutionResult execute(ApprovedOrder approvedOrder) throws Exception {
         log.info("[EXECUTION][IO] Sending order to exchange id={}", approvedOrder.getOrderId());
         try {
-            return executionEngine.execute(approvedOrder);
-        } catch (Exception e) {
-            if (e.getMessage() != null && e.getMessage().contains("timeout")) {
-                log.error("[EXECUTION][IO] Timeout detected for order id={}", approvedOrder.getOrderId());
-                return ExecutionResult.timeout(approvedOrder.getOrderId());
+            ExecutionResult result = executionEngine.execute(approvedOrder);
+            if (!result.isSuccess() && "TIMEOUT".equals(result.getErrorMessage())) {
+                return verifyStatus(approvedOrder);
             }
-            log.error("[EXECUTION][IO] Critical error for order id={}: {}", approvedOrder.getOrderId(), e.getMessage());
-            throw e;
+            return result;
+        } catch (Exception e) {
+            log.error("[EXECUTION][IO] Error for order id={}: {}", approvedOrder.getOrderId(), e.getMessage());
+            return verifyStatus(approvedOrder);
         }
     }
 
-    /**
-     * Фаза 3: commitResult. Фиксация результата в БД.
-     */
+    private ExecutionResult verifyStatus(ApprovedOrder approvedOrder) {
+        try {
+            log.info("[EXECUTION][VERIFY] Calling exchange to verify order id={}", approvedOrder.getOrderId());
+            OrderStatusResponse binanceState = executionEngine.verifyOrder(approvedOrder.getClientOrderId());
+            
+            if ("FILLED".equals(binanceState.getStatus())) {
+                return ExecutionResult.builder()
+                        .orderId(approvedOrder.getOrderId())
+                        .exchangeOrderId(binanceState.getExchangeOrderId())
+                        .executedQty(binanceState.getExecutedQty())
+                        .success(true)
+                        .build();
+            } else if ("PARTIALLY_FILLED".equals(binanceState.getStatus())) {
+                return ExecutionResult.builder()
+                        .orderId(approvedOrder.getOrderId())
+                        .exchangeOrderId(binanceState.getExchangeOrderId())
+                        .executedQty(binanceState.getExecutedQty())
+                        .success(false)
+                        .errorMessage("PARTIAL")
+                        .build();
+            } else {
+                return ExecutionResult.failure(approvedOrder.getOrderId(), "Exchange status: " + binanceState.getStatus());
+            }
+        } catch (Exception e) {            log.error("[EXECUTION][VERIFY-FAILED] Could not verify order id={}: {}", approvedOrder.getOrderId(), e.getMessage());
+            return ExecutionResult.timeout(approvedOrder.getOrderId());
+        }
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void commitResult(UUID orderId, ExecutionResult result, UUID eventId) {
         try {
             internalCommit(orderId, result, eventId);
-        } catch (org.springframework.orm.ObjectOptimisticLockingFailureException e) {
-            log.warn("[EXECUTION][LOCK] Retry commit for orderId={}", orderId);
+        } catch (org.springframework.dao.OptimisticLockingFailureException e) {
+            log.warn("[COMMIT][RETRY] Optimistic lock retry for orderId={}", orderId);
             internalCommit(orderId, result, eventId);
         }
     }
@@ -114,58 +125,28 @@ public class OrderExecutionHandler implements OutboxConsumer {
                 OrderStatus.REJECTED.name().equals(currentStatus) ||
                 "CANCELED".equals(currentStatus);
 
-        // Защита идемпотентности
-        if (isFinalStatus && idempotencyService.isAlreadyProcessed(eventId)) {
-            log.info("[COMMIT][IDEMPOTENT] skip duplicate processing orderId={}, eventId={}", orderId, eventId);
+        if (isFinalStatus || idempotencyService.isAlreadyProcessed(eventId)) {
+            log.info("[COMMIT][SKIP-RETRY] already finalized orderId={}, eventId={}", orderId, eventId);
             return;
         }
 
-        if (isFinalStatus) {
-            log.info("[COMMIT][SKIP] already finalized orderId={}, marking event as processed", orderId);
-            idempotencyService.markAsProcessed(eventId, "OrderExecutionHandler");
-            return;
-        }
-
-        // Обработка UNKNOWN результата через прямую сверку с биржей
-        if (!result.isSuccess() && "TIMEOUT".equals(result.getErrorMessage())) {
-            log.warn("[COMMIT][VERIFY] sync from Binance orderId={}", orderId);
-            OrderStatusResponse binanceState = executionEngine.verifyOrder(order.getClientOrderId());
-
-            if ("FILLED".equals(binanceState.getStatus())) {
-                if (OrderStatus.REJECTED.name().equals(currentStatus) || "CANCELED".equals(currentStatus)) {
-                    log.error("[DESYNC OVERRIDE] Local state overridden by Binance truth for orderId={}", orderId);
-                } else {
-                    log.info("[EXECUTION][RECON] Binance confirms FILLED for {}. Overwriting state.", orderId);
-                }
-                order.forceMarkAsFilled(binanceState.getExchangeOrderId(), binanceState.getExecutedQty());
-            } else if ("PARTIALLY_FILLED".equals(binanceState.getStatus())) {
-                log.info("[EXECUTION][RECON] Binance confirms PARTIALLY_FILLED for {}. Overwriting state.", orderId);
-                order.markAsPartiallyFilled(binanceState.getExchangeOrderId(), binanceState.getExecutedQty());
-            } else if ("CANCELED".equals(binanceState.getStatus()) || "EXPIRED".equals(binanceState.getStatus())) {
-                log.warn("[EXECUTION][RECON] Binance confirms {} for {}. Rejecting.", binanceState.getStatus(), orderId);
-                order.markAsRejected("Exchange status: " + binanceState.getStatus());
-            } else if (OrderStatusResponse.ORDER_NOT_FOUND.equals(binanceState.getStatus())) {
-                log.error("[EXECUTION][RECON] Order {} NOT_FOUND_ON_EXCHANGE. Rejecting.", orderId);
-                order.markAsRejected("UNKNOWN_STATE");
-            } else {
-                log.warn("[EXECUTION][RECON] Order {} still in status {} on Binance. Leaving for reconciliation.", orderId, binanceState.getStatus());
-                return;
-            }
-        } else {
-            if (result.isSuccess()) {
-                order.markAsFilled(result.getExchangeOrderId(), result.getExecutedQty());
-                log.info("[EXECUTION][COMMIT] Order {} marked as FILLED", orderId);
-            } else if ("PARTIAL".equals(result.getErrorMessage())) {
-                order.markAsPartiallyFilled(result.getExchangeOrderId(), result.getExecutedQty());
-                log.info("[EXECUTION][COMMIT] Order {} marked as PARTIALLY_FILLED", orderId);
-            } else {
-                order.markAsRejected(result.getErrorMessage());
-                log.warn("[EXECUTION][COMMIT] Order {} marked as REJECTED: {}", orderId, result.getErrorMessage());
-            }
-        }
-
+        applyExecutionResult(order, result);
         orderRepository.saveAndFlush(order);
         idempotencyService.markAsProcessed(eventId, "OrderExecutionHandler");
+    }
+
+    private void applyExecutionResult(OrderEntity order, ExecutionResult result) {
+        UUID orderId = order.getId();
+        if (result.isSuccess()) {
+            order.markAsFilled(result.getExchangeOrderId(), result.getExecutedQty());
+            log.info("[EXECUTION][COMMIT] Order {} marked as FILLED", orderId);
+        } else if ("PARTIAL".equals(result.getErrorMessage())) {
+            order.markAsPartiallyFilled(result.getExchangeOrderId(), result.getExecutedQty());
+            log.info("[EXECUTION][COMMIT] Order {} marked as PARTIALLY_FILLED", orderId);
+        } else {
+            order.markAsRejected(result.getErrorMessage());
+            log.warn("[EXECUTION][COMMIT] Order {} marked as REJECTED: {}", orderId, result.getErrorMessage());
+        }
     }
 
     private ApprovedOrder mapToApproved(OrderEntity entity) {
