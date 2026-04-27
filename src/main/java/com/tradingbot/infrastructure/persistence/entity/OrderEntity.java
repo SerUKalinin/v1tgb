@@ -80,18 +80,30 @@ public class OrderEntity {
     /**
      * Переводит ордер в статус FILLED (исполнен).
      */
-    public void markAsFilled(String exchangeOrderId) {
+    public void markAsFilled(String exchangeOrderId, BigDecimal executedQty) {
         validateTransition(com.tradingbot.common.enums.OrderStatus.FILLED.name());
         this.exchangeOrderId = exchangeOrderId;
+        this.quantity = executedQty;
         this.status = com.tradingbot.common.enums.OrderStatus.FILLED.name();
         this.updatedAt = Instant.now();
-        log.info("[ORDER-DOMAIN] Ордер {} переведен в статус FILLED. ExchangeID: {}", this.id, exchangeOrderId);
+        log.info("[ORDER-DOMAIN] Ордер {} переведен в статус FILLED. ExchangeID: {}, Qty: {}", this.id, exchangeOrderId, executedQty);
+    }
+
+    /**
+     * Переводит ордер в статус PARTIALLY_FILLED.
+     */
+    public void markAsPartiallyFilled(String exchangeOrderId, BigDecimal executedQty) {
+        validateTransition(com.tradingbot.common.enums.OrderStatus.PARTIALLY_FILLED.name());
+        this.exchangeOrderId = exchangeOrderId;
+        this.quantity = executedQty;
+        this.status = com.tradingbot.common.enums.OrderStatus.PARTIALLY_FILLED.name();
+        this.updatedAt = Instant.now();
+        log.info("[ORDER-DOMAIN] Ордер {} частично исполнен. Qty: {}", this.id, executedQty);
     }
 
     /**
      * Переводит ордер в статус REJECTED (отклонен).
-     */
-    public void markAsRejected(String reason) {
+     */    public void markAsRejected(String reason) {
         validateTransition(com.tradingbot.common.enums.OrderStatus.REJECTED.name());
         this.status = com.tradingbot.common.enums.OrderStatus.REJECTED.name();
         this.updatedAt = Instant.now();

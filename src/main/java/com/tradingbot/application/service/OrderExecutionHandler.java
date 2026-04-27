@@ -12,13 +12,15 @@ import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
+import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Обработчик исполнения ордеров.
- * Слушает события из Outbox и инициирует выполнение через ExecutionEngine.
+ * Реализует Execution Protocol v2.0: разделение на фазы preFlight, execute и commit.
  */
 @Slf4j
 @Service
@@ -37,53 +39,97 @@ public class OrderExecutionHandler implements OutboxConsumer {
     }
 
     @Override
-    @Transactional
     public void consume(OutboxEventEntity event) throws Exception {
-        log.info("[ИСПОЛНЕНИЕ] Получено событие {} для агрегата {}", event.getEventType(), event.getAggregateId());
+        log.info("[ИСПОЛНЕНИЕ] Начало обработки события {} для агрегата {}", event.getEventType(), event.getAggregateId());
 
-        // 1. Десериализация данных ордера из payload
-        OrderEntity order = objectMapper.readValue(event.getPayload(), OrderEntity.class);
+        // 1. Фаза preFlight: только чтение
+        Optional<OrderEntity> orderOpt = preFlight(event.getAggregateId());
+        if (orderOpt.isEmpty()) return;
 
-        // 2. Проверка актуального статуса в БД (защита от повторного исполнения/идемпотентность)
-        OrderEntity currentOrder = orderRepository.findById(order.getId())
-                .orElseThrow(() -> new IllegalStateException("Ордер не найден в БД: " + order.getId()));
+        OrderEntity order = orderOpt.get();
+        ApprovedOrder approvedOrder = mapToApproved(order);
+
+        // 2. Фаза execute: сетевой вызов вне транзакции
+        log.info("[ИСПОЛНЕНИЕ] Вызов ExecutionEngine для ордера {}", order.getId());
+        ExecutionResult result = execute(approvedOrder);
+
+        // 3. Фаза commitResult: сохранение результата в отдельной транзакции
+        commitResult(order.getId(), result);
+    }
+
+    /**
+     * Фаза 1: preFlight. Только чтение из БД.
+     * Проверяет актуальный статус ордера для обеспечения идемпотентности.
+     */
+    @Transactional(readOnly = true)
+    public Optional<OrderEntity> preFlight(UUID orderId) {
+        OrderEntity currentOrder = orderRepository.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Ордер не найден в БД: " + orderId));
 
         if (!OrderStatus.PENDING_EXECUTION.name().equals(currentOrder.getStatus())) {
-            log.warn("[ИСПОЛНЕНИЕ] Ордер {} уже находится в статусе {}. Пропуск.", 
-                    currentOrder.getId(), currentOrder.getStatus());
+            log.warn("[EXECUTION][PRE-FLIGHT] Skip execution for orderId={}, status={}", 
+                    orderId, currentOrder.getStatus());
+            return Optional.empty();
+        }
+        
+        return Optional.of(currentOrder);
+    }
+    /**
+     * Фаза 2: execute. Чистый IO слой.
+     * Выполняет сетевой вызов к бирже вне транзакции.
+     */
+    private ExecutionResult execute(ApprovedOrder approvedOrder) throws Exception {
+        log.info("[EXECUTION][IO] Sending order to exchange id={}", approvedOrder.getOrderId());
+        try {
+            return executionEngine.execute(approvedOrder);
+        } catch (Exception e) {
+            // Проверяем на таймаут через сообщение или тип, если это RuntimeException
+            if (e.getMessage() != null && e.getMessage().contains("timeout")) {
+                log.error("[EXECUTION][IO] Timeout detected for order id={}", approvedOrder.getOrderId());
+                return ExecutionResult.timeout(approvedOrder.getOrderId());
+            }
+            log.error("[EXECUTION][IO] Critical error for order id={}: {}", approvedOrder.getOrderId(), e.getMessage());
+            throw e;
+        }
+    }    /**
+     * Фаза 3: commitResult. Фиксация результата в БД.
+     * Выполняется в новой транзакции.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void commitResult(UUID orderId, ExecutionResult result) {
+        try {
+            internalCommit(orderId, result);
+        } catch (org.springframework.orm.ObjectOptimisticLockingFailureException e) {
+            log.warn("[EXECUTION][LOCK] Retry commit for orderId={}", orderId);
+            // Один повтор при конфликте версий
+            internalCommit(orderId, result);
+        }
+    }
+
+    private void internalCommit(UUID orderId, ExecutionResult result) {
+        OrderEntity order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Ордер не найден при коммите: " + orderId));
+
+        // Idempotency guard: если статус уже финальный, ничего не делаем
+        String currentStatus = order.getStatus();
+        if (OrderStatus.FILLED.name().equals(currentStatus) || OrderStatus.REJECTED.name().equals(currentStatus)) {
+            log.info("[EXECUTION][COMMIT] Order {} already in final status {}. Skipping.", orderId, currentStatus);
             return;
         }
 
-        try {
-            // 3. Подготовка ApprovedOrder для ExecutionEngine
-            ApprovedOrder approvedOrder = mapToApproved(currentOrder);
-
-            log.info("[ИСПОЛНЕНИЕ] Отправка ордера {} (ClientOrderId: {}) в ExecutionEngine", 
-                    approvedOrder.getOrderId(), approvedOrder.getClientOrderId());
-
-            // 4. Вызов внешнего движка исполнения (Binance и т.д.)
-            ExecutionResult result = executionEngine.execute(approvedOrder);
-
-            // 5. Обработка результата через доменные методы
-            if (result.isSuccess()) {
-                currentOrder.markAsFilled(result.getExchangeOrderId());
-                log.info("[ИСПОЛНЕНИЕ] Ордер {} успешно исполнен на бирже. ID: {}", 
-                        currentOrder.getId(), result.getExchangeOrderId());
-            } else {
-                currentOrder.markAsRejected(result.getErrorMessage());
-                log.error("[ИСПОЛНЕНИЕ] Ордер {} отклонен биржей: {}", 
-                        currentOrder.getId(), result.getErrorMessage());
-            }
-        } catch (Exception e) {
-            log.error("[ИСПОЛНЕНИЕ] Критическая ошибка при исполнении ордера {}: {}", 
-                    currentOrder.getId(), e.getMessage());
-            // Бросаем исключение дальше, чтобы OutboxProcessor мог применить retry-safe логику
-            throw e;
-        } finally {
-            orderRepository.save(currentOrder);
+        if (result.isSuccess()) {
+            order.markAsFilled(result.getExchangeOrderId(), result.getExecutedQty());
+            log.info("[EXECUTION][COMMIT] Order {} marked as FILLED", orderId);
+        } else if ("PARTIAL".equals(result.getErrorMessage())) {
+            order.markAsPartiallyFilled(result.getExchangeOrderId(), result.getExecutedQty());
+            log.info("[EXECUTION][COMMIT] Order {} marked as PARTIALLY_FILLED", orderId);
+        } else {
+            order.markAsRejected(result.getErrorMessage());
+            log.warn("[EXECUTION][COMMIT] Order {} marked as REJECTED: {}", orderId, result.getErrorMessage());
         }
-    }
-    private ApprovedOrder mapToApproved(OrderEntity entity) {
+        
+        orderRepository.saveAndFlush(order);
+    }    private ApprovedOrder mapToApproved(OrderEntity entity) {
         return ApprovedOrder.builder()
                 .orderId(entity.getId())
                 .clientOrderId(entity.getClientOrderId())

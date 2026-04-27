@@ -63,4 +63,13 @@ public class ExecutionResult {
                 .success(false)
                 .errorMessage(errorMessage)
                 .build();
-    }}
+    }
+
+    public static ExecutionResult timeout(UUID orderId) {
+        return ExecutionResult.builder()
+                .orderId(orderId)
+                .success(false)
+                .errorMessage("TIMEOUT")
+                .build();
+    }
+}
