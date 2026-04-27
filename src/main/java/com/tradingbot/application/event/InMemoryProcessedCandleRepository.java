@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class InMemoryProcessedCandleRepository implements ProcessedCandleRepository {
 
-    private final Map<String, Instant> storage = new ConcurrentHashMap<>();
+    private final Map<String, Instant>   storage = new ConcurrentHashMap<>();
 
     /**
      * Отмечает свечу как обработанную.
