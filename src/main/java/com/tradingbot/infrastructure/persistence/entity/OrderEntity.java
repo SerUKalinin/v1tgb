@@ -11,11 +11,13 @@ import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderType;
 import jakarta.persistence.*;
 import lombok.*;
+import lombok.extern.slf4j.Slf4j;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
+@Slf4j
 @Entity
 @Table(name = "orders",
         indexes = {
@@ -24,9 +26,8 @@ import java.util.UUID;
         }
 )
 @Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
+@AllArgsConstructor(access = AccessLevel.PRIVATE)
 @Builder
 public class OrderEntity {
     @Id
@@ -60,6 +61,7 @@ public class OrderEntity {
 
     @Column(name = "take_profit", precision = 18, scale = 8)
     private BigDecimal takeProfit;
+
     @Column(name = "strategy_id", nullable = false)
     private String strategyId;
 
@@ -74,4 +76,34 @@ public class OrderEntity {
 
     @Version
     private Long version;
+
+    /**
+     * Переводит ордер в статус FILLED (исполнен).
+     */
+    public void markAsFilled(String exchangeOrderId) {
+        validateTransition(com.tradingbot.common.enums.OrderStatus.FILLED.name());
+        this.exchangeOrderId = exchangeOrderId;
+        this.status = com.tradingbot.common.enums.OrderStatus.FILLED.name();
+        this.updatedAt = Instant.now();
+        log.info("[ORDER-DOMAIN] Ордер {} переведен в статус FILLED. ExchangeID: {}", this.id, exchangeOrderId);
+    }
+
+    /**
+     * Переводит ордер в статус REJECTED (отклонен).
+     */
+    public void markAsRejected(String reason) {
+        validateTransition(com.tradingbot.common.enums.OrderStatus.REJECTED.name());
+        this.status = com.tradingbot.common.enums.OrderStatus.REJECTED.name();
+        this.updatedAt = Instant.now();
+        log.warn("[ORDER-DOMAIN] Ордер {} отклонен. Причина: {}", this.id, reason);
+    }
+
+    private void validateTransition(String newStatus) {
+        String currentStatus = this.status;
+        if (com.tradingbot.common.enums.OrderStatus.FILLED.name().equals(currentStatus) || 
+            com.tradingbot.common.enums.OrderStatus.REJECTED.name().equals(currentStatus)) {
+            throw new IllegalStateException(String.format("Невозможный переход из %s в %s для ордера %s", 
+                    currentStatus, newStatus, this.id));
+        }
+    }
 }

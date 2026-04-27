@@ -1,12 +1,19 @@
 package com.tradingbot.infrastructure.outbox;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderType;
+import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
+import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
+import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -25,17 +32,44 @@ public class OutboxIdempotencyTest {
     @Autowired
     private OutboxEventRepository outboxEventRepository;
 
-    @Test
-    void shouldProcessEventOnlyOnceUnderConcurrency() throws InterruptedException {
-        outboxEventRepository.deleteAll();
+    @Autowired
+    private OrderRepository orderRepository;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Test
+    void shouldProcessEventOnlyOnceUnderConcurrency() throws Exception {
+        outboxEventRepository.deleteAll();
+        orderRepository.deleteAll();
+
+        UUID orderId = UUID.randomUUID();
+        String clientOrderId = "test_" + orderId;
+
+        // Создаем ордер в БД, так как хендлер будет его искать
+        OrderEntity order = OrderEntity.builder()
+                .id(orderId)
+                .clientOrderId(clientOrderId)
+                .symbol("BTCUSDT")
+                .side(OrderSide.BUY)
+                .type(OrderType.MARKET)
+                .quantity(new BigDecimal("0.001"))
+                .price(new BigDecimal("50000"))
+                .strategyId("test-strategy")
+                .status("PENDING_EXECUTION")
+                .createdAt(Instant.now())
+                .build();
+        orderRepository.save(order);
+
+        // Создаем событие Outbox с корректным payload
         OutboxEventEntity event = OutboxEventEntity.builder()
                 .id(UUID.randomUUID())
-                .aggregateId(UUID.randomUUID())
+                .aggregateId(orderId)
                 .aggregateType("ORDER")
                 .eventType("ORDER_CREATED")
-                .payload("{}")
+                .payload(objectMapper.writeValueAsString(order))
                 .status(OutboxStatus.NEW)
+                .createdAt(Instant.now())
                 .build();
         outboxEventRepository.save(event);
 
@@ -56,10 +90,15 @@ public class OutboxIdempotencyTest {
         executor.shutdown();
         executor.awaitTermination(5, TimeUnit.SECONDS);
 
+        // Проверяем, что событие в Outbox помечено как PROCESSED ровно один раз
         long processedCount = outboxEventRepository.findAll().stream()
                 .filter(e -> e.getStatus() == OutboxStatus.PROCESSED)
                 .count();
 
         assertThat(processedCount).isEqualTo(1);
+        
+        // Проверяем, что статус ордера изменился (значит хендлер отработал)
+        OrderEntity updatedOrder = orderRepository.findById(orderId).orElseThrow();
+        assertThat(updatedOrder.getStatus()).isNotEqualTo("PENDING_EXECUTION");
     }
 }
