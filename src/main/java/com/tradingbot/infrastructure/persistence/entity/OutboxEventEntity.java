@@ -49,12 +49,21 @@ public class OutboxEventEntity {
     @Column(name = "last_error", columnDefinition = "TEXT")
     private String lastError;
 
-    @PrePersist    protected void onCreate() {
+    @Column(name = "lock_owner")
+    private String lockOwner;
+
+    @Column(name = "locked_until")
+    private Instant lockedUntil;
+
+    @Column(name = "attempt_count", nullable = false)
+    private int attemptCount;
+
+    @PrePersist
+    protected void onCreate() {
         if (status == null) status = OutboxStatus.NEW;
         if (createdAt == null) createdAt = Instant.now();
-        updatedAt = createdAt;
+        if (updatedAt == null) updatedAt = createdAt;
     }
-
     @PreUpdate
     protected void onUpdate() {
         updatedAt = Instant.now();

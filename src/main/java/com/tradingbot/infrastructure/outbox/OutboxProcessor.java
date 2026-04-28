@@ -89,14 +89,20 @@ public class OutboxProcessor implements ApplicationContextAware {
 
     @Transactional
     protected List<OutboxEventEntity> claimBatch() {
-        List<OutboxEventEntity> events = outboxRepository.claimBatchWithLock(50);
+        String ownerId = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+        Instant now = Instant.now();
+        Instant lockUntil = now.plusSeconds(30);
+
+        List<OutboxEventEntity> events = outboxRepository.claimBatchWithLock(50, now);
         events.forEach(e -> {
             e.setStatus(OutboxStatus.PROCESSING);
-            e.setUpdatedAt(Instant.now());
+            e.setLockOwner(ownerId);
+            e.setLockedUntil(lockUntil);
+            e.setAttemptCount(e.getAttemptCount() + 1);
+            e.setUpdatedAt(now);
         });
         return outboxRepository.saveAllAndFlush(events);
     }
-
     private void handleFailureInternal(UUID eventId, String errorMessage) {
         outboxRepository.findById(eventId).ifPresent(event -> {
             event.setRetryCount(event.getRetryCount() + 1);

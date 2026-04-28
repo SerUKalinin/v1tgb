@@ -18,13 +18,16 @@ public interface OutboxEventRepository
 
     @Query(value = """
         SELECT * FROM outbox_events
-        WHERE status IN ('NEW', 'FAILED')
+        WHERE (status IN ('NEW', 'FAILED'))
+           OR (status = 'PROCESSING' AND locked_until < :now)
         ORDER BY created_at ASC
         LIMIT :limit
         FOR UPDATE SKIP LOCKED
         """, nativeQuery = true)
-    List<OutboxEventEntity> claimBatchWithLock(@org.springframework.data.repository.query.Param("limit") int limit);
-
+    List<OutboxEventEntity> claimBatchWithLock(
+            @org.springframework.data.repository.query.Param("limit") int limit,
+            @org.springframework.data.repository.query.Param("now") java.time.Instant now
+    );
     @Deprecated
     @Query("""
         SELECT e FROM OutboxEventEntity e
