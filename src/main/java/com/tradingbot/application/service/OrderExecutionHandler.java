@@ -39,29 +39,50 @@ public class OrderExecutionHandler implements OutboxConsumer {
     public void consume(OutboxEventEntity event) throws Exception {
         log.info("[ИСПОЛНЕНИЕ] Начало обработки события {} для агрегата {}", event.getEventType(), event.getAggregateId());
 
-        Optional<OrderEntity> orderOpt = preFlight(event.getAggregateId());
+        // 1. Идемпотентность на входе (Shift Left)
+        if (idempotencyService.isAlreadyProcessed(event.getId())) {
+            log.info("[EXECUTION] Event {} already processed, skipping", event.getId());
+            return;
+        }
+
+        // 2. Атомарный захват (Phase A: PENDING -> EXECUTING)
+        Optional<OrderEntity> orderOpt = tryClaimOrder(event.getAggregateId());
         if (orderOpt.isEmpty()) return;
 
         OrderEntity order = orderOpt.get();
         ApprovedOrder approvedOrder = mapToApproved(order);
 
         log.info("[ИСПОЛНЕНИЕ] Вызов ExecutionEngine для ордера {}", order.getId());
+        
+        // 3. Исполнение (Phase B: IO outside DB transaction)
         ExecutionResult result = execute(approvedOrder);
 
+        // 4. Фиксация (Phase C: EXECUTING -> FINAL STATUS)
         commitResult(order.getId(), result, event.getId());
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Optional<OrderEntity> tryClaimOrder(UUID orderId) {
+        return orderRepository.findByIdForUpdate(orderId).map(order -> {
+            String status = order.getStatus();
+
+            // Если уже исполнен или в процессе - выходим (идемпотентно)
+            if (!OrderStatus.PENDING_EXECUTION.name().equals(status)) {
+                log.warn("[CLAIM] Order {} in status {}, cannot claim", orderId, status);
+                return null;
+            }
+
+            order.setStatus(OrderStatus.EXECUTING.name());
+            orderRepository.saveAndFlush(order);
+            log.info("[CLAIM] Order {} successfully transitioned to EXECUTING", orderId);
+            return order;
+        });
+    }
+
+    @Deprecated
     @Transactional(readOnly = true)
     public Optional<OrderEntity> preFlight(UUID orderId) {
-        OrderEntity currentOrder = orderRepository.findById(orderId)
-                .orElseThrow(() -> new IllegalStateException("Ордер не найден в БД: " + orderId));
-
-        if (!OrderStatus.PENDING_EXECUTION.name().equals(currentOrder.getStatus())) {
-            log.warn("[EXECUTION][PRE-FLIGHT] Skip execution for orderId={}, status={}",
-                    orderId, currentOrder.getStatus());
-            return Optional.empty();
-        }
-        return Optional.of(currentOrder);
+        return orderRepository.findById(orderId);
     }
 
     private ExecutionResult execute(ApprovedOrder approvedOrder) throws Exception {

@@ -26,11 +26,11 @@ import java.util.UUID;
         }
 )
 @Getter
+@Setter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @AllArgsConstructor(access = AccessLevel.PRIVATE)
 @Builder
-public class OrderEntity {
-    @Id
+public class OrderEntity {    @Id
     private UUID id;
 
     @Column(name = "client_order_id", nullable = false, unique = true, updatable = false)

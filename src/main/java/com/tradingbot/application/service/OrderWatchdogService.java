@@ -1,5 +1,6 @@
 package com.tradingbot.application.service;
 
+import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import lombok.RequiredArgsConstructor;
@@ -17,24 +18,32 @@ import java.util.List;
 public class OrderWatchdogService {
 
     private final OrderRepository orderRepository;
+    private final ReconciliationService reconciliationService;
 
-    private static final Duration MAX_ORDER_AGE = Duration.ofMinutes(5);
+    private static final Duration STUCK_THRESHOLD = Duration.ofMinutes(2);
 
     @Scheduled(fixedDelay = 60000)
     public void checkStuckOrders() {
+        Instant threshold = Instant.now().minus(STUCK_THRESHOLD);
 
-        Instant threshold = Instant.now().minus(MAX_ORDER_AGE);
-
-        List<OrderEntity> stuckOrders = orderRepository.findAll().stream()
-                .filter(o -> o.getCreatedAt().isBefore(threshold) && o.getPrice() == null)
-                .toList();
+        // Ищем ордера, которые зависли в EXECUTING (уже ушли на биржу, но не подтверждены)
+        List<OrderEntity> stuckOrders = orderRepository.findStuckOrders(
+                OrderStatus.EXECUTING.name(), 
+                threshold
+        );
 
         if (!stuckOrders.isEmpty()) {
-            log.warn("[WATCHDOG] stuck orders: {}", stuckOrders.size());
+            log.warn("[WATCHDOG] Found {} stuck orders in EXECUTING state. Initiating reconciliation...", stuckOrders.size());
 
-            stuckOrders.forEach(o ->
-                    log.warn("Stuck order id={}, symbol={}", o.getId(), o.getSymbol())
-            );
+            for (OrderEntity order : stuckOrders) {
+                try {
+                    log.info("[WATCHDOG][RECOVERY] Reconciling order id={}, clientOrderId={}", 
+                            order.getId(), order.getClientOrderId());
+                    reconciliationService.reconcile(order.getId());
+                } catch (Exception e) {
+                    log.error("[WATCHDOG][ERROR] Failed to recover order {}: {}", order.getId(), e.getMessage());
+                }
+            }
         }
     }
 }
