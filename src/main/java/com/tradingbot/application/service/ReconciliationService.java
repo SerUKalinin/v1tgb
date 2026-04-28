@@ -145,8 +145,14 @@ public class ReconciliationService {
      * 3. Синхронизация конкретного ордера с биржей.
      */
     @Transactional
-    public void syncOrderWithExchange(OrderEntity order) {
-        try {
+    public void reconcile(java.util.UUID orderId) {
+        OrderEntity order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new IllegalArgumentException("Order not found: " + orderId));
+        syncOrderWithExchange(order);
+    }
+
+    @Transactional
+    public void syncOrderWithExchange(OrderEntity order) {        try {
             boolean existsOnExchange = exchangeQueryService.isOrderAlreadyExecuted(order.getClientOrderId());
 
             if (existsOnExchange) {
