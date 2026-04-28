@@ -40,6 +40,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
         log.info("[ИСПОЛНЕНИЕ] Начало обработки события {} для агрегата {}", event.getEventType(), event.getAggregateId());
 
         // 1. Идемпотентность на входе (Shift Left)
+        // Проверяем и СРАЗУ фиксируем намерение обработки, чтобы исключить race condition между проверкой и IO
         if (idempotencyService.isAlreadyProcessed(event.getId())) {
             log.info("[EXECUTION] Event {} already processed, skipping", event.getId());
             return;
