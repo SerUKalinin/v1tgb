@@ -24,9 +24,15 @@ public class MarketScheduler {
     private final BinanceClient binanceClient;
     private final TradingSystemBootstrapper bootstrapper;
 
+    private volatile boolean enabled = false;
+
+    public void enable() {
+        log.info("[SCHEDULER] Market scheduler enabled.");
+        this.enabled = true;
+    }
+
     /**
      * Инициализация: синхронизация времени.
-     * Прогрев кэша теперь управляется через TradingSystemBootstrapper.
      */
     @PostConstruct
     public void init() {
@@ -36,13 +42,10 @@ public class MarketScheduler {
 
     /**
      * Основной цикл обновления данных.
-     * Вызывается с фиксированной задержкой.
-     * Блокируется до завершения инициализации системы.
      */
     @Scheduled(fixedRateString = "${trading.update-rate-ms:5000}")
     public void refreshMarketData() {
-        if (!bootstrapper.isReady()) {
-            log.debug("[SCHEDULER] System not ready, skipping market refresh");
+        if (!enabled || !bootstrapper.isReady()) {
             return;
         }
         try {
@@ -51,12 +54,13 @@ public class MarketScheduler {
             log.error("[SCHEDULER] Error refreshing market data for {}", SYMBOL, e);
         }
     }
+
     /**
      * Синхронизация времени с сервером Binance.
-     * Вызывается раз в час.
      */
     @Scheduled(fixedRate = 3600000)
     public void syncServerTime() {
+        if (!enabled) return;
         binanceClient.syncTime();
     }
 }

@@ -2,13 +2,14 @@ package com.tradingbot.application.service;
 
 import com.tradingbot.application.market.MarketDataService;
 import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.interfaces.scheduler.MarketScheduler;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
-
 /**
  * Центральный компонент управления жизненным циклом торговой системы.
  * Гарантирует строгий порядок инициализации и предотвращает торговлю на неконсистентных данных.
@@ -32,6 +33,7 @@ public class TradingSystemBootstrapper {
     private final ReconciliationService reconciliationService;
     private final MarketDataService marketDataService;
     private final RiskEngine riskEngine;
+    private final org.springframework.context.ApplicationContext applicationContext;
 
     @Getter
     private volatile SystemState state = SystemState.INITIALIZING;
@@ -64,7 +66,8 @@ public class TradingSystemBootstrapper {
             updateState(SystemState.READY);
             log.info("[BOOTSTRAP] >>> СИСТЕМА ГОТОВА К ТОРГОВЛЕ <<<");
 
-            // 5. Активация торговых модулей
+            // 5. Активация планировщиков и торговых модулей
+            enableSchedulers();
             enableTrading();
 
         } catch (Exception e) {
@@ -73,21 +76,39 @@ public class TradingSystemBootstrapper {
         }
     }
 
-    private void enableTrading() {
-        log.info("[BOOTSTRAP] Активация торговых модулей...");
-        riskEngine.resumeTrading();
-        updateState(SystemState.TRADING_ENABLED);
-        log.info("[BOOTSTRAP] Торговля разрешена.");
+    private void enableSchedulers() {
+        log.info("[BOOTSTRAP] Активация планировщиков...");
+        applicationContext.getBean(MarketScheduler.class).enable();
     }
+    private void enableTrading() {        if (this.state != SystemState.READY) {
+            log.warn("[BOOTSTRAP] Невозможно включить торговлю: система в состоянии {}", this.state);
+            return;
+        }
 
+        log.info("[BOOTSTRAP] Активация торговых модулей...");
+        
+        // 1. Разрешаем операции в RiskEngine
+        riskEngine.resumeTrading();
+        
+        // 2. Переключаем глобальный статус (открывает заслонки в Application слое)
+        updateState(SystemState.TRADING_ENABLED);
+        
+        log.info("[BOOTSTRAP] >>> ТОРГОВЛЯ РАЗРЕШЕНА И ЗАПУЩЕНА <<<");
+    }
     public void haltSystem(String reason) {
         log.error("[BOOTSTRAP] АВАРИЙНАЯ ОСТАНОВКА СИСТЕМЫ: {}", reason);
         riskEngine.emergencyStop(reason);
         updateState(SystemState.HALTED);
     }
 
-    private void updateState(SystemState newState) {
-        log.info("[BOOTSTRAP] Переход состояния: {} -> {}", this.state, newState);
+    public void haltTrading(String reason) {
+        log.warn("[BOOTSTRAP] Остановка торговли: {}", reason);
+        riskEngine.emergencyStop(reason);
+        updateState(SystemState.HALTED);
+        log.info("[BOOTSTRAP] Торговля остановлена. Система в состоянии HALTED. Сверка (Reconciliation) остается доступной.");
+    }
+
+    private void updateState(SystemState newState) {        log.info("[BOOTSTRAP] Переход состояния: {} -> {}", this.state, newState);
         this.state = newState;
     }
 
