@@ -27,6 +27,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
     private final ExecutionEngine executionEngine;
     private final OrderRepository orderRepository;
     private final IdempotencyService idempotencyService;
+    private final TradingSystemBootstrapper bootstrapper;
 
     private static final String EVENT_TYPE = "ORDER_CREATED";
 
@@ -37,8 +38,13 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
     @Override
     public void consume(OutboxEventEntity event) throws Exception {
-        log.info("[ИСПОЛНЕНИЕ] Начало обработки события {} для агрегата {}", event.getEventType(), event.getAggregateId());
+        if (bootstrapper.getState() != TradingSystemBootstrapper.SystemState.TRADING_ENABLED) {
+            log.warn("[EXECUTION] Trading is not enabled (current state: {}). Skipping execution for aggregate {}", 
+                    bootstrapper.getState(), event.getAggregateId());
+            return;
+        }
 
+        log.info("[ИСПОЛНЕНИЕ] Начало обработки события {} для агрегата {}", event.getEventType(), event.getAggregateId());
         // 1. Идемпотентность на входе (Shift Left)
         // Проверяем и СРАЗУ фиксируем намерение обработки, чтобы исключить race condition между проверкой и IO
         if (idempotencyService.isAlreadyProcessed(event.getId())) {

@@ -22,16 +22,21 @@ import java.util.UUID;
 public class StrategyService {
 
     private final ApplicationEventPublisher eventPublisher;
+    private final com.tradingbot.application.service.TradingSystemBootstrapper bootstrapper;
 
     @EventListener
     public void onNewCandle(NewClosedCandleEvent event) {
+        if (!bootstrapper.isReady()) {
+            log.warn("[STRATEGY] System not ready, ignoring candle for symbol: {}", event.symbol());
+            return;
+        }
+        
         log.info("[STRATEGY] Processing new candle for symbol: {}", event.symbol());
         
         // Временная тестовая логика: генерируем BUY сигнал на каждую закрытую свечу
         // В будущем здесь будет вызов конкретных реализаций стратегий
         generateTestSignal(event);
     }
-
     private void generateTestSignal(NewClosedCandleEvent candle) {
         SignalEvent signal = SignalEvent.builder()
                 .symbol(candle.symbol())

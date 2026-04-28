@@ -30,13 +30,19 @@ public class OrderApplicationService {
     private final RiskEngine riskEngine;
     private final RiskManager riskManager;
     private final ObjectMapper objectMapper;
+    private final TradingSystemBootstrapper bootstrapper;
 
     @Transactional
     public void onSignalReceived(SignalEvent signal) {
+        if (bootstrapper.getState() != TradingSystemBootstrapper.SystemState.TRADING_ENABLED) {
+            log.warn("[ORDER-APP] Trading is not enabled (current state: {}). Ignoring signal for {}", 
+                    bootstrapper.getState(), signal.getSymbol());
+            return;
+        }
+
         // 1. Валидация (Read-only, без внешних вызовов внутри транзакции, если RiskManager локален)
         ApprovedOrder approved = riskManager.approveSignal(signal)
                 .orElseThrow(() -> new IllegalStateException("Signal rejected by risk"));
-
         // 2. Резервирование капитала (Включает проверки лимитов и запись RiskEvent)
         RiskDecision decision = riskEngine.reserve(
                 approved.getOrderId(),
