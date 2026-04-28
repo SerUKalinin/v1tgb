@@ -2,6 +2,7 @@ package com.tradingbot.interfaces.scheduler;
 
 import com.tradingbot.application.market.MarketDataService;
 import com.tradingbot.infrastructure.execution.binance.BinanceClient;
+import com.tradingbot.application.service.TradingSystemBootstrapper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -21,23 +22,32 @@ public class MarketScheduler {
 
     private final MarketDataService marketDataService;
     private final BinanceClient binanceClient;
+    private final TradingSystemBootstrapper bootstrapper;
+
+    private volatile boolean enabled = false;
+
+    public void enable() {
+        log.info("[SCHEDULER] Market scheduler enabled.");
+        this.enabled = true;
+    }
 
     /**
-     * Инициализация: синхронизация времени и прогрев кэша.
+     * Инициализация: синхронизация времени.
      */
     @PostConstruct
     public void init() {
-        log.info("[SCHEDULER] Warming up market data for {}", SYMBOL);
+        log.info("[SCHEDULER] Initializing market scheduler...");
         binanceClient.syncTime();
-        marketDataService.warmUp(SYMBOL, INTERVAL);
     }
 
     /**
      * Основной цикл обновления данных.
-     * Вызывается с фиксированной задержкой (по умолчанию 5 секунд).
      */
     @Scheduled(fixedRateString = "${trading.update-rate-ms:5000}")
     public void refreshMarketData() {
+        if (!enabled || !bootstrapper.isReady()) {
+            return;
+        }
         try {
             marketDataService.refresh(SYMBOL, INTERVAL);
         } catch (Exception e) {
@@ -47,10 +57,10 @@ public class MarketScheduler {
 
     /**
      * Синхронизация времени с сервером Binance.
-     * Вызывается раз в час.
      */
     @Scheduled(fixedRate = 3600000)
     public void syncServerTime() {
+        if (!enabled) return;
         binanceClient.syncTime();
     }
 }

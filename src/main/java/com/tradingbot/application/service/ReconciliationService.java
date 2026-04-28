@@ -46,15 +46,15 @@ public class ReconciliationService {
 
     private Instant lastReconcileTimestamp = Instant.now();
 
+    @Deprecated
     @EventListener(ApplicationReadyEvent.class)
     public void onStartup() {
         log.info("[RECON] Startup reconciliation triggered.");
-        reconcileAll();
+        // reconcileAll(); // Теперь вызывается через TradingSystemBootstrapper
     }
 
     @Scheduled(fixedDelay = 3600000) // Hourly
-    public void reconcileAll() {
-        reconcileOutbox();
+    public void reconcileAll() {        reconcileOutbox();
         reconcilePendingOrders();
         reconcileBalances();
     }

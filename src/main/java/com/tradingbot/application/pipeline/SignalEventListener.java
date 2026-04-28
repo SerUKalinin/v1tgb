@@ -16,11 +16,16 @@ public class SignalEventListener {
 
     private final SignalRouter signalRouter;
     private final OrderApplicationService orderApplicationService;
+    private final com.tradingbot.application.service.TradingSystemBootstrapper bootstrapper;
 
     @EventListener
     public void onSignal(SignalEvent event) {
-        log.info("[EVENT-LISTENER] Received signal event for symbol: {}", event.getSymbol());
-        
+        if (!bootstrapper.isReady()) {
+            log.warn("[EVENT-LISTENER] System not ready, ignoring signal for symbol: {}", event.getSymbol());
+            return;
+        }
+
+        log.info("[EVENT-LISTENER] Received signal event for symbol: {}", event.getSymbol());        
         // 1. Уведомления и логирование (Side effects)
         signalRouter.route(event);
         
