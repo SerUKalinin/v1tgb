@@ -29,9 +29,13 @@ public class RiskStateRecoveryService {
 
     private static final String AGGREGATE_ID = "risk_core";
 
+    public void recover() {
+        recoverState();
+    }
+
+    @Deprecated
     @EventListener(ApplicationReadyEvent.class)
-    public void recoverState() {
-        log.info("[RISK-RECOVERY] Starting deterministic risk state recovery...");
+    public void recoverState() {        log.info("[RISK-RECOVERY] Starting deterministic risk state recovery...");
 
         // 1. Load latest snapshot
         RiskState state = snapshotRepository.findFirstByAggregateIdOrderByLastVersionDesc(AGGREGATE_ID)

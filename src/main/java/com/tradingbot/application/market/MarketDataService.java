@@ -39,10 +39,16 @@ public class MarketDataService {
     private static final BigDecimal PRICE_FILTER_THRESHOLD = new BigDecimal("0.001"); // 0.1%
 
     /**
+     * Выполняет прогрев всех необходимых символов.
+     */
+    public void warmUpAll() {
+        warmUp("BTCUSDT", "1m");
+    }
+
+    /**
      * Выполняет прогрев данных: загружает 100 свечей и устанавливает флаг готовности.
      */
-    public void warmUp(String symbol, String interval) {
-        log.info("Запуск прогрева данных для {}: interval={}", symbol, interval);
+    public void warmUp(String symbol, String interval) {        log.info("Запуск прогрева данных для {}: interval={}", symbol, interval);
         try {
             List<Candle> candles = marketDataClient.getCandles(symbol, interval, 100);
             marketDataCache.addAll(symbol, candles);
