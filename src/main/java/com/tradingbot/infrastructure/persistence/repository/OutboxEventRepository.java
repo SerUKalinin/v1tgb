@@ -23,8 +23,8 @@ public interface OutboxEventRepository
            OR (status = 'PROCESSING' AND locked_until < :now)
         ORDER BY created_at ASC
         LIMIT :limit
-        """, nativeQuery = true)    List<OutboxEventEntity> claimBatchWithLock(
-            @org.springframework.data.repository.query.Param("limit") int limit,
+        FOR UPDATE SKIP LOCKED
+        """, nativeQuery = true)    List<OutboxEventEntity> claimBatchWithLock(            @org.springframework.data.repository.query.Param("limit") int limit,
             @org.springframework.data.repository.query.Param("now") java.time.Instant now
     );
 

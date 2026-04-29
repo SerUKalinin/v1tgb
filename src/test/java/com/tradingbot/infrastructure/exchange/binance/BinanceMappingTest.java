@@ -29,6 +29,7 @@ public class BinanceMappingTest {
         UUID orderId = UUID.randomUUID();
         ApprovedOrder order = ApprovedOrder.builder()
                 .orderId(orderId)
+                .clientOrderId("bot_" + orderId.toString().replace("-", ""))
                 .symbol("BTCUSDT")
                 .side(com.tradingbot.common.enums.OrderSide.BUY)
                 .type(com.tradingbot.common.enums.OrderType.MARKET)
@@ -49,6 +50,7 @@ public class BinanceMappingTest {
         UUID orderId = UUID.randomUUID();
         ApprovedOrder order = ApprovedOrder.builder()
                 .orderId(orderId)
+                .clientOrderId("bot_" + orderId.toString().replace("-", ""))
                 .symbol("BTCUSDT")
                 .side(com.tradingbot.common.enums.OrderSide.BUY)
                 .type(com.tradingbot.common.enums.OrderType.MARKET)
@@ -61,5 +63,4 @@ public class BinanceMappingTest {
         ExecutionResult result = adapter.placeOrder(order);
 
         assertEquals(ExecutionResult.Status.TIMEOUT, result.getStatus());
-    }
-}
+    }}

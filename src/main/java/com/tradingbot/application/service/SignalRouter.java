@@ -3,12 +3,12 @@ package com.tradingbot.application.service;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.infrastructure.persistence.entity.SignalEntity;
 import com.tradingbot.domain.model.User;
+import com.tradingbot.infrastructure.persistence.mapper.UserMapper;
 import com.tradingbot.infrastructure.persistence.repository.SignalRepository;
-import com.tradingbot.infrastructure.persistence.repository.JpaUserRepository;
+import com.tradingbot.infrastructure.persistence.repository.UserRepository;
 import com.tradingbot.infrastructure.telegram.TradingTelegramBot;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -18,11 +18,12 @@ import java.util.Optional;
 @Service
 @RequiredArgsConstructor
 public class SignalRouter {
-    private final JpaUserRepository userRepository;
     private final Optional<TradingTelegramBot> telegramBot;
     private final SubscriptionService subscriptionService;
     private final SignalRepository signalRepository;
     private final SignalFormatterService signalFormatterService;
+    private final UserRepository userRepository;
+    private final UserMapper userMapper;
 
     public void route(SignalEvent signal) {
         log.info("[ROUTER] Routing signal: {} {}", signal.getSymbol(), signal.getType());
@@ -42,12 +43,13 @@ public class SignalRouter {
         signalRepository.save(entity);
 
         var users = userRepository.findAll();
-        if (!users.iterator().hasNext()) {
+        if (users.isEmpty()) {
             log.info("[ROUTER] No active users found to receive signals.");
             return;
         }
 
-        users.forEach(user -> {
+        users.forEach(userEntity -> {
+            User user = userMapper.toDomain(userEntity);
             log.debug("[ROUTER] Checking user {}: active={}, tier={}", user.getChatId(), user.isActive(), user.getTier());
             if (user.isActive()) {
                 String message = signalFormatterService.format(entity, user.getTier());
@@ -59,7 +61,6 @@ public class SignalRouter {
             }
         });
     }
-
     private String formatSignalForUser(User user, SignalEvent signal) {
         return ""; // Deprecated, using SignalFormatterService
     }
