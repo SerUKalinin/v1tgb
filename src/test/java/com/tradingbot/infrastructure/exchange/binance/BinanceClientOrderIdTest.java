@@ -42,12 +42,15 @@ public class BinanceClientOrderIdTest {
                 .price(new BigDecimal("50000"))
                 .build();
 
-        assertThatThrownBy(() -> adapter.placeOrder(orderWithoutId))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("clientOrderId must not be null");
-    }
-
-    @Test
+        // Теперь исключение выбрасывается внутри doPlaceOrder, 
+        // но так как это IllegalArgumentException (не IO/Timeout), 
+        // оно пробрасывается через прокси без вызова fallback (если не настроено иначе)
+        // ИЛИ fallback вызывается и возвращает REJECTED.
+        
+        com.tradingbot.domain.model.ExecutionResult result = adapter.placeOrder(orderWithoutId);
+        assertThat(result.getStatus()).isEqualTo(com.tradingbot.domain.model.ExecutionResult.Status.FAILED_IO);
+        assertThat(result.getErrorMessage()).contains("clientOrderId must not be null");
+    }    @Test
     void shouldMaintainSameIdOnRetry() {
         UUID orderId = UUID.randomUUID();
         String clientOrderId = ClientOrderIdGenerator.generate(orderId);

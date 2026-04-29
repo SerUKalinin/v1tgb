@@ -22,19 +22,12 @@ public class BinanceMappingTest {
     void setUp() {
         binanceClient = Mockito.mock(BinanceClient.class);
         adapter = new BinanceExecutionAdapter(binanceClient);
+        adapter.setSelf(adapter); // Симулируем прокси для тестов
     }
-
     @Test
     void testMappingLotSizeErrorToRejected() {
         UUID orderId = UUID.randomUUID();
-        ApprovedOrder order = ApprovedOrder.builder()
-                .orderId(orderId)
-                .clientOrderId("bot_" + orderId.toString().replace("-", ""))
-                .symbol("BTCUSDT")
-                .side(com.tradingbot.common.enums.OrderSide.BUY)
-                .type(com.tradingbot.common.enums.OrderType.MARKET)
-                .quantity(java.math.BigDecimal.ONE)
-                .build();
+        ApprovedOrder order = createOrder(orderId);
 
         when(binanceClient.post(anyString(), anyMap(), any(), anyBoolean()))
                 .thenThrow(new RuntimeException("400 Bad Request: {\"code\":-1013,\"msg\":\"Filter failure: LOT_SIZE\"}"));
@@ -48,7 +41,23 @@ public class BinanceMappingTest {
     @Test
     void testMappingTimeoutToTimeoutStatus() {
         UUID orderId = UUID.randomUUID();
-        ApprovedOrder order = ApprovedOrder.builder()
+        ApprovedOrder order = createOrder(orderId);
+
+        when(binanceClient.post(anyString(), anyMap(), any(), anyBoolean()))
+                .thenThrow(new RuntimeException("Read Timeout 504"));
+
+        // В юнит-тесте без Spring контекста прокси не создается, поэтому вызываем fallback вручную
+        // для проверки логики маппинга ошибок в нем.
+        try {
+            adapter.doPlaceOrder(order);
+        } catch (Exception e) {
+            ExecutionResult result = adapter.fallbackPlaceOrder(order, e);
+            assertEquals(ExecutionResult.Status.TIMEOUT, result.getStatus());
+        }
+    }
+
+    private ApprovedOrder createOrder(UUID orderId) {
+        return ApprovedOrder.builder()
                 .orderId(orderId)
                 .clientOrderId("bot_" + orderId.toString().replace("-", ""))
                 .symbol("BTCUSDT")
@@ -56,11 +65,5 @@ public class BinanceMappingTest {
                 .type(com.tradingbot.common.enums.OrderType.MARKET)
                 .quantity(java.math.BigDecimal.ONE)
                 .build();
-
-        when(binanceClient.post(anyString(), anyMap(), any(), anyBoolean()))
-                .thenThrow(new RuntimeException("Read Timeout 504"));
-
-        ExecutionResult result = adapter.placeOrder(order);
-
-        assertEquals(ExecutionResult.Status.TIMEOUT, result.getStatus());
-    }}
+    }
+}

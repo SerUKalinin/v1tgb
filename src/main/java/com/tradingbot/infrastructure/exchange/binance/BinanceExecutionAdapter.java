@@ -1,5 +1,7 @@
 package com.tradingbot.infrastructure.exchange.binance;
 
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.port.exchange.ExecutionPort;
 import com.tradingbot.domain.risk.ApprovedOrder;
@@ -23,9 +25,21 @@ import java.util.UUID;
 public class BinanceExecutionAdapter implements ExecutionPort {
 
     private final BinanceClient binanceClient;
+    private BinanceExecutionAdapter self;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setSelf(@org.springframework.context.annotation.Lazy BinanceExecutionAdapter self) {
+        this.self = self;
+    }
 
     @Override
     public ExecutionResult placeOrder(ApprovedOrder order) {
+        return self.doPlaceOrder(order);
+    }
+
+    @CircuitBreaker(name = "exchangeExecution", fallbackMethod = "fallbackPlaceOrder")
+    @Retry(name = "exchangeExecution")
+    public ExecutionResult doPlaceOrder(ApprovedOrder order) {
         log.info("[BINANCE-ADAPTER] Placing order: {} {} {}", order.getSymbol(), order.getSide(), order.getQuantity());
         
         Map<String, String> params = new HashMap<>();
@@ -44,8 +58,18 @@ public class BinanceExecutionAdapter implements ExecutionPort {
             return mapToExecutionResult(order, response);
         } catch (Exception e) {
             log.error("[BINANCE-ADAPTER] Failed to place order {}: {}", order.getOrderId(), e.getMessage());
-            return mapErrorToResult(order.getOrderId(), e);
+            ExecutionResult errorResult = mapErrorToResult(order.getOrderId(), e);
+            if (errorResult.getStatus() == ExecutionResult.Status.REJECTED) {
+                return errorResult;
+            }
+            throw e; 
         }
+    }
+
+    public ExecutionResult fallbackPlaceOrder(ApprovedOrder order, Throwable t) {
+        log.error("[BINANCE-ADAPTER][FALLBACK] Circuit breaker open or retries exhausted for order {}: {}", 
+                order.getOrderId(), t.getMessage());
+        return mapErrorToResult(order.getOrderId(), (Exception) t);
     }
     @Override
     public ExecutionResult cancelOrder(String clientOrderId) {
