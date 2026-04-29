@@ -47,15 +47,25 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
         log.info("[ИСПОЛНЕНИЕ] Начало обработки события {} для агрегата {}", event.getEventType(), event.getAggregateId());
 
-        // 1. Идемпотентность на входе
+        // 1. Идемпотентность на входе (по eventId)
         if (idempotencyService.isAlreadyProcessed(event.getId())) {
             log.info("[EXECUTION] Event {} already processed, skipping", event.getId());
             return;
         }
 
         UUID orderId = event.getAggregateId();
-        boolean committed = false;
-        try {
+        
+        // 1.1 Дополнительная проверка по состоянию ордера (бизнес-идемпотентность)
+        OrderEntity currentOrder = orderRepository.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+        
+        if (!OrderStatus.PENDING_EXECUTION.name().equals(currentOrder.getStatus())) {
+            log.info("[EXECUTION] Order {} already in status {}, marking event as processed", orderId, currentOrder.getStatus());
+            idempotencyService.markAsProcessed(event.getId(), "OrderExecutionHandler");
+            return;
+        }
+
+        boolean committed = false;        try {
             // 2. Атомарный захват (Phase A: PENDING -> EXECUTING)
             Optional<OrderEntity> orderOpt = tryClaimOrder(orderId);
             if (orderOpt.isEmpty()) return;
