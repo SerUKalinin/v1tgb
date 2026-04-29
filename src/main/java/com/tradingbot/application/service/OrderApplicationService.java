@@ -61,10 +61,9 @@ public class OrderApplicationService {
         }
 
         // 3. Создание ордера
-        String clientOrderId = generateClientOrderId(approved.getOrderId());
         OrderEntity order = OrderEntity.builder()
                 .id(approved.getOrderId())
-                .clientOrderId(clientOrderId)
+                .clientOrderId(approved.getClientOrderId())
                 .symbol(approved.getSymbol())
                 .strategyId(approved.getStrategyId())
                 .side(approved.getSide())
@@ -81,29 +80,12 @@ public class OrderApplicationService {
         saveOutbox(order.getId(), "ORDER", "ORDER_CREATED", order);
 
         log.info("[FINANCIAL-CORE] Atomic transaction committed for order: {} (clientOrderId: {}). Risk trace: {}", 
-                order.getId(), clientOrderId, decision.getTrace());
+                order.getId(), order.getClientOrderId(), decision.getTrace());
     }
 
+    @Deprecated
     private String generateClientOrderId(UUID orderId) {
-        String hex = orderId.toString().replace("-", "");
-        String id = "bot_" + hex;
-        if (id.length() > 36) {
-            return hex.substring(0, Math.min(hex.length(), 36));
-        }
-        return id;
-    }    private OrderEntity createFromApproved(ApprovedOrder approved) {
-        return OrderEntity.builder()
-                .id(approved.getOrderId())
-                .clientOrderId(approved.getClientOrderId())
-                .symbol(approved.getSymbol())
-                .strategyId(approved.getStrategyId())
-                .side(approved.getSide())
-                .type(approved.getType())
-                .quantity(approved.getQuantity())
-                .price(approved.getPrice())
-                .status(OrderStatus.PENDING_EXECUTION.name())
-                .createdAt(Instant.now())
-                .build();
+        return com.tradingbot.common.util.ClientOrderIdGenerator.generate(orderId);
     }
 
     private void saveOutbox(UUID aggregateId, String aggregateType, String eventType, Object payload) {

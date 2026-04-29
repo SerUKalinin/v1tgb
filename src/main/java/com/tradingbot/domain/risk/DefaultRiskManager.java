@@ -57,11 +57,11 @@ public class DefaultRiskManager implements RiskManager {
             // 4. Evaluate Rules (Optional for Stage 3, can be expanded)
 
             // 5. Create ApprovedOrder
+            UUID orderId = UUID.randomUUID();
             ApprovedOrder approvedOrder = new ApprovedOrder(
-                    UUID.randomUUID(),
-                    "c-" + UUID.randomUUID().toString().substring(0, 8),                    signal.getSymbol(),
-                    signal.getType() == com.tradingbot.common.enums.SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,
-                    OrderType.MARKET,
+                    orderId,
+                    com.tradingbot.common.util.ClientOrderIdGenerator.generate(orderId),
+                    signal.getSymbol(),                    signal.getType() == com.tradingbot.common.enums.SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,                    OrderType.MARKET,
                     quantity,
                     signal.getPrice(),
                     signal.getStopLoss(),

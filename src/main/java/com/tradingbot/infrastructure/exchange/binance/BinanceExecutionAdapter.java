@@ -106,7 +106,9 @@ public class BinanceExecutionAdapter implements ExecutionPort {
      * regex: [a-zA-Z0-9-_]{1,36}
      */
     private String sanitizeClientId(String clientId) {
-        if (clientId == null) return UUID.randomUUID().toString().replace("-", "");
+        if (clientId == null || clientId.isBlank()) {
+            throw new IllegalArgumentException("clientOrderId must not be null or empty for Binance execution");
+        }
         
         // Оставляем только разрешенные символы: буквы, цифры, дефис, подчеркивание
         String sanitized = clientId.replaceAll("[^a-zA-Z0-9-_]", "");
@@ -116,14 +118,12 @@ public class BinanceExecutionAdapter implements ExecutionPort {
             sanitized = sanitized.substring(0, 36);
         }
         
-        // Если после очистки строка пуста, генерируем случайный ID
         if (sanitized.isEmpty()) {
-            return UUID.randomUUID().toString().replace("-", "");
+            throw new IllegalArgumentException("clientOrderId contains no valid characters for Binance: " + clientId);
         }
         
         return sanitized;
     }
-
     private ExecutionResult mapToExecutionResult(ApprovedOrder order, Map response) {
         String status = (String) response.get("status");
         boolean success = "FILLED".equals(status) || "NEW".equals(status) || "PARTIALLY_FILLED".equals(status);
