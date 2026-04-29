@@ -1,6 +1,6 @@
 package com.tradingbot.infrastructure.execution.fake;
 
-import com.tradingbot.application.service.TradeService;
+import com.tradingbot.application.service.execution.TradeService;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;

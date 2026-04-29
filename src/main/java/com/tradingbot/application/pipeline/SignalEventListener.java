@@ -1,8 +1,8 @@
 package com.tradingbot.application.pipeline;
 
-import com.tradingbot.application.service.OrderApplicationService;
-import com.tradingbot.application.service.SignalRouter;
-import com.tradingbot.application.service.SystemStateManager;
+import com.tradingbot.application.service.order.OrderApplicationService;
+import com.tradingbot.application.service.strategy.SignalRouter;
+import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.domain.event.SignalEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

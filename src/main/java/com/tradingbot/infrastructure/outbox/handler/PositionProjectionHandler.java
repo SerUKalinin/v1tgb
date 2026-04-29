@@ -1,7 +1,7 @@
 package com.tradingbot.infrastructure.outbox.handler;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.tradingbot.application.service.PositionService;
+import com.tradingbot.application.service.execution.PositionService;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;

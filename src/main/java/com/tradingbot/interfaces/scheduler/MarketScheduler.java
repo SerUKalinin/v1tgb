@@ -1,10 +1,9 @@
 package com.tradingbot.interfaces.scheduler;
 
 import com.tradingbot.application.market.MarketDataService;
-import com.tradingbot.application.service.SystemStateManager;
-import com.tradingbot.application.strategy.StrategyService;
+import com.tradingbot.application.bootstrap.SystemStateManager;
+import com.tradingbot.application.service.strategy.StrategyService;
 import com.tradingbot.infrastructure.execution.binance.BinanceClient;
-import com.tradingbot.application.service.TradingSystemBootstrapper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

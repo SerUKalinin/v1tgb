@@ -1,10 +1,10 @@
 package com.tradingbot.infrastructure.exchange.binance;
 
 import com.tradingbot.domain.risk.ApprovedOrder;
-import com.tradingbot.domain.port.exchange.ExecutionPort;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.common.util.ClientOrderIdGenerator;
+import com.tradingbot.infrastructure.binance.BinanceExecutionAdapter;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -13,7 +13,6 @@ import org.springframework.test.context.ActiveProfiles;
 import com.tradingbot.infrastructure.execution.binance.BinanceClient;
 
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

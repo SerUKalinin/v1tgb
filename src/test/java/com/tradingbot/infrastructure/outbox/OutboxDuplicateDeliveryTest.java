@@ -2,11 +2,11 @@ package com.tradingbot.infrastructure.outbox;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.BaseIntegrationTest;
-import com.tradingbot.application.service.OrderExecutionHandler;
-import com.tradingbot.application.service.SystemStateManager;
+import com.tradingbot.application.service.execution.OrderExecutionHandler;
+import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderType;
-import com.tradingbot.domain.port.exchange.ExecutionPort;
+import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;

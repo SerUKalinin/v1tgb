@@ -1,5 +1,6 @@
 package com.tradingbot.application.service;
 
+import com.tradingbot.application.service.order.OrderApplicationService;
 import org.junit.jupiter.api.Test;
 import java.util.UUID;
 import java.util.regex.Pattern;

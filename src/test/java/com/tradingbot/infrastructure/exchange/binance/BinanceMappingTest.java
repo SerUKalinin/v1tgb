@@ -2,6 +2,7 @@ package com.tradingbot.infrastructure.exchange.binance;
 
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.risk.ApprovedOrder;
+import com.tradingbot.infrastructure.binance.BinanceExecutionAdapter;
 import com.tradingbot.infrastructure.execution.binance.BinanceClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,7 +23,7 @@ public class BinanceMappingTest {
     void setUp() {
         binanceClient = Mockito.mock(BinanceClient.class);
         adapter = new BinanceExecutionAdapter(binanceClient);
-        adapter.setSelf(adapter); // Симулируем прокси для тестов
+        adapter.setSelf(adapter);
     }
     @Test
     void testMappingLotSizeErrorToRejected() {

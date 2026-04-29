@@ -1,4 +1,4 @@
-package com.tradingbot.application.pipeline;
+package com.tradingbot.application.service.execution;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -8,7 +8,6 @@ import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Trade;
 import com.tradingbot.domain.risk.RiskEngine;
 import com.tradingbot.domain.risk.RiskEvent;
-import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.entity.TradeEntity;
 import com.tradingbot.infrastructure.persistence.mapper.TradeMapper;
@@ -27,24 +26,22 @@ import java.util.UUID;
 @Service
 @Slf4j
 @RequiredArgsConstructor
-public class TradingPipeline {
+public class TradeService {
 
     private final TradeRepository tradeRepository;
     private final TradeMapper tradeMapper;
+    private final PositionService positionService;
     private final EquityService equityService;
     private final OutboxEventRepository outboxRepository;
     private final ObjectMapper objectMapper;
     private final OrderRepository orderRepository;
     private final RiskEngine riskEngine;
 
-    /**
-     * Регистрирует сделки и уведомляет зависимые сервисы через Outbox.
-     */
     @Transactional
     public void onOrderFilled(OrderFilledEvent event) {
         log.info("[TRADE-SERVICE] Handling order fill for order: {}", event.getOrderId());
 
-        // 1. Outbox: ORDER_FILLED (Фиксация факта исполнения)
+        // 1. Outbox: ORDER_FILLED (Идемпотентность на стороне потребителя)
         saveOutbox(event.getOrderId(), "ORDER", "ORDER_FILLED", event);
 
         if (tradeRepository.existsByExchangeTradeId(event.getExternalExecutionId())) {
@@ -55,8 +52,9 @@ public class TradingPipeline {
         var order = orderRepository.findById(event.getOrderId())
                 .orElseThrow(() -> new RuntimeException("Order not found: " + event.getOrderId()));
 
-        // 2. Создание сущности сделки
+        // 2. Создание сделки с UUID
         TradeEntity entity = new TradeEntity();
+        entity.setId(UUID.randomUUID());
         entity.setOrder(order);
         entity.setClientOrderId(order.getClientOrderId());
         entity.setExchangeTradeId(event.getExternalExecutionId());
@@ -70,10 +68,10 @@ public class TradingPipeline {
 
         TradeEntity saved = tradeRepository.save(entity);
 
-        // 3. Outbox: TRADE_CREATED (Для асинхронных проекций, например PositionService)
+        // 3. Outbox: TRADE_CREATED
         saveOutbox(saved.getId(), "TRADE", "TRADE_CREATED", saved);
 
-        // 4. Обновление RiskEngine (внутренний Event Sourcing)
+        // 4. Уведомление RiskEngine (Event Sourcing)
         riskEngine.publish(new RiskEvent.TradeExecuted(
                 saved.getExchangeTradeId(),
                 saved.getSymbol(),
@@ -83,7 +81,7 @@ public class TradingPipeline {
                 saved.getExecutedAt()
         ));
 
-        // 5. Синхронное уведомление Equity (если требуется немедленный пересчет баланса)
+        // 5. Синхронное обновление проекций (Equity)
         TradeCreatedEvent tradeCreatedEvent = new TradeCreatedEvent(
                 saved.getId(),
                 saved.getOrder().getId(),
@@ -95,7 +93,9 @@ public class TradingPipeline {
                 order.getStopLoss(),
                 order.getTakeProfit()
         );
+
         equityService.onTradeCreated(tradeCreatedEvent);
+        // PositionService теперь обновляется асинхронно через Outbox
     }
 
     private void saveOutbox(UUID aggregateId, String aggregateType, String eventType, Object payload) {
@@ -106,7 +106,7 @@ public class TradingPipeline {
                     .aggregateType(aggregateType)
                     .eventType(eventType)
                     .payload(objectMapper.writeValueAsString(payload))
-                    .status(OutboxStatus.NEW)
+                    .status(com.tradingbot.infrastructure.outbox.OutboxStatus.NEW)
                     .createdAt(Instant.now())
                     .build();
 

@@ -1,8 +1,8 @@
 package com.tradingbot.config;
 
-import com.tradingbot.application.service.TradeService;
+import com.tradingbot.application.service.execution.TradeService;
+import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.execution.ExecutionEngine;
-import com.tradingbot.infrastructure.execution.binance.BinanceClient;
 import com.tradingbot.infrastructure.execution.binance.BinanceExecutionEngine;
 import com.tradingbot.infrastructure.execution.fake.BacktestExecutionEngine;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
@@ -29,7 +29,7 @@ public class AppConfig {
      */
     @Bean
     @Profile("prod")
-    public ExecutionEngine binanceExecutionEngine(com.tradingbot.domain.port.exchange.ExecutionPort executionPort, OrderRepository orderRepository) {
+    public ExecutionEngine binanceExecutionEngine(ExecutionPort executionPort, OrderRepository orderRepository) {
         return new BinanceExecutionEngine(executionPort, orderRepository);
     }    /**
      * Создаёт исполнительный движок для бэктестирования.
