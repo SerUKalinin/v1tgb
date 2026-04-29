@@ -10,6 +10,9 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
+
+import java.math.BigDecimal;
+
 /**
  * Центральный компонент управления жизненным циклом торговой системы.
  * Гарантирует строгий порядок инициализации и предотвращает торговлю на неконсистентных данных.
@@ -19,24 +22,12 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class TradingSystemBootstrapper {
 
-    public enum SystemState {
-        INITIALIZING,
-        RISK_RECOVERING,
-        RECONCILING,
-        MARKET_WARMING,
-        READY,
-        TRADING_ENABLED,
-        HALTED
-    }
-
+    private final SystemStateManager stateManager;
     private final RiskStateRecoveryService riskRecoveryService;
-    private final ReconciliationService reconciliationService;
     private final MarketDataService marketDataService;
     private final RiskEngine riskEngine;
-    private final org.springframework.context.ApplicationContext applicationContext;
-
-    @Getter
-    private volatile SystemState state = SystemState.INITIALIZING;
+    private final com.tradingbot.domain.execution.ExchangeOrderQueryService exchangeQueryService;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
@@ -47,27 +38,38 @@ public class TradingSystemBootstrapper {
         log.info("[BOOTSTRAP] Запуск процесса инициализации торговой системы...");
         
         try {
-            // 1. Восстановление состояния рисков (Event Sourcing replay)
-            updateState(SystemState.RISK_RECOVERING);
+            // 1. Восстановление состояния рисков
+            stateManager.updateState(SystemStateManager.SystemState.RISK_RECOVERING);
             riskRecoveryService.recover();
             log.info("[BOOTSTRAP] Состояние рисков успешно восстановлено.");
 
-            // 2. Сверка балансов и ордеров с биржей
-            updateState(SystemState.RECONCILING);
-            reconciliationService.reconcileAll();
-            log.info("[BOOTSTRAP] Сверка с биржей завершена.");
+            // 2. Определение режима сверки и публикация события
+            BigDecimal internalBalance = riskEngine.getState().availableBalance();
+            BigDecimal exchangeBalance = exchangeQueryService.getAvailableBalance("USDT");
 
-            // 3. Прогрев рыночных данных (загрузка свечей)
-            updateState(SystemState.MARKET_WARMING);
+            if (!stateManager.isReady() && internalBalance.signum() == 0 && exchangeBalance.signum() > 0) {
+                log.info("[BOOTSTRAP] Обнаружен холодный старт (Internal=0, Exchange={}).", exchangeBalance);
+                stateManager.updateState(SystemStateManager.SystemState.COLD_START_RECONCILIATION);
+                eventPublisher.publishEvent(new com.tradingbot.application.event.SystemEvents.ColdStartDetectedEvent(exchangeBalance));
+            } else {
+                log.info("[BOOTSTRAP] Стандартная сверка (Internal={}, Exchange={}).", internalBalance, exchangeBalance);
+                stateManager.updateState(SystemStateManager.SystemState.RECONCILING);
+                eventPublisher.publishEvent(new com.tradingbot.application.event.SystemEvents.StandardReconciliationRequestedEvent(internalBalance, exchangeBalance));
+            }
+            
+            // 3. Прогрев данных
+            stateManager.updateState(SystemStateManager.SystemState.MARKET_WARMING);
             marketDataService.warmUpAll();
             log.info("[BOOTSTRAP] Рыночные данные прогреты.");
 
-            // 4. Система готова к работе
-            updateState(SystemState.READY);
+            // 4. Система готова
+            stateManager.updateState(SystemStateManager.SystemState.READY);
             log.info("[BOOTSTRAP] >>> СИСТЕМА ГОТОВА К ТОРГОВЛЕ <<<");
 
-            // 5. Активация планировщиков и торговых модулей
-            enableSchedulers();
+            // 5. Публикация события готовности
+            eventPublisher.publishEvent(new com.tradingbot.application.event.SystemEvents.SystemReadyEvent());
+            
+            // 6. Активация торговли
             enableTrading();
 
         } catch (Exception e) {
@@ -76,43 +78,19 @@ public class TradingSystemBootstrapper {
         }
     }
 
-    private void enableSchedulers() {
-        log.info("[BOOTSTRAP] Активация планировщиков...");
-        applicationContext.getBean(MarketScheduler.class).enable();
-    }
-    private void enableTrading() {        if (this.state != SystemState.READY) {
-            log.warn("[BOOTSTRAP] Невозможно включить торговлю: система в состоянии {}", this.state);
+    private void enableTrading() {
+        if (stateManager.getState() != SystemStateManager.SystemState.READY) {
             return;
         }
-
         log.info("[BOOTSTRAP] Активация торговых модулей...");
-        
-        // 1. Разрешаем операции в RiskEngine
         riskEngine.resumeTrading();
-        
-        // 2. Переключаем глобальный статус (открывает заслонки в Application слое)
-        updateState(SystemState.TRADING_ENABLED);
-        
+        stateManager.updateState(SystemStateManager.SystemState.TRADING_ENABLED);
         log.info("[BOOTSTRAP] >>> ТОРГОВЛЯ РАЗРЕШЕНА И ЗАПУЩЕНА <<<");
     }
+
     public void haltSystem(String reason) {
         log.error("[BOOTSTRAP] АВАРИЙНАЯ ОСТАНОВКА СИСТЕМЫ: {}", reason);
         riskEngine.emergencyStop(reason);
-        updateState(SystemState.HALTED);
-    }
-
-    public void haltTrading(String reason) {
-        log.warn("[BOOTSTRAP] Остановка торговли: {}", reason);
-        riskEngine.emergencyStop(reason);
-        updateState(SystemState.HALTED);
-        log.info("[BOOTSTRAP] Торговля остановлена. Система в состоянии HALTED. Сверка (Reconciliation) остается доступной.");
-    }
-
-    private void updateState(SystemState newState) {        log.info("[BOOTSTRAP] Переход состояния: {} -> {}", this.state, newState);
-        this.state = newState;
-    }
-
-    public boolean isReady() {
-        return state == SystemState.READY || state == SystemState.TRADING_ENABLED;
+        stateManager.updateState(SystemStateManager.SystemState.HALTED);
     }
 }

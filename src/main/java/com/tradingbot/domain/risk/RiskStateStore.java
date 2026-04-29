@@ -32,4 +32,8 @@ public class RiskStateStore {
     public void updateInternal(RiskState newState) {
         updateCache(newState);
     }
+
+    public void clearCache() {
+        globalCache.set(RiskState.empty());
+    }
 }

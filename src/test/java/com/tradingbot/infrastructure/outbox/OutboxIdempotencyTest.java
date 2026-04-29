@@ -6,7 +6,9 @@ import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
+import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
+import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -24,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @ActiveProfiles("test")
-public class OutboxIdempotencyTest {
+public class OutboxIdempotencyTest extends BaseIntegrationTest {
 
     @Autowired
     private OutboxProcessor outboxProcessor;

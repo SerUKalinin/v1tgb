@@ -55,8 +55,10 @@ public class OutboxEventEntity {
     @Column(name = "locked_until")
     private Instant lockedUntil;
 
-    @Column(name = "attempt_count", nullable = false)
-    private int attemptCount;
+    @Column(name = "next_attempt_at")
+    private Instant nextAttemptAt;
+
+    @Column(name = "attempt_count", nullable = false)    private int attemptCount;
 
     @PrePersist
     protected void onCreate() {

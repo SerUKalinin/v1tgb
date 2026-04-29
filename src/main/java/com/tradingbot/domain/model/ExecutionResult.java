@@ -16,6 +16,13 @@ import java.util.UUID;
 @Builder
 @AllArgsConstructor
 public class ExecutionResult {
+    public enum Status {
+        SUCCESS,
+        REJECTED,
+        FAILED_IO,
+        TIMEOUT
+    }
+
     UUID orderId;
     String clientOrderId;
     String exchangeOrderId;
@@ -26,10 +33,14 @@ public class ExecutionResult {
     BigDecimal executedPrice;
     BigDecimal feeAmount;
     String feeAsset;
-    boolean success;
+    Status status;
     String errorMessage;
     @Builder.Default
     Instant executedAt = Instant.now();
+
+    public boolean isSuccess() {
+        return status == Status.SUCCESS;
+    }
 
     public static ExecutionResult success(
             UUID orderId,
@@ -54,13 +65,22 @@ public class ExecutionResult {
                 .executedPrice(executedPrice)
                 .feeAmount(feeAmount)
                 .feeAsset(feeAsset)
-                .success(true)
+                .status(Status.SUCCESS)
                 .build();
     }
-    public static ExecutionResult failure(UUID orderId, String errorMessage) {
+
+    public static ExecutionResult rejected(UUID orderId, String errorMessage) {
         return ExecutionResult.builder()
                 .orderId(orderId)
-                .success(false)
+                .status(Status.REJECTED)
+                .errorMessage(errorMessage)
+                .build();
+    }
+
+    public static ExecutionResult failedIo(UUID orderId, String errorMessage) {
+        return ExecutionResult.builder()
+                .orderId(orderId)
+                .status(Status.FAILED_IO)
                 .errorMessage(errorMessage)
                 .build();
     }
@@ -68,8 +88,13 @@ public class ExecutionResult {
     public static ExecutionResult timeout(UUID orderId) {
         return ExecutionResult.builder()
                 .orderId(orderId)
-                .success(false)
+                .status(Status.TIMEOUT)
                 .errorMessage("TIMEOUT")
                 .build();
+    }
+
+    @Deprecated
+    public static ExecutionResult failure(UUID orderId, String errorMessage) {
+        return failedIo(orderId, errorMessage);
     }
 }

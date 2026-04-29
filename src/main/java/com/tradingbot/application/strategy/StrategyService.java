@@ -1,6 +1,9 @@
 package com.tradingbot.application.strategy;
 
 import com.tradingbot.application.event.NewClosedCandleEvent;
+import com.tradingbot.application.market.MarketDataService;
+import com.tradingbot.application.service.OrderApplicationService;
+import com.tradingbot.application.service.SystemStateManager;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.SignalEvent;
 import lombok.RequiredArgsConstructor;
@@ -21,23 +24,28 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class StrategyService {
 
+    private final MarketDataService marketDataService;
+    private final OrderApplicationService orderApplicationService;
+    private final SystemStateManager stateManager;
     private final ApplicationEventPublisher eventPublisher;
-    private final com.tradingbot.application.service.TradingSystemBootstrapper bootstrapper;
 
     @EventListener
     public void onNewCandle(NewClosedCandleEvent event) {
-        if (!bootstrapper.isReady()) {
-            log.warn("[STRATEGY] System not ready, ignoring candle for symbol: {}", event.symbol());
+        if (!stateManager.isReady()) {
             return;
         }
-        
+
         log.info("[STRATEGY] Processing new candle for symbol: {}", event.symbol());
         
         // Временная тестовая логика: генерируем BUY сигнал на каждую закрытую свечу
-        // В будущем здесь будет вызов конкретных реализаций стратегий
         generateTestSignal(event);
     }
-    private void generateTestSignal(NewClosedCandleEvent candle) {
+
+    public void onMarketUpdate(String symbol, BigDecimal price) {
+        if (!stateManager.isReady()) {
+            return;
+        }
+    }    private void generateTestSignal(NewClosedCandleEvent candle) {
         SignalEvent signal = SignalEvent.builder()
                 .symbol(candle.symbol())
                 .strategyId("SMA_CROSS_STUB")

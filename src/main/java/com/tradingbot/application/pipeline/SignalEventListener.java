@@ -2,6 +2,7 @@ package com.tradingbot.application.pipeline;
 
 import com.tradingbot.application.service.OrderApplicationService;
 import com.tradingbot.application.service.SignalRouter;
+import com.tradingbot.application.service.SystemStateManager;
 import com.tradingbot.domain.event.SignalEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -11,30 +12,30 @@ import org.springframework.stereotype.Component;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-@org.springframework.context.annotation.Profile("!test")
 public class SignalEventListener {
 
-    private final SignalRouter signalRouter;
     private final OrderApplicationService orderApplicationService;
-    private final com.tradingbot.application.service.TradingSystemBootstrapper bootstrapper;
+    private final SystemStateManager stateManager;
+    private final SignalRouter signalRouter;
 
     @EventListener
-    public void onSignal(SignalEvent event) {
-        if (!bootstrapper.isReady()) {
-            log.warn("[EVENT-LISTENER] System not ready, ignoring signal for symbol: {}", event.getSymbol());
+    public void onSignal(SignalEvent signal) {
+        if (!stateManager.isReady()) {
+            log.warn("[SIGNAL] System not ready. Ignoring signal for {}", signal.getSymbol());
             return;
         }
 
-        log.info("[EVENT-LISTENER] Received signal event for symbol: {}", event.getSymbol());        
-        // 1. Уведомления и логирование (Side effects)
-        signalRouter.route(event);
+        log.info("[SIGNAL] Received signal event for symbol: {}", signal.getSymbol());        
         
-        // 2. Делегирование в OrderApplicationService для исполнения (Core logic)
+        // 1. Маршрутизация (уведомления и т.д.)
+        signalRouter.route(signal);
+
+        // 2. Обработка сигнала
         try {
-            orderApplicationService.onSignalReceived(event);
+            orderApplicationService.onSignalReceived(signal);
         } catch (Exception e) {
-            log.error("[EVENT-LISTENER] Failed to process signal for symbol {}: {}", 
-                    event.getSymbol(), e.getMessage());
+            log.error("[SIGNAL] Error processing signal for {}: {}", 
+                    signal.getSymbol(), e.getMessage());
         }
     }
 }

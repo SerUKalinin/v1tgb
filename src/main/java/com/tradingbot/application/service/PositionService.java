@@ -80,39 +80,18 @@ public class PositionService {
             PositionEntity entity = repository.findBySymbolAndStrategyId(event.getSymbol(), event.getStrategyId())
                     .orElseGet(() -> createNewPositionEntity(event));
 
-            // 2. Pure State Transition
-            PositionState currentState = new PositionState(
-                    entity.getSymbol(),
-                    entity.getStrategyId(),
-                    entity.getQuantity(),
-                    entity.getEntryPrice(),
-                    entity.getLastTradeId(),
-                    entity.getRealizedPnl(),
-                    entity.getStopLoss(),
-                    entity.getTakeProfit(),
-                    entity.getStatus() != null ? com.tradingbot.domain.position.PositionStatus.valueOf(entity.getStatus()) : com.tradingbot.domain.position.PositionStatus.NEW,
-                    entity.getCloseRequestId(),
-                    entity.getUpdatedAt()
-            );
-
-            PositionState newState = reducer.reduce(currentState, event);
-
-            // 3. Update Managed Entity
-            entity.setQuantity(newState.netQuantity());
-            entity.setEntryPrice(newState.averagePrice());
-            entity.setRealizedPnl(newState.realizedPnl());
-            entity.setLastTradeId(newState.lastTradeId());
-            entity.setStopLoss(newState.stopLoss());
-            entity.setTakeProfit(newState.takeProfit());
-            entity.setStatus(newState.status().name());
-            entity.setCloseRequestId(newState.closeRequestId());
-            entity.setUpdatedAt(newState.updatedAt());
+            // 2. Pure State Transition & Entity Update
+            entity.applyTrade(event.getQuantity(), event.getPrice(), event.getTradeId());
+            
+            // Update additional fields not handled by applyTrade if necessary
+            // (In a real scenario, reducer logic would be fully moved to Entity)
+            entity.updateStopLoss(event.getStopLoss());
+            entity.updateTakeProfit(event.getTakeProfit());
 
             // 4. Save & Sync Cache
             repository.save(entity);
             idempotencyService.markAsProcessed(event.getTradeId(), "PositionService");
             positions.put(lockKey, mapper.toDomain(entity));
-
         } finally {
             lock.unlock();
         }

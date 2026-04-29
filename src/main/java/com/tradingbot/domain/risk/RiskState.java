@@ -8,6 +8,7 @@ import lombok.NoArgsConstructor;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Immutable state of the risk engine.
@@ -46,8 +47,9 @@ public class RiskState {
     @Builder.Default
     private Map<String, BigDecimal> symbolExposures = Map.of();
     @Builder.Default
-    private java.util.Set<String> processedEventIds = java.util.Set.of();
-    private String lastError;
+    private Map<UUID, BigDecimal> activeReservations = Map.of();
+    @Builder.Default
+    private java.util.Set<String> processedEventIds = java.util.Set.of();    private String lastError;
     private boolean halted;
     private long version;
 

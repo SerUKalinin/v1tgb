@@ -1,5 +1,6 @@
 package com.tradingbot.domain.risk;
 
+import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.execution.ExecutionEngine;
@@ -19,8 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
 @ActiveProfiles("test")
-class ArchitectureInvarianceTest {
-
+class ArchitectureInvarianceTest extends BaseIntegrationTest {
     @Autowired
     private ApplicationContext context;
 

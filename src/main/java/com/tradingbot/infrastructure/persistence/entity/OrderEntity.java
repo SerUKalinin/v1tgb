@@ -50,18 +50,17 @@ public class OrderEntity {    @Id
     @Column(nullable = false)
     private OrderType type;
 
-    @Column(nullable = false, precision = 18, scale = 8)
+    @Column(nullable = false, precision = 38, scale = 18)
     private BigDecimal quantity;
 
-    @Column(precision = 18, scale = 8)
+    @Column(precision = 38, scale = 18)
     private BigDecimal price;
 
-    @Column(name = "stop_loss", precision = 18, scale = 8)
+    @Column(name = "stop_loss", precision = 38, scale = 18)
     private BigDecimal stopLoss;
 
-    @Column(name = "take_profit", precision = 18, scale = 8)
+    @Column(name = "take_profit", precision = 38, scale = 18)
     private BigDecimal takeProfit;
-
     @Column(name = "strategy_id", nullable = false)
     private String strategyId;
 

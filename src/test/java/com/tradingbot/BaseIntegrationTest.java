@@ -2,9 +2,11 @@ package com.tradingbot;
 
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
+import com.tradingbot.infrastructure.telegram.TradingTelegramBot;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,14 +19,12 @@ public abstract class BaseIntegrationTest {
 
     @Autowired
     protected RiskStateRepository riskStateRepository;
-
     @BeforeEach
     @Transactional
     void setUpRiskState() {
-        if (riskStateRepository.findById("risk_core").isEmpty()) {
+        if (riskStateRepository.findById(RiskStateEntity.SINGLETON_ID).isEmpty()) {
             RiskStateEntity riskState = new RiskStateEntity();
-            riskState.setId("risk_core");
-            riskState.setTotalEquity(BigDecimal.ZERO);
+            riskState.setId(RiskStateEntity.SINGLETON_ID);            riskState.setTotalEquity(BigDecimal.ZERO);
             riskState.setAvailableBalance(BigDecimal.ZERO);
             riskState.setReservedMargin(BigDecimal.ZERO);
             riskState.setHalted(false);

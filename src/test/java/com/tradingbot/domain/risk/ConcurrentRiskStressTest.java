@@ -1,5 +1,6 @@
 package com.tradingbot.domain.risk;
 
+import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,8 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @ActiveProfiles("test")
-public class ConcurrentRiskStressTest {
-
+public class ConcurrentRiskStressTest extends BaseIntegrationTest {
     @Autowired
     private RiskEngine riskEngine;
 
@@ -43,9 +43,8 @@ public class ConcurrentRiskStressTest {
         riskEngine.syncBalance(new BigDecimal("1000.00"));
         
         transactionTemplate.execute(status -> {
-            RiskStateEntity entity = riskStateRepository.findById("risk_core").orElseThrow();
-            entity.setTotalEquity(new BigDecimal("1000.00"));
-            riskStateRepository.saveAndFlush(entity);
+            RiskStateEntity entity = riskStateRepository.findById(RiskStateEntity.SINGLETON_ID).orElseThrow();
+            entity.setTotalEquity(new BigDecimal("1000.00"));            riskStateRepository.saveAndFlush(entity);
             return null;
         });
     }

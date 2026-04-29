@@ -25,20 +25,25 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class OrderApplicationService {
 
-    private final OrderRepository orderRepository;
-    private final OutboxEventRepository outboxRepository;
     private final RiskEngine riskEngine;
     private final RiskManager riskManager;
+    private final OrderRepository orderRepository;
+    private final OutboxEventRepository outboxRepository;
+    private final SystemStateManager stateManager;
     private final ObjectMapper objectMapper;
-    private final TradingSystemBootstrapper bootstrapper;
 
     @Transactional
     public void onSignalReceived(SignalEvent signal) {
-        if (bootstrapper.getState() != TradingSystemBootstrapper.SystemState.TRADING_ENABLED) {
+        processSignal(signal);
+    }
+
+    @Transactional
+    public void processSignal(SignalEvent signal) {        if (stateManager.getState() != SystemStateManager.SystemState.TRADING_ENABLED) {
             log.warn("[ORDER-APP] Trading is not enabled (current state: {}). Ignoring signal for {}", 
-                    bootstrapper.getState(), signal.getSymbol());
+                    stateManager.getState(), signal.getSymbol());
             return;
         }
+
 
         // 1. Валидация (Read-only, без внешних вызовов внутри транзакции, если RiskManager локален)
         ApprovedOrder approved = riskManager.approveSignal(signal)
@@ -56,7 +61,7 @@ public class OrderApplicationService {
         }
 
         // 3. Создание ордера
-        String clientOrderId = "bot_" + approved.getOrderId().toString();
+        String clientOrderId = generateClientOrderId(approved.getOrderId());
         OrderEntity order = OrderEntity.builder()
                 .id(approved.getOrderId())
                 .clientOrderId(clientOrderId)
@@ -78,7 +83,15 @@ public class OrderApplicationService {
         log.info("[FINANCIAL-CORE] Atomic transaction committed for order: {} (clientOrderId: {}). Risk trace: {}", 
                 order.getId(), clientOrderId, decision.getTrace());
     }
-    private OrderEntity createFromApproved(ApprovedOrder approved) {
+
+    private String generateClientOrderId(UUID orderId) {
+        String hex = orderId.toString().replace("-", "");
+        String id = "bot_" + hex;
+        if (id.length() > 36) {
+            return hex.substring(0, Math.min(hex.length(), 36));
+        }
+        return id;
+    }    private OrderEntity createFromApproved(ApprovedOrder approved) {
         return OrderEntity.builder()
                 .id(approved.getOrderId())
                 .clientOrderId(approved.getClientOrderId())

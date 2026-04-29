@@ -1,24 +1,13 @@
 package com.tradingbot.domain.risk;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.tradingbot.infrastructure.persistence.entity.RiskEventEntity;
-import com.tradingbot.infrastructure.persistence.entity.RiskSnapshotEntity;
-import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
-import com.tradingbot.infrastructure.persistence.repository.RiskEventRepository;
-import com.tradingbot.infrastructure.persistence.repository.RiskSnapshotRepository;
-import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -28,78 +17,153 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class RiskEngine {
 
-    private final RiskEventRepository eventRepository;
-    private final RiskSnapshotRepository snapshotRepository;
-    private final RiskStateRepository riskStateRepository;
+    private final RiskRepository riskRepository;
     private final RiskStateReducer reducer;
-    private final ObjectMapper objectMapper;
     private final RiskStateStore riskStateStore;
 
-    private static final String AGGREGATE_ID = "risk_core";
-    private static final int SNAPSHOT_THRESHOLD = 500;
-
-    // =========================
-    // MAIN EVENT PIPELINE
-    // =========================
-
+    /**
+     * Основной конвейер обработки событий риска.
+     * Обеспечивает идемпотентность и атомарное обновление состояния.
+     */
     @Transactional
     public void publish(RiskEvent event) {
-        RiskStateEntity entity = loadOrInitializeRiskState();
-        publishWithEntity(event, entity);
-    }
+        RiskState state = riskRepository.get();
 
-    private void publishWithEntity(RiskEvent event, RiskStateEntity entity) {
-        RiskState state = mapToDomain(entity);
-
-        // HARD HALT GATE: Fail-closed защита
+        // Fail-closed защита: игнорируем события, если система остановлена
         if (state.isHalted() && !(event instanceof RiskEvent.TradingHalted)) {
-            log.warn("Risk Engine HALTED. Event ignored: {}", event.getEventId());
+            log.warn("[RISK] Engine HALTED. Event ignored: {}", event.getEventId());
             return;
         }
 
         UUID eventId = parseEventId(event.getEventId());
 
-        // IDEMPOTENCY
-        if (eventRepository.existsByEventId(eventId)) {
-            log.info("Duplicate event skipped: {}", event.getEventId());
+        // Проверка идемпотентности на уровне хранилища
+        if (riskRepository.isEventProcessed(eventId)) {
+            log.info("[RISK] Duplicate event skipped: {}", event.getEventId());
             return;
         }
 
         try {
-            // REDUCE: Вычисляем новое состояние
+            // Вычисляем новое состояние через чистый редюсер
             RiskState newState = reducer.reduce(state, event);
 
-            // PERSIST STATE
-            entity.setTotalEquity(newState.getTotalEquity());
-            entity.setAvailableBalance(newState.getAvailableBalance());
-            entity.setReservedMargin(newState.getReservedMargin());
-            entity.setHalted(newState.isHalted());
-            entity.setUpdatedAt(Instant.now());
-            riskStateRepository.saveAndFlush(entity);
+            // Атомарно сохраняем состояние и помечаем событие как обработанное
+            riskRepository.markEventProcessed(eventId, newState, event);
 
-            // PERSIST EVENT
-            RiskEventEntity eventEntity = RiskEventEntity.builder()
-                    .eventId(eventId)
-                    .aggregateId(AGGREGATE_ID)
-                    .version(entity.getVersion())
-                    .eventType(event.getClass().getSimpleName())
-                    .payload(objectMapper.writeValueAsString(event))
-                    .build();
-            eventRepository.save(eventEntity);
-
-            // SYNC CACHE
+            // Синхронизируем кэш только после успешного коммита транзакции
             syncCacheAfterCommit(newState);
 
-            // Snapshot logic
-            if (shouldSnapshot(entity.getVersion())) {
-                takeSnapshot(newState);
-            }
-
         } catch (Exception e) {
-            log.error("RiskEngine failed for event {}", event.getEventId(), e);
-            throw new RuntimeException(e);
+            log.error("[RISK] Processing failed for event {}", event.getEventId(), e);
+            throw new RuntimeException("Risk processing failed", e);
         }
     }
+
+    /**
+     * Резервирование капитала под ордер.
+     */
+    @Transactional
+    public RiskDecision reserve(UUID orderId, BigDecimal amount) {
+        RiskState state = riskRepository.get();
+        List<String> trace = new ArrayList<>();
+        trace.add("Starting risk check for order " + orderId + " with amount " + amount);
+
+        if (state.isHalted()) {
+            return RiskDecision.reject(RiskDecision.Reason.HALTED, "Risk Engine is HALTED", trace);
+        }
+
+        if (RiskState.safeCompare(state.getBalance(), amount) < 0) {
+            trace.add("Decision: REJECTED - Insufficient capital. Available: " + state.getBalance());
+            return RiskDecision.reject(RiskDecision.Reason.INSUFFICIENT_CAPITAL, "Insufficient capital", trace);
+        }
+
+        RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(
+                "RESERVE-" + orderId.toString(),
+                orderId,
+                amount
+        );
+        publish(event);
+
+        trace.add("Decision: APPROVED - Capital reserved");
+        return RiskDecision.approve(amount, trace);
+    }
+
+    /**
+     * Освобождение зарезервированного капитала.
+     */
+    @Transactional
+    public void release(UUID orderId, BigDecimal amount, String reason) {
+        RiskEvent.CapitalReleased event = new RiskEvent.CapitalReleased(
+                "RELEASE-" + orderId.toString(),
+                orderId,
+                amount,
+                reason
+        );
+        publish(event);
+    }
+    /**
+     * Упрощенное освобождение (сумма берется из активной резервации).
+     */
+    @Transactional
+    public void release(UUID orderId) {
+        release(orderId, BigDecimal.ZERO, "COMPENSATION");
+    }
+
+    /**
+     * Синхронизация баланса с внешним источником (Reconciliation).
+     */
+    @Transactional
+    public void syncBalance(BigDecimal actualBalance) {
+        RiskState state = riskRepository.get();
+        RiskState newState = state.toBuilder()
+                .balance(actualBalance)
+                .totalEquity(actualBalance.add(state.getReservedMargin()))
+                .build();
+
+        riskRepository.save(newState);
+        syncCacheAfterCommit(newState);
+        log.info("[RISK] Balance synced: {}", actualBalance);
+    }
+
+    /**
+     * Экстренная остановка всех торговых операций.
+     */
+    @Transactional
+    public void emergencyStop(String reason) {
+        RiskState state = riskRepository.get();
+        RiskState newState = state.toBuilder().halted(true).build();
+
+        riskRepository.save(newState);
+        syncCacheAfterCommit(newState);
+        log.error("[RISK] EMERGENCY STOP: {}", reason);
+    }
+
+    /**
+     * Возобновление торговых операций.
+     */
+    @Transactional
+    public void resumeTrading() {
+        RiskState state = riskRepository.get();
+        RiskState newState = state.toBuilder().halted(false).build();
+        
+        riskRepository.save(newState);
+        syncCacheAfterCommit(newState);
+        log.info("[RISK] Trading resumed");
+    }
+
+    /**
+     * Инициализация состояния (используется при восстановлении системы).
+     */
+    @Transactional
+    public void initialize(RiskState state) {
+        riskRepository.save(state);
+        riskStateStore.updateCache(state);
+        log.info("[RISK] State initialized/recovered. Version: {}", state.getVersion());
+    }
+
+    // =========================
+    // Вспомогательные методы
+    // =========================
 
     private void syncCacheAfterCommit(RiskState newState) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
@@ -111,175 +175,6 @@ public class RiskEngine {
             });
         } else {
             riskStateStore.updateCache(newState);
-        }
-    }
-
-    // =========================
-    // CAPITAL RESERVATION FLOW
-    // =========================
-
-    @Transactional(propagation = Propagation.MANDATORY)
-    public RiskDecision reserve(UUID orderId, BigDecimal amount) {
-        RiskStateEntity entity = loadOrInitializeRiskState();
-        RiskState state = mapToDomain(entity);
-
-        List<String> trace = new ArrayList<>();
-        trace.add("Starting risk check for order " + orderId + " with amount " + amount);
-
-        if (state.isHalted()) {
-            trace.add("Decision: REJECTED - Risk Engine is HALTED");
-            log.warn("[RISK] Reservation rejected for order {}: Engine HALTED", orderId);
-            return RiskDecision.reject(RiskDecision.Reason.HALTED, "Risk Engine is HALTED", trace);
-        }
-
-        // 1. Daily Loss Check (5% limit)
-        BigDecimal dailyLossLimit = state.getTotalEquity().multiply(new BigDecimal("0.05"));
-        if (RiskState.safeCompare(state.getDailyPnl(), dailyLossLimit.negate()) < 0) {
-            trace.add("Decision: REJECTED - Daily loss limit exceeded");
-            return RiskDecision.reject(RiskDecision.Reason.DAILY_LIMIT_EXCEEDED, "Daily loss limit exceeded", trace);
-        }
-
-        // 2. Drawdown Check (10% limit)
-        BigDecimal currentDrawdown = calculateDrawdown(state);
-        if (RiskState.safeCompare(currentDrawdown, new BigDecimal("10.0")) > 0) {
-            trace.add("Decision: REJECTED - Max drawdown exceeded: " + currentDrawdown + "%");
-            return RiskDecision.reject(RiskDecision.Reason.DRAWDOWN_LIMIT_EXCEEDED, "Max drawdown exceeded", trace);
-        }
-
-        // 3. Capital Check
-        if (RiskState.safeCompare(state.getBalance(), amount) < 0) {
-            trace.add("Decision: REJECTED - Insufficient capital. Available: " + state.getBalance());
-            return RiskDecision.reject(RiskDecision.Reason.INSUFFICIENT_CAPITAL, "Insufficient capital", trace);
-        }
-
-        RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(
-                UUID.randomUUID().toString(),
-                orderId,
-                amount
-        );
-
-        publishWithEntity(event, entity);
-
-        trace.add("Decision: APPROVED - Capital reserved");
-        log.info("[RISK] Capital reserved for order {}: {}. Trace: {}", orderId, amount, trace);
-
-        return RiskDecision.approve(amount, trace);
-    }
-
-    @Transactional
-    public void release(UUID orderId, BigDecimal amount, String reason) {
-        RiskEvent.CapitalReleased event = new RiskEvent.CapitalReleased(
-                UUID.randomUUID().toString(),
-                orderId,
-                amount,
-                reason
-        );
-        publish(event);
-        log.info("[RISK] Capital released for order {}: {} reason={}", orderId, amount, reason);
-    }
-
-    // =========================
-    // RECONCILIATION & EMERGENCY
-    // =========================
-
-    @Transactional
-    public void syncBalance(BigDecimal actualBalance) {
-        RiskStateEntity entity = loadOrInitializeRiskState();
-        log.info("[RISK] Syncing balance: {} -> {}", entity.getAvailableBalance(), actualBalance);
-        entity.setAvailableBalance(actualBalance);
-        entity.setTotalEquity(actualBalance.add(entity.getReservedMargin()));
-        entity.setUpdatedAt(Instant.now());
-        riskStateRepository.saveAndFlush(entity);
-        syncCacheAfterCommit(mapToDomain(entity));
-    }
-
-    @Transactional
-    public void emergencyStop(String reason) {
-        RiskStateEntity entity = loadOrInitializeRiskState();
-        log.error("[RISK] EMERGENCY STOP TRIGGERED: {}", reason);
-        entity.setHalted(true);
-        entity.setUpdatedAt(Instant.now());
-        riskStateRepository.saveAndFlush(entity);
-        syncCacheAfterCommit(mapToDomain(entity));
-    }
-
-    @Transactional
-    public void resumeTrading() {
-        RiskStateEntity entity = loadOrInitializeRiskState();
-        log.info("[RISK] Resuming trading...");
-        entity.setHalted(false);
-        entity.setUpdatedAt(Instant.now());
-        riskStateRepository.saveAndFlush(entity);
-        syncCacheAfterCommit(mapToDomain(entity));
-    }
-
-    @Transactional
-    public void initialize(RiskState state) {
-        RiskStateEntity entity = loadOrInitializeRiskState();
-        entity.setTotalEquity(state.getTotalEquity());
-        entity.setAvailableBalance(state.getAvailableBalance());
-        entity.setReservedMargin(state.getReservedMargin());
-        entity.setHalted(state.isHalted());
-        entity.setUpdatedAt(Instant.now());
-        riskStateRepository.saveAndFlush(entity);
-        riskStateStore.updateCache(state);
-    }
-
-    // =========================
-    // INTERNAL HELPERS
-    // =========================
-
-    private RiskStateEntity loadOrInitializeRiskState() {
-        return riskStateRepository.findByIdForUpdate(AGGREGATE_ID)
-                .orElseGet(() -> {
-                    log.info("[RISK] Initializing risk core state in DB...");
-                    RiskStateEntity newEntity = new RiskStateEntity();
-                    newEntity.setId(AGGREGATE_ID);
-                    newEntity.setTotalEquity(BigDecimal.ZERO);
-                    newEntity.setAvailableBalance(BigDecimal.ZERO);
-                    newEntity.setReservedMargin(BigDecimal.ZERO);
-                    newEntity.setHalted(false);
-                    newEntity.setVersion(0L);
-                    newEntity.setUpdatedAt(Instant.now());
-                    return riskStateRepository.saveAndFlush(newEntity);
-                });
-    }
-
-    public RiskState mapToDomain(RiskStateEntity entity) {
-        return RiskState.builder()
-                .totalEquity(entity.getTotalEquity())
-                .balance(entity.getAvailableBalance())
-                .reserved(entity.getReservedMargin())
-                .halted(entity.isHalted())
-                .version(entity.getVersion())
-                .build();
-    }
-
-    private BigDecimal calculateDrawdown(RiskState state) {
-        if (RiskState.safeCompare(state.getMaxEquity(), BigDecimal.ZERO) <= 0) {
-            return BigDecimal.ZERO;
-        }
-        return state.getMaxEquity()
-                .subtract(state.getTotalEquity())
-                .divide(state.getMaxEquity(), 4, RoundingMode.HALF_UP)
-                .multiply(new BigDecimal("100"));
-    }
-
-    private boolean shouldSnapshot(long version) {
-        return version > 0 && version % SNAPSHOT_THRESHOLD == 0;
-    }
-
-    private void takeSnapshot(RiskState state) {
-        try {
-            RiskSnapshotEntity snapshot = RiskSnapshotEntity.builder()
-                    .aggregateId(AGGREGATE_ID)
-                    .lastVersion(state.getVersion())
-                    .stateJson(objectMapper.writeValueAsString(state))
-                    .build();
-            snapshotRepository.save(snapshot);
-            log.info("Snapshot saved at version {}", state.getVersion());
-        } catch (JsonProcessingException e) {
-            log.error("Snapshot serialization failed", e);
         }
     }
 
