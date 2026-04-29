@@ -1,5 +1,6 @@
 package com.tradingbot.domain.risk;
 
+import com.tradingbot.common.util.MoneyMath;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -72,7 +73,7 @@ public class RiskEngine {
             return RiskDecision.reject(RiskDecision.Reason.HALTED, "Risk Engine is HALTED", trace);
         }
 
-        if (RiskState.safeCompare(state.getBalance(), amount) < 0) {
+        if (MoneyMath.isLess(state.getBalance(), amount)) {
             trace.add("Decision: REJECTED - Insufficient capital. Available: " + state.getBalance());
             return RiskDecision.reject(RiskDecision.Reason.INSUFFICIENT_CAPITAL, "Insufficient capital", trace);
         }
@@ -116,15 +117,14 @@ public class RiskEngine {
     public void syncBalance(BigDecimal actualBalance) {
         RiskState state = riskRepository.get();
         RiskState newState = state.toBuilder()
-                .balance(actualBalance)
-                .totalEquity(actualBalance.add(state.getReservedMargin()))
+                .balance(MoneyMath.scale(actualBalance))
+                .totalEquity(MoneyMath.add(actualBalance, state.getReservedMargin()))
                 .build();
 
         riskRepository.save(newState);
         syncCacheAfterCommit(newState);
         log.info("[RISK] Balance synced: {}", actualBalance);
     }
-
     /**
      * Экстренная остановка всех торговых операций.
      */

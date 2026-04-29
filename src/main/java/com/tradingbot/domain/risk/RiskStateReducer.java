@@ -1,10 +1,10 @@
 package com.tradingbot.domain.risk;
 
+import com.tradingbot.common.util.MoneyMath;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -69,8 +69,8 @@ public class RiskStateReducer {
 
     private void checkAndApplyAutoHalt(RiskState state) {
         // Лимит дневного убытка > 5%
-        BigDecimal dailyLossLimit = state.getTotalEquity().multiply(new BigDecimal("0.05"));
-        if (safeCompare(state.getDailyPnl(), dailyLossLimit.negate()) < 0) {
+        BigDecimal dailyLossLimit = MoneyMath.multiply(state.getTotalEquity(), new BigDecimal("0.05"));
+        if (MoneyMath.isLess(state.getDailyPnl(), dailyLossLimit.negate())) {
             log.error("[RiskReducer] AUTO-HALT: Daily loss limit exceeded (5%)");
             state.setHalted(true);
             return;
@@ -78,20 +78,22 @@ public class RiskStateReducer {
 
         // Максимальная просадка > 10%
         BigDecimal currentDrawdown = calculateDrawdown(state);
-        if (safeCompare(currentDrawdown, new BigDecimal("10.0")) > 0) {
+        if (MoneyMath.isGreater(currentDrawdown, new BigDecimal("10.0"))) {
             log.error("[RiskReducer] AUTO-HALT: Max drawdown exceeded (10%). Current DD: {}%", currentDrawdown);
             state.setHalted(true);
         }
     }
 
     private BigDecimal calculateDrawdown(RiskState state) {
-        if (safeCompare(state.getMaxEquity(), BigDecimal.ZERO) <= 0) {
+        if (MoneyMath.isZero(state.getMaxEquity()) || MoneyMath.isLess(state.getMaxEquity(), BigDecimal.ZERO)) {
             return BigDecimal.ZERO;
         }
-        return state.getMaxEquity()
-                .subtract(state.getTotalEquity())
-                .divide(state.getMaxEquity(), 4, RoundingMode.HALF_UP)
-                .multiply(new BigDecimal("100"));
+        
+        BigDecimal diff = MoneyMath.subtract(state.getMaxEquity(), state.getTotalEquity());
+        return MoneyMath.multiply(
+                MoneyMath.divide(diff, state.getMaxEquity()),
+                new BigDecimal("100")
+        );
     }
 
     private RiskState handleTradingHalted(RiskState state, RiskEvent.TradingHalted event) {
@@ -103,13 +105,14 @@ public class RiskStateReducer {
     }
 
     private RiskState handleTradeExecuted(RiskState state, RiskEvent.TradeExecuted event) {
-        BigDecimal newDailyPnl = state.getDailyPnl().add(event.realizedPnl());
-        BigDecimal newEquity = state.getTotalEquity().add(event.realizedPnl());
+        BigDecimal newDailyPnl = MoneyMath.add(state.getDailyPnl(), event.realizedPnl());
+        BigDecimal newEquity = MoneyMath.add(state.getTotalEquity(), event.realizedPnl());
         BigDecimal newMaxEquity = newEquity.max(state.getMaxEquity());
 
         Map<String, BigDecimal> newExposures = new HashMap<>(state.getSymbolExposures());
         BigDecimal currentExp = newExposures.getOrDefault(event.symbol(), BigDecimal.ZERO);
-        newExposures.put(event.symbol(), currentExp.add(event.quantity().multiply(event.price())));
+        BigDecimal tradeValue = MoneyMath.multiply(event.quantity(), event.price());
+        newExposures.put(event.symbol(), MoneyMath.add(currentExp, tradeValue));
 
         return state.toBuilder()
                 .dailyPnl(newDailyPnl)
@@ -138,8 +141,8 @@ public class RiskStateReducer {
         newReservations.put(event.orderId(), event.amount());
 
         return state.toBuilder()
-                .balance(state.getBalance().subtract(event.amount()))
-                .reserved(state.getReserved().add(event.amount()))
+                .balance(MoneyMath.subtract(state.getBalance(), event.amount()))
+                .reserved(MoneyMath.add(state.getReserved(), event.amount()))
                 .activeReservations(Map.copyOf(newReservations))
                 .lastUpdateTimestamp(event.timestamp())
                 .build();
@@ -154,7 +157,7 @@ public class RiskStateReducer {
         }
 
         // Используем сумму из резерва, если в событии 0 (компенсация)
-        BigDecimal amountToRelease = (event.amount() == null || safeCompare(event.amount(), BigDecimal.ZERO) == 0)
+        BigDecimal amountToRelease = (event.amount() == null || MoneyMath.isZero(event.amount()))
                 ? reservedAmount
                 : event.amount();
 
@@ -164,10 +167,9 @@ public class RiskStateReducer {
         newReservations.remove(event.orderId());
 
         return state.toBuilder()
-                .balance(state.getBalance().add(amountToRelease))
-                .reserved(state.getReserved().subtract(amountToRelease))
+                .balance(MoneyMath.add(state.getBalance(), amountToRelease))
+                .reserved(MoneyMath.subtract(state.getReserved(), amountToRelease))
                 .activeReservations(Map.copyOf(newReservations))
                 .lastUpdateTimestamp(event.timestamp())
                 .build();
-    }
-}
+    }}
