@@ -9,10 +9,16 @@ import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
 
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Lock;
+import java.util.Optional;
+
+import org.springframework.data.repository.query.Param;
+
 @Repository
 public interface RiskStateRepository extends JpaRepository<RiskStateEntity, String> {
-
+    
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT r FROM RiskStateEntity r WHERE r.id = :id")
-    Optional<RiskStateEntity> findByIdForUpdate(String id);
+    Optional<RiskStateEntity> findByIdForUpdate(@Param("id") String id);
 }

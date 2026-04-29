@@ -5,7 +5,6 @@ import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.risk.ApprovedOrder;
-import com.tradingbot.infrastructure.execution.binance.OrderStatusResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
@@ -19,11 +18,12 @@ import java.util.UUID;
 @Slf4j
 @RequiredArgsConstructor
 public class BacktestExecutionEngine implements ExecutionEngine {
+
     private final TradeService tradeService;
 
     @Override
     public ExecutionResult execute(ApprovedOrder approvedOrder) {
-        log.info("[FAKE-EXEC] Executing order: {} {} {} @ {}", 
+        log.info("[FAKE-EXEC] Executing order: {} {} {} @ {}",
                 approvedOrder.getSide(), approvedOrder.getQuantity(), approvedOrder.getSymbol(), approvedOrder.getPrice());
 
         String externalOrderId = "fake-order-" + UUID.randomUUID().toString().substring(0, 8);
@@ -37,6 +37,7 @@ public class BacktestExecutionEngine implements ExecutionEngine {
                 approvedOrder.getQuantity(),
                 approvedOrder.getPrice()
         ));
+
         return ExecutionResult.success(
                 approvedOrder.getOrderId(),
                 externalOrderId,
@@ -50,15 +51,15 @@ public class BacktestExecutionEngine implements ExecutionEngine {
                 approvedOrder.getClientOrderId()
         );
     }
+
     @Override
-    public OrderStatusResponse verifyOrder(String clientOrderId) {
+    public ExecutionResult verifyOrder(String clientOrderId) {
         log.info("[FAKE-EXEC] Verifying order: {}", clientOrderId);
         // В режиме бэктеста считаем, что если мы здесь, то ордер был исполнен
-        return OrderStatusResponse.builder()
-                .status("FILLED")
-                .clientOrderId(clientOrderId)
+        return ExecutionResult.builder()
                 .exchangeOrderId("fake-recon-" + clientOrderId)
-                .executedQty(BigDecimal.ZERO) // Упрощение для бэктеста
+                .executedQty(BigDecimal.ZERO)
+                .status(ExecutionResult.Status.SUCCESS) // Исправлено здесь
                 .build();
     }
 }

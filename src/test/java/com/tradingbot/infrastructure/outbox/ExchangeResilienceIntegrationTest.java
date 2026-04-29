@@ -1,5 +1,6 @@
 package com.tradingbot.infrastructure.outbox;
 
+import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.application.event.OutboxEventRouter;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
@@ -14,11 +15,12 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
+import static org.awaitility.Awaitility.await;
+import java.util.concurrent.TimeUnit;
 
 @SpringBootTest
 @ActiveProfiles("test")
-public class ExchangeResilienceIntegrationTest {
-
+class ExchangeResilienceIntegrationTest extends BaseIntegrationTest {
     @Autowired
     private OutboxProcessor outboxProcessor;
 
@@ -40,26 +42,30 @@ public class ExchangeResilienceIntegrationTest {
                 .eventType("ORDER_CREATED")
                 .payload("{}")
                 .status(OutboxStatus.NEW)
+                .retryCount(0)
+                .attemptCount(0)
                 .build();
-        outboxEventRepository.save(event);
+        outboxEventRepository.saveAndFlush(event);
 
         // First call fails, second succeeds
         doThrow(new RuntimeException("Exchange Down"))
-                .doAnswer(invocation -> null) // doNothing equivalent for non-void or just to be explicit
+                .doAnswer(invocation -> null)
                 .when(outboxEventRouter).route(any());
 
         // When
-        try {
-            outboxProcessor.processOutbox(); // First attempt - fails
-        } catch (Exception ignored) {}
+        outboxProcessor.processOutbox(); // First attempt - fails
 
-        // Then
+        // Then (Synchronous check, no await needed)
         OutboxEventEntity failedEvent = outboxEventRepository.findById(eventId).orElseThrow();
         assertThat(failedEvent.getStatus()).isEqualTo(OutboxStatus.FAILED);
         assertThat(failedEvent.getRetryCount()).isEqualTo(1);
 
-        // When
-        outboxProcessor.processOutbox(); // Second attempt - succeeds
+        // Force next attempt time to past to bypass backoff
+        failedEvent.setNextAttemptAt(java.time.Instant.now().minusSeconds(1));
+        outboxEventRepository.saveAndFlush(failedEvent);
+
+        // When: Second attempt - succeeds
+        outboxProcessor.processOutbox(); 
 
         // Then
         OutboxEventEntity successEvent = outboxEventRepository.findById(eventId).orElseThrow();

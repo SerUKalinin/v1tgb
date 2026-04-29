@@ -18,7 +18,7 @@ public class IdempotencyService {
 
     @Transactional(propagation = Propagation.MANDATORY)
     public boolean isAlreadyProcessed(UUID eventId) {
-        return repository.existsByEventId(eventId);
+        return repository.existsById(eventId);
     }
 
     @Transactional(propagation = Propagation.MANDATORY)

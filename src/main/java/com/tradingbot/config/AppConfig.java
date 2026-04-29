@@ -29,10 +29,9 @@ public class AppConfig {
      */
     @Bean
     @Profile("prod")
-    public ExecutionEngine binanceExecutionEngine(BinanceClient binanceClient, OrderRepository orderRepository) {
-        return new BinanceExecutionEngine(binanceClient, orderRepository);
-    }
-    /**
+    public ExecutionEngine binanceExecutionEngine(com.tradingbot.domain.port.exchange.ExecutionPort executionPort, OrderRepository orderRepository) {
+        return new BinanceExecutionEngine(executionPort, orderRepository);
+    }    /**
      * Создаёт исполнительный движок для бэктестирования.
      * <p>
      * Активируется в профиле "test".

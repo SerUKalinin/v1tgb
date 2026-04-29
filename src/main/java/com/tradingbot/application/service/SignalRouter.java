@@ -17,9 +17,7 @@ import java.util.Optional;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-@Profile("!test")
 public class SignalRouter {
-
     private final JpaUserRepository userRepository;
     private final Optional<TradingTelegramBot> telegramBot;
     private final SubscriptionService subscriptionService;

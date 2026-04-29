@@ -18,16 +18,16 @@ public interface OutboxEventRepository
 
     @Query(value = """
         SELECT * FROM outbox_events
-        WHERE (status IN ('NEW', 'FAILED'))
+        WHERE (status = 'NEW')
+           OR (status = 'FAILED' AND (next_attempt_at IS NULL OR next_attempt_at <= :now))
            OR (status = 'PROCESSING' AND locked_until < :now)
         ORDER BY created_at ASC
         LIMIT :limit
-        FOR UPDATE SKIP LOCKED
-        """, nativeQuery = true)
-    List<OutboxEventEntity> claimBatchWithLock(
+        """, nativeQuery = true)    List<OutboxEventEntity> claimBatchWithLock(
             @org.springframework.data.repository.query.Param("limit") int limit,
             @org.springframework.data.repository.query.Param("now") java.time.Instant now
     );
+
     @Deprecated
     @Query("""
         SELECT e FROM OutboxEventEntity e
@@ -37,7 +37,9 @@ public interface OutboxEventRepository
         )
         ORDER BY e.createdAt ASC
         """)
-    List<OutboxEventEntity> claimBatch(org.springframework.data.domain.Pageable pageable);    /**
+    List<OutboxEventEntity> claimBatch(org.springframework.data.domain.Pageable pageable);
+
+    /**
      * Detect stuck processing events (crash recovery)
      */
     @Query("""
@@ -46,7 +48,9 @@ public interface OutboxEventRepository
         WHERE e.status = com.tradingbot.infrastructure.outbox.OutboxStatus.PROCESSING
           AND e.updatedAt < :threshold
         """)
-    List<OutboxEventEntity> findStaleProcessingEvents(java.time.Instant threshold);    /**
+    List<OutboxEventEntity> findStaleProcessingEvents(java.time.Instant threshold);
+
+    /**
      * Retry control handled in service layer, not SQL
      */
     List<OutboxEventEntity> findByStatusIn(List<OutboxStatus> statuses);

@@ -1,6 +1,8 @@
 package com.tradingbot.interfaces.scheduler;
 
 import com.tradingbot.application.market.MarketDataService;
+import com.tradingbot.application.service.SystemStateManager;
+import com.tradingbot.application.strategy.StrategyService;
 import com.tradingbot.infrastructure.execution.binance.BinanceClient;
 import com.tradingbot.application.service.TradingSystemBootstrapper;
 import jakarta.annotation.PostConstruct;
@@ -12,23 +14,35 @@ import org.springframework.stereotype.Component;
 /**
  * Планировщик задач для обновления рыночных данных.
  */
+import com.tradingbot.application.event.SystemEvents;
+import org.springframework.context.event.EventListener;
+
+import java.util.concurrent.atomic.AtomicBoolean;
+
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class MarketScheduler {
 
+    private final MarketDataService marketDataService;
+    private final StrategyService strategyService;
+    private final SystemStateManager stateManager;
+    private final BinanceClient binanceClient;
+
+    private final AtomicBoolean enabled = new AtomicBoolean(false);
+
     private static final String SYMBOL = "BTCUSDT";
     private static final String INTERVAL = "1m";
 
-    private final MarketDataService marketDataService;
-    private final BinanceClient binanceClient;
-    private final TradingSystemBootstrapper bootstrapper;
-
-    private volatile boolean enabled = false;
+    @EventListener
+    public void onSystemReady(SystemEvents.SystemReadyEvent event) {
+        log.info("[SCHEDULER] System is READY. Enabling market scheduler...");
+        enable();
+    }
 
     public void enable() {
         log.info("[SCHEDULER] Market scheduler enabled.");
-        this.enabled = true;
+        this.enabled.set(true);
     }
 
     /**
@@ -45,7 +59,7 @@ public class MarketScheduler {
      */
     @Scheduled(fixedRateString = "${trading.update-rate-ms:5000}")
     public void refreshMarketData() {
-        if (!enabled || !bootstrapper.isReady()) {
+        if (!enabled.get() || !stateManager.isReady()) {
             return;
         }
         try {
@@ -60,7 +74,7 @@ public class MarketScheduler {
      */
     @Scheduled(fixedRate = 3600000)
     public void syncServerTime() {
-        if (!enabled) return;
+        if (!enabled.get()) return;
         binanceClient.syncTime();
     }
 }
