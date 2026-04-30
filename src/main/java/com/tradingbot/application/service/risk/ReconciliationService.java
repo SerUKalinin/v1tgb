@@ -3,6 +3,7 @@ import com.tradingbot.application.service.system.AdminNotificationService;
 import com.tradingbot.application.service.execution.PositionRebuildService;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
@@ -10,6 +11,7 @@ import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -34,8 +36,8 @@ import com.tradingbot.application.event.SystemEvents;
 @RequiredArgsConstructor
 public class ReconciliationService {
     private final OrderRepository orderRepository;
-    private final OutboxEventRepository outboxRepository;
-    private final ExchangeOrderQueryService exchangeQueryService;
+    private final OrderMapper orderMapper;
+    private final OutboxEventRepository outboxRepository;    private final ExchangeOrderQueryService exchangeQueryService;
     private final RiskEngine riskEngine;
     private final AdminNotificationService notifications;
     private final PositionRebuildService positionRebuildService;
@@ -145,48 +147,68 @@ public class ReconciliationService {
         }
     }
     /**
-     * 3. Обнаружение ордеров, которые зависли в PENDING_EXECUTION.
+     * 3. Обнаружение ордеров, которые зависли в PENDING_EXECUTION или EXECUTING.
      */
     @Scheduled(fixedDelay = 300000) // Раз в 5 минут
     public void reconcilePendingOrders() {
         Instant threshold = Instant.now().minus(ReconciliationService.STALE_THRESHOLD);
 
-        List<OrderEntity> pendingOrders = orderRepository.findAll().stream()
-                .filter(o -> OrderStatus.PENDING_EXECUTION.name().equals(o.getStatus()))
+        List<OrderEntity> stuckOrders = orderRepository.findAll().stream()
+                .filter(o -> OrderStatus.PENDING_EXECUTION.name().equals(o.getStatus()) || 
+                            OrderStatus.EXECUTING.name().equals(o.getStatus()))
                 .filter(o -> o.getCreatedAt().isBefore(threshold))
                 .toList();
-        for (OrderEntity order : pendingOrders) {
-            log.error("[RECON] Order {} is stuck in PENDING_EXECUTION. Syncing...", order.getId());
+
+        for (OrderEntity order : stuckOrders) {
+            log.error("[RECON] Order {} is stuck in {}. Syncing...", order.getId(), order.getStatus());
             syncOrderWithExchange(order);
         }
     }
+
     @Transactional
     public void reconcile(java.util.UUID orderId) {
         OrderEntity order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new IllegalArgumentException("Order not found: " + orderId));
         syncOrderWithExchange(order);
     }
+
     @Transactional
-    public void syncOrderWithExchange(OrderEntity order) {
+    public void syncOrderWithExchange(OrderEntity orderEntity) {
         try {
-            boolean existsOnExchange = exchangeQueryService.isOrderAlreadyExecuted(order.getClientOrderId());
-            if (existsOnExchange) {
-                log.info("[RECON] Order {} found on exchange. Marking as FILLED.", order.getId());
-                order.markAsFilled("RECON-SYNC", order.getQuantity());
-            } else {
-                log.warn("[RECON] Order {} NOT FOUND on exchange. Releasing capital and rejecting.", order.getId());
-
-                BigDecimal releaseAmount = order.getPrice() != null
-                        ? order.getQuantity().multiply(order.getPrice())
-                        : BigDecimal.ZERO;
-
-                riskEngine.release(order.getId(), releaseAmount, "Reconciliation: Order not found on exchange");
-                order.markAsRejected("Not found on exchange during reconciliation");
+            Order order = orderMapper.toDomain(orderEntity);
+            
+            // Если ордер уже в терминальном состоянии, ничего не делаем
+            if (order.isTerminal()) {
+                return;
             }
-            orderRepository.save(order);
 
+            boolean existsOnExchange = exchangeQueryService.isOrderAlreadyExecuted(order.getClientOrderId());
+
+            if (existsOnExchange) {
+                // В реальности здесь должен быть запрос детального состояния (qty, price)
+                // Для текущей реализации считаем полностью исполненным, если биржа подтверждает наличие
+                order.markAsFilled("RECON-SYNC-" + Instant.now().getEpochSecond(), order.getQuantity(), order.getPrice());
+                log.info("[RECON-FIX] Order {} marked as FILLED based on exchange state", order.getId());
+            } else {                // Если ордер не найден на бирже и он "завис"
+                if (OrderStatus.EXECUTING.equals(order.getStatus()) || OrderStatus.PENDING_EXECUTION.equals(order.getStatus())) {
+                    BigDecimal releaseAmount = order.getPrice() != null ?
+                            order.getQuantity().multiply(order.getPrice()) : BigDecimal.ZERO;
+                    riskEngine.release(order.getId(), releaseAmount, "Reconciliation: Not found on exchange");
+                    order.markAsRejected("Not found on exchange during reconciliation");
+                    log.warn("[RECON-FIX] Order {} marked as REJECTED (not found on exchange)", order.getId());
+                }
+            }
+
+            OrderEntity updated = orderMapper.toEntity(order);
+            orderEntity.setStatus(updated.getStatus());
+            orderEntity.setExchangeOrderId(updated.getExchangeOrderId());
+            orderEntity.setExecutedQuantity(updated.getExecutedQuantity());
+            orderEntity.setAveragePrice(updated.getAveragePrice());
+            orderEntity.setUpdatedAt(Instant.now());
+            orderRepository.save(orderEntity);
+            
         } catch (Exception e) {
-            log.error("[RECON] Failed to sync order {} with exchange", order.getId(), e);
+            log.error("[RECON] Failed to sync order {}", orderEntity.getId(), e);
         }
     }
     @Scheduled(cron = "0 0 * * * *") // Раз в час

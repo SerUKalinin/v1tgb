@@ -3,10 +3,9 @@ package com.tradingbot.domain.risk;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.Signal;
-import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
-import lombok.RequiredArgsConstructor;import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;import lombok.extern.slf4j.Slf4j;import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -80,14 +79,13 @@ public class DefaultRiskManager implements RiskManager {
     }
 
     @Override
-    public RiskDecision check(OrderEntity order) {
+    public RiskDecision check(Order order) {
         RiskState currentState = stateStore.getState();
         if (currentState.isHalted()) {
             return RiskDecision.reject("System is HALTED");
         }
         return RiskDecision.approve(order.getQuantity());
     }
-
     @Override
     public RiskDecision evaluate(Signal signal) {
         RiskState currentState = stateStore.getState();

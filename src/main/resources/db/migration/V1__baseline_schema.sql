@@ -25,8 +25,9 @@ CREATE TABLE orders (
     take_profit DECIMAL(38, 18),
     strategy_id VARCHAR(255) NOT NULL,
     status VARCHAR(50) NOT NULL,
-    version BIGINT NOT NULL DEFAULT 0,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    average_price DECIMAL(38, 18),
+    executed_quantity DECIMAL(38, 18) NOT NULL DEFAULT 0,
+    version BIGINT NOT NULL DEFAULT 0,    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE,
     CONSTRAINT chk_order_qty_positive CHECK (quantity > 0)
 );

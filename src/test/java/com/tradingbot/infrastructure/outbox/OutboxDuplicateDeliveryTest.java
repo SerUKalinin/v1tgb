@@ -53,12 +53,12 @@ public class OutboxDuplicateDeliveryTest extends BaseIntegrationTest {
     void setUp() {
         orderRepository.deleteAll();
         outboxRepository.deleteAll();
+        when(stateManager.isReady()).thenReturn(true);
         when(stateManager.getState()).thenReturn(SystemStateManager.SystemState.TRADING_ENABLED);
     }
-
     @Test
-    void shouldCallExchangeOnlyOnceOnDuplicateOutboxEvent() throws Exception {
-        // 1. Setup: Create an order and a corresponding outbox event
+    @org.springframework.transaction.annotation.Transactional
+    void shouldCallExchangeOnlyOnceOnDuplicateOutboxEvent() throws Exception {        // 1. Setup: Create an order and a corresponding outbox event
         UUID orderId = UUID.randomUUID();
         String clientOrderId = "bot_" + orderId.toString().replace("-", "");
         
