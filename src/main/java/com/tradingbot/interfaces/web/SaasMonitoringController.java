@@ -3,7 +3,7 @@ package com.tradingbot.interfaces.web;
 import com.tradingbot.domain.model.SubscriptionTier;
 import com.tradingbot.domain.risk.RiskEngine;
 import com.tradingbot.infrastructure.persistence.repository.SignalRepository;
-import com.tradingbot.infrastructure.persistence.repository.JpaUserRepository;
+import com.tradingbot.infrastructure.persistence.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -16,9 +16,9 @@ import java.util.Map;
 @RequestMapping("/debug/saas")
 @RequiredArgsConstructor
 public class SaasMonitoringController {
-    private final JpaUserRepository userRepository;
     private final SignalRepository signalRepository;
     private final RiskEngine riskEngine;
+    private final UserRepository userRepository;
 
     @GetMapping
     public Map<String, Object> getStatus() {

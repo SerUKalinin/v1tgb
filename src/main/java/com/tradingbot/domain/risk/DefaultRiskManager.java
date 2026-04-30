@@ -3,10 +3,9 @@ package com.tradingbot.domain.risk;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.Signal;
-import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
-import lombok.RequiredArgsConstructor;import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;import lombok.extern.slf4j.Slf4j;import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -57,11 +56,11 @@ public class DefaultRiskManager implements RiskManager {
             // 4. Evaluate Rules (Optional for Stage 3, can be expanded)
 
             // 5. Create ApprovedOrder
+            UUID orderId = UUID.randomUUID();
             ApprovedOrder approvedOrder = new ApprovedOrder(
-                    UUID.randomUUID(),
-                    "c-" + UUID.randomUUID().toString().substring(0, 8),                    signal.getSymbol(),
-                    signal.getType() == com.tradingbot.common.enums.SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,
-                    OrderType.MARKET,
+                    orderId,
+                    com.tradingbot.common.util.ClientOrderIdGenerator.generate(orderId),
+                    signal.getSymbol(),                    signal.getType() == com.tradingbot.common.enums.SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,                    OrderType.MARKET,
                     quantity,
                     signal.getPrice(),
                     signal.getStopLoss(),
@@ -80,14 +79,13 @@ public class DefaultRiskManager implements RiskManager {
     }
 
     @Override
-    public RiskDecision check(OrderEntity order) {
+    public RiskDecision check(Order order) {
         RiskState currentState = stateStore.getState();
         if (currentState.isHalted()) {
             return RiskDecision.reject("System is HALTED");
         }
         return RiskDecision.approve(order.getQuantity());
     }
-
     @Override
     public RiskDecision evaluate(Signal signal) {
         RiskState currentState = stateStore.getState();

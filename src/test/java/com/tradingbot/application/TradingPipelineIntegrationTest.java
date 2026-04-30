@@ -2,7 +2,7 @@ package com.tradingbot.application;
 
 import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.application.pipeline.TradingPipeline;
-import com.tradingbot.application.service.PositionService;
+import com.tradingbot.application.service.execution.PositionService;
 import com.tradingbot.domain.model.Position;
 import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.domain.strategy.TradingStrategy;
@@ -12,9 +12,7 @@ import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepositor
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.test.context.ActiveProfiles;
 
 import java.util.concurrent.TimeUnit;
 

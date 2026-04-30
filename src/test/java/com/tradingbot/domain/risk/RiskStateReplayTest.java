@@ -27,9 +27,8 @@ class RiskStateReplayTest {
         }
 
         // 10000 + 100 - 50 = 10050
-        assertEquals(new BigDecimal("10050"), state.getTotalEquity());
-        assertEquals(new BigDecimal("50"), state.getDailyPnl());
-        assertEquals(new BigDecimal("5000.0"), state.getSymbolExposures().get("BTCUSDT"));
-        assertEquals(new BigDecimal("3000.0"), state.getSymbolExposures().get("ETHUSDT"));
-    }
+        assertEquals(0, new BigDecimal("10050").compareTo(state.getTotalEquity()));
+        assertEquals(0, new BigDecimal("50").compareTo(state.getDailyPnl()));
+        assertEquals(0, new BigDecimal("5000.0").compareTo(state.getSymbolExposures().get("BTCUSDT")));
+        assertEquals(0, new BigDecimal("3000.0").compareTo(state.getSymbolExposures().get("ETHUSDT")));    }
 }

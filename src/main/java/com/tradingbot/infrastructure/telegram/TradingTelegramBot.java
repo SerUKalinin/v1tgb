@@ -1,8 +1,8 @@
 package com.tradingbot.infrastructure.telegram;
 
-import com.tradingbot.application.service.AnalyticsService;
-import com.tradingbot.application.service.SubscriptionService;
-import com.tradingbot.application.service.UserService;
+import com.tradingbot.application.service.strategy.AnalyticsService;
+import com.tradingbot.application.service.system.SubscriptionService;
+import com.tradingbot.application.service.system.UserService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;

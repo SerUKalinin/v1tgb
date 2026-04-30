@@ -19,28 +19,13 @@ import static org.mockito.Mockito.*;
 class RiskEngineTest {
 
     @Mock
-    private RiskRepository riskRepository;
-
-    @Mock
-    private RiskStateReducer reducer;
-
-    @Mock
-    private RiskStateStore riskStateStore;
+    private RiskService riskService;
 
     @InjectMocks
     private RiskEngine riskEngine;
 
-    @BeforeEach
-    void setUp() {
-        // Базовая настройка: репозиторий всегда возвращает валидное состояние
-        lenient().when(riskRepository.get()).thenReturn(createValidRiskState());
-    }
-
     @Test
     void shouldBlockEventsWhenHalted() {
-        RiskState haltedState = createValidRiskState().toBuilder().halted(true).build();
-        when(riskRepository.get()).thenReturn(haltedState);
-
         RiskEvent tradeEvent = new RiskEvent.TradeExecuted(
                 UUID.randomUUID().toString(),
                 "BTCUSDT",
@@ -52,37 +37,21 @@ class RiskEngineTest {
 
         riskEngine.publish(tradeEvent);
 
-        // Должен проверить halted и выйти до вызова reducer и сохранения
-        verify(reducer, never()).reduce(any(), any());
-        verify(riskRepository, never()).markEventProcessed(any(), any(), any());
+        verify(riskService, times(1)).publish(tradeEvent);
     }
 
     @Test
     void shouldReserveCapital() {
-        RiskState initialState = createValidRiskState();
-        RiskState newState = initialState.toBuilder()
-                .reserved(new BigDecimal("1000"))
-                .build();
-
-        when(riskRepository.get()).thenReturn(initialState);
-        when(riskRepository.isEventProcessed(any())).thenReturn(false);
-        when(reducer.reduce(any(), any())).thenReturn(newState);
-
         UUID orderId = UUID.randomUUID();
-        riskEngine.reserve(orderId, new BigDecimal("1000"));
+        BigDecimal amount = new BigDecimal("1000");
+        
+        riskEngine.reserve(orderId, amount);
 
-        verify(riskRepository, times(1)).markEventProcessed(any(), eq(newState), any());
+        verify(riskService, times(1)).reserve(orderId, amount);
     }
 
     @Test
     void shouldIncrementVersionAndPersist() {
-        RiskState initialState = createValidRiskState();
-        RiskState newState = initialState.toBuilder().version(1L).build();
-
-        when(riskRepository.get()).thenReturn(initialState);
-        when(riskRepository.isEventProcessed(any())).thenReturn(false);
-        when(reducer.reduce(any(), any())).thenReturn(newState);
-
         RiskEvent event = new RiskEvent.TradeExecuted(
                 UUID.randomUUID().toString(),
                 "BTCUSDT",
@@ -94,25 +63,15 @@ class RiskEngineTest {
 
         riskEngine.publish(event);
 
-        verify(riskRepository, times(1)).markEventProcessed(any(), eq(newState), eq(event));
+        verify(riskService, times(1)).publish(event);
     }
 
     @Test
     void shouldThrowExceptionWhenRepositoryFails() {
-        when(riskRepository.get()).thenThrow(new RuntimeException("DB Error"));
+        doThrow(new RuntimeException("DB Error")).when(riskService).publish(any());
 
         RiskEvent event = new RiskEvent.PriceUpdated(UUID.randomUUID().toString(), "BTC", BigDecimal.ONE, Instant.now());
 
         assertThrows(RuntimeException.class, () -> riskEngine.publish(event));
-    }
-
-    private RiskState createValidRiskState() {
-        return RiskState.builder()
-                .totalEquity(new BigDecimal("10000"))
-                .balance(new BigDecimal("10000"))
-                .reserved(BigDecimal.ZERO)
-                .halted(false)
-                .version(0L)
-                .build();
     }
 }

@@ -1,6 +1,6 @@
 package com.tradingbot.infrastructure.outbox;
 
-import com.tradingbot.application.service.AdminNotificationService;
+import com.tradingbot.application.service.system.AdminNotificationService;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;

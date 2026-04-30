@@ -1,7 +1,6 @@
 package com.tradingbot.infrastructure.client.fake;
 
 import com.tradingbot.domain.model.MarketData;
-import com.tradingbot.infrastructure.client.MarketDataClient;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 

@@ -2,7 +2,7 @@ package com.tradingbot.infrastructure.execution.binance;
 
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
-import com.tradingbot.domain.port.exchange.ExecutionPort;
+import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.risk.ApprovedOrder;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;

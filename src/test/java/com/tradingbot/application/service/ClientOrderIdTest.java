@@ -1,5 +1,6 @@
 package com.tradingbot.application.service;
 
+import com.tradingbot.application.service.order.OrderApplicationService;
 import org.junit.jupiter.api.Test;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -11,12 +12,11 @@ class ClientOrderIdTest {
 
     @Test
     void testGenerateClientOrderId() {
-        OrderApplicationService service = new OrderApplicationService(null, null, null, null, null, null);
         UUID orderId = UUID.fromString("550e8400-e29b-41d4-a716-446655440000");
         
         // 1. Детерминированность
-        String id1 = invokeGenerateId(service, orderId);
-        String id2 = invokeGenerateId(service, orderId);
+        String id1 = com.tradingbot.common.util.ClientOrderIdGenerator.generate(orderId);
+        String id2 = com.tradingbot.common.util.ClientOrderIdGenerator.generate(orderId);
         assertEquals(id1, id2, "ID must be deterministic");
 
         // 2. Формат (без дефисов)
@@ -31,12 +31,5 @@ class ClientOrderIdTest {
     }
 
     private String invokeGenerateId(OrderApplicationService service, UUID orderId) {
-        try {
-            var method = OrderApplicationService.class.getDeclaredMethod("generateClientOrderId", UUID.class);
-            method.setAccessible(true);
-            return (String) method.invoke(service, orderId);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-}
+        return com.tradingbot.common.util.ClientOrderIdGenerator.generate(orderId);
+    }}
