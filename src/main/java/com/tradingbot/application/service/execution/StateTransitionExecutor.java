@@ -32,11 +32,9 @@ public class StateTransitionExecutor {
         if (domainAction != null) {
             domainAction.run();
         }
-        // Единственное место мутации домена в приложении
-        context.getOrderReference().updateStatus(context.getTargetStatus());
-    }
-
-    @Transactional
+        // Единственное место мутации домена
+        context.getOrderReference().applyStateTransition(context.getTargetStatus(), this);
+    }    @Transactional
     public void persist(TransitionContext context) {
         persistenceAdapter.syncAndSave(context.getOrderReference(), context.getEntityReference());
     }

@@ -9,8 +9,8 @@ import com.tradingbot.domain.risk.RiskEngine;
 import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.domain.event.OrderEventPayload;
 import com.tradingbot.domain.model.Order;
-import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
-import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
+import com.tradingbot.domain.model.OrderSnapshot;
+import com.tradingbot.infrastructure.persistence.entity.OrderEntity;import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
@@ -62,9 +62,9 @@ public class OrderApplicationService {
                 .build();
 
         // 3. Save Entity
-        OrderEntity entity = orderMapper.toEntity(order);
-        entity.setCreatedAt(Instant.now());
-        orderRepository.save(entity);
+        OrderSnapshot snapshot = order.toSnapshot();
+        OrderEntity entity = orderMapper.toEntity(snapshot);
+        entity.setCreatedAt(Instant.now());        orderRepository.save(entity);
 
         // 4. Save Outbox Event using stable DTO
         OrderEventPayload payload = OrderEventPayload.builder()

@@ -206,13 +206,10 @@ public class ReconciliationService {
                 }
             }
 
-            // Синхронизируем технические поля
-            orderEntity.setExchangeOrderId(order.getExchangeOrderId());
-            orderEntity.setExecutedQuantity(order.getExecutedQuantity());
-            orderEntity.setAveragePrice(order.getAveragePrice());
+            // Синхронизируем технические поля через маппер
+            orderMapper.updateEntity(order, orderEntity);
             orderEntity.setUpdatedAt(Instant.now());
             orderRepository.saveAndFlush(orderEntity);
-
         } catch (Exception e) {
             log.error("[RECON-ERROR] Failed to sync order {}", orderEntity.getId(), e);
         }

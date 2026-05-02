@@ -189,10 +189,9 @@ public class OrderExecutionHandler implements OutboxConsumer {
             }
         });
 
-        entity.setExchangeOrderId(order.getExchangeOrderId());
+        orderMapper.updateEntity(order, entity);
         entity.setUpdatedAt(Instant.now());
     }
-
     private void handleAlreadyProcessed(OutboxEventEntity event) {
         orderRepository.findById(event.getAggregateId()).ifPresent(entity -> {
             if (transitionValidator.isProcessed(entity.getStatus())) {

@@ -21,12 +21,10 @@ import java.util.UUID;
 )
 @Getter
 @Setter
-@NoArgsConstructor(access = AccessLevel.PROTECTED)
-@AllArgsConstructor(access = AccessLevel.PRIVATE)
-@Builder
+@NoArgsConstructor(access = AccessLevel.PUBLIC)
+@AllArgsConstructor(access = AccessLevel.PACKAGE)
 public class OrderEntity {
-    @Id
-    private UUID id;
+    @Id    private UUID id;
 
     @Column(name = "client_order_id", nullable = false, unique = true, updatable = false)
     private String clientOrderId;
@@ -87,4 +85,15 @@ public class OrderEntity {
 
     @Version
     private Long version;
+
+    @PrePersist
+    protected void onCreate() {
+        this.createdAt = Instant.now();
+        this.updatedAt = Instant.now();
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        this.updatedAt = Instant.now();
+    }
 }

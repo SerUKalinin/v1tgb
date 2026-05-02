@@ -68,3 +68,132 @@
 Система обладает промышленным уровнем надежности данных. Цепочка событий замкнута, Ledger работает корректно, позиции восстанавливаются автоматически.
 
 **Следующий шаг**: Масштабирование (поддержка множества символов и стратегий одновременно).
+
+
+
+
+
+ТЕКУЩЕЕ СОСТОЯНИЕ В ПАМЯТИ (система)
+🧠 Архитектурная база (зафиксирована)
+
+Ты работаешь в рамках:
+
+✔ Trading OMS + risk engine + event-driven execution
+Risk → Reserve → Order → Execution → Outbox → Reconciliation
+DDD + event-driven + event sourcing элементы
+Hybrid RiskState:
+JSONB snapshot
+append-only reservation ledger
+🧱 Core Stabilization Phase (обязательная перед инфраструктурой)
+
+Зафиксировано как жёсткий pre-production этап:
+
+1. Order State Machine (СЕЙЧАС АКТИВНО)
+   OrderStateTransitionPolicy = single source of truth
+   устранение дублирующей логики переходов
+2. Risk Engine
+   строго детерминированный gate
+   без side effects
+3. Execution Layer
+   ExecutionPort abstraction (exchange-agnostic)
+   removal of business logic from handlers
+4. Reconciliation
+   read-only / correction layer
+   no mutation of domain state
+5. Idempotency
+   unified global layer
+   protect claim / commit / reconciliation
+6. Transaction model
+   unit-of-work стабилизация
+   убрать хаотичный REQUIRES_NEW
+   📍 ТЕКУЩАЯ ФАЗА (КРИТИЧЕСКИ ВАЖНО)
+   👉 ФАЗА 3: SINGLE ORDER STATE MACHINE
+   Мы ЗАФИКСИРОВАЛИ:
+   переходы состояния сейчас централизуются
+   OrderStateTransitionPolicy = ядро консистентности
+   📌 ЧТО УЖЕ СДЕЛАНО (по памяти + твоим логам)
+   ✔ 1. Bootstrap lifecycle полностью реализован
+   INITIALIZING → TRADING_ENABLED
+   deterministic startup sequence
+   ✔ 2. Outbox pipeline работает
+   ORDER_CREATED → EXECUTION → ORDER_EXECUTED
+   event routing работает стабильно
+   ✔ 3. Risk recovery реализован (Hybrid model)
+   snapshot + replay
+   ledger-based rebuild
+   ✔ 4. Exchange adapter работает (Binance testnet)
+   orders отправляются
+   ошибки обрабатываются
+   ✔ 5. Market data pipeline
+   candle detection
+   strategy signal generation
+   ✔ 6. Position projection exists
+   PositionService + rebuild service
+   ⚠️ ЧТО ЕЩЁ НЕ ЗАВЕРШЕНО (КЛЮЧЕВОЕ)
+   ❌ 1. OrderStateTransitionPolicy НЕ зафиксирован как единственный источник истины
+
+Сейчас:
+
+transition logic всё ещё размазан
+execution + risk + handler влияют на состояние
+
+👉 Это главный архитектурный долг
+
+❌ 2. Execution finality не унифицирована
+
+Проблема из логов:
+
+REJECTED orders всё ещё идут в PositionService
+нет строгого distinction:
+FINAL (FILLED / REJECTED / CANCELED)
+vs
+INTERMEDIATE (PENDING / SENT / EXECUTING)
+❌ 3. RiskState replay inconsistency
+
+Из логов:
+
+“No active reservation” при release
+snapshot = 0, но ledger есть
+
+👉 значит:
+
+либо snapshot не синхронизирован с ledger
+либо ordering replay нарушен
+❌ 4. Risk vs Exchange divergence
+Risk APPROVES
+Exchange REJECTS (insufficient balance)
+
+👉 нет pre-trade reconciliation barrier
+
+❌ 5. System has duplicate risk recovery trigger
+RiskStateRecoveryService запускается 2 раза в lifecycle
+📊 СТАТУС ПО ФАЗАМ
+Фаза	Статус
+Bootstrap lifecycle	✅ DONE
+Outbox pipeline	✅ DONE
+Risk engine gate	⚠️ PARTIAL
+Execution layer	⚠️ LEAKING DOMAIN LOGIC
+Reconciliation	⚠️ PARTIAL
+Idempotency layer	⚠️ WORKING BUT FRAGILE
+Order State Machine	❗ IN PROGRESS (главный фокус)
+🧭 ГДЕ МЫ СЕЙЧАС (точка истины)
+
+Ты сейчас находишься в следующей точке:
+
+Core Stabilization Phase 3 — Order State Machine Consolidation
+
+И это не “рефакторинг”, а:
+
+👉 формализация конечной модели состояния ордера
+⚠️ СУПЕР ВАЖНЫЙ ВЫВОД
+
+Система уже:
+
+не прототип
+не MVP
+не сервис
+
+👉 это уже event-driven trading engine, у которого:
+
+проблема не в коде
+а в отсутствии единой модели конечности состояния (finality model)
