@@ -28,7 +28,7 @@ public class OrderMapper {
                 .originalQuantity(entity.getQuantity())
                 .price(entity.getPrice())
                 .strategyId(entity.getStrategyId())
-                .status(entity.getStatus() != null ? OrderStatus.valueOf(entity.getStatus()) : null)
+                .status(entity.getStatus()) // Прямое присваивание enum
                 .executedQuantity(entity.getExecutedQuantity())
                 .averagePrice(entity.getAveragePrice())
                 .build();
@@ -49,9 +49,8 @@ public class OrderMapper {
                 .quantity(domain.getQuantity())
                 .price(domain.getPrice())
                 .strategyId(domain.getStrategyId())
-                .status(domain.getStatus() != null ? domain.getStatus().name() : null)
-                .executedQuantity(domain.getExecutedQuantity())
-                .averagePrice(domain.getAveragePrice())
+                .status(domain.getStatus())
+                .executedQuantity(domain.getExecutedQuantity())                .averagePrice(domain.getAveragePrice())
                 .build();
 
         return entity;

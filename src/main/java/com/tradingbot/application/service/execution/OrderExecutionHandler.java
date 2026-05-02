@@ -2,18 +2,23 @@ package com.tradingbot.application.service.execution;
 
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.common.enums.OrderStatus;
-import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.event.OrderEventPayload;
 import com.tradingbot.domain.exchange.ExecutionPort;
+import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.policy.OrderStateTransitionPolicy;
+import com.tradingbot.domain.policy.TransitionValidator;
 import com.tradingbot.domain.risk.ApprovedOrder;
+import com.tradingbot.domain.risk.RiskEngine;
 import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
+import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
+import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
-import com.tradingbot.domain.event.OrderEventPayload;
-import com.tradingbot.domain.model.Order;
-import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -34,9 +39,11 @@ public class OrderExecutionHandler implements OutboxConsumer {
     private final OrderMapper orderMapper;
     private final SystemStateManager stateManager;
     private final IdempotencyService idempotencyService;
-    private final com.tradingbot.domain.risk.RiskEngine riskEngine;
-    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    private final RiskEngine riskEngine;
+    private final ObjectMapper objectMapper;
     private final OutboxEventRepository outboxRepository;
+    private final StateTransitionExecutor transitionExecutor;
+    private final TransitionValidator transitionValidator;
 
     @Override
     public boolean supports(String eventType) {
@@ -45,13 +52,11 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
     @Override
     public void consume(OutboxEventEntity event) throws Exception {
-        // 1. Идемпотентность на входе (по eventId)
         if (idempotencyService.isAlreadyProcessed(event.getId())) {
             log.info("[EXECUTION] Event {} already processed, skipping", event.getId());
             return;
         }
 
-        // 2. Проверка состояния системы
         if (stateManager != null && !stateManager.isReady()) {
             log.warn("[EXECUTION] System not ready. Skipping aggregate {}", event.getAggregateId());
             return;
@@ -59,77 +64,106 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
         UUID orderId = event.getAggregateId();
 
-        // ЭТАП 1: CLAIM (в транзакции)
-        Optional<OrderEntity> orderOpt = tryClaimOrder(orderId);
-        if (orderOpt.isEmpty()) {
-            // Если ордер уже в работе или не найден, помечаем событие как обработанное
-            // (только если он уже не PENDING_EXECUTION)
-            OrderEntity check = orderRepository.findById(orderId).orElse(null);
-            if (check != null && !OrderStatus.PENDING_EXECUTION.name().equals(check.getStatus())) {
-                markProcessedInNewTransaction(event.getId());
-            }
+        // ЭТАП 1: CLAIM (Блокировка и перевод в EXECUTING)
+        Optional<ApprovedOrder> approvedOrder = claimOrder(orderId, event.getId());
+        if (approvedOrder.isEmpty()) {
+            handleAlreadyProcessed(event);
             return;
         }
 
-        OrderEntity entity = orderOpt.get();
+        // Получаем актуальный executionId для фиксации попытки
+        UUID executionId = orderRepository.findById(orderId)
+                .map(OrderEntity::getExecutionId)
+                .orElse(null);
 
-        // ЭТАП 2: EXECUTE (БЕЗ транзакции)
+        // ЭТАП 2: EXECUTE (Внешний IO запрос к бирже)
         ExecutionResult result;
         try {
-            result = execute(mapToApproved(entity));
+            result = executeExternal(approvedOrder.get());
         } catch (Exception e) {
             log.error("[EXECUTION-FAILED] Network IO error for order {}", orderId, e);
-            // В случае сетевой ошибки оставляем ордер в EXECUTING для recovery процесса
             return;
         }
 
-        // ЭТАП 3: COMMIT RESULT (в транзакции)
+        // ЭТАП 3: COMMIT (Фиксация результата исполнения)
         try {
-            commitResult(entity.getId(), result, event.getId());
+            commitExecution(orderId, result, event.getId(), executionId);
         } catch (Exception e) {
             log.error("[EXECUTION-COMMIT-FAILED] Failed to commit result for order {}", orderId, e);
-            throw e; // Пробрасываем для retry механизма outbox
+            throw e;
         }
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void markProcessedInNewTransaction(UUID eventId) {
-        idempotencyService.markAsProcessed(eventId, "OrderExecutionHandler");
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public Optional<OrderEntity> tryClaimOrder(UUID orderId) {
+    public Optional<ApprovedOrder> claimOrder(UUID orderId, UUID eventId) {
         return orderRepository.findByIdForUpdate(orderId).flatMap(entity -> {
-            if (!OrderStatus.PENDING_EXECUTION.name().equals(entity.getStatus())) {
+            Order order = orderMapper.toDomain(entity);
+            OrderStatus currentStatus = order.getStatus();
+
+            boolean isPending = currentStatus == OrderStatus.PENDING_EXECUTION;
+            boolean isStale = transitionValidator.isStale(currentStatus, entity.getExecutionStartedAt());
+
+            if (!isPending && !isStale) {
                 return Optional.empty();
             }
-            Order order = orderMapper.toDomain(entity);
+
+            if (isStale) {
+                log.info("[EXECUTION-RECOVERY] Stale order {} found. Checking exchange status...", entity.getClientOrderId());
+                try {
+                    ExecutionResult status = executionPort.getOrderStatus(entity.getClientOrderId());
+                    if (status.getStatus() == ExecutionResult.Status.SUCCESS || status.getStatus() == ExecutionResult.Status.REJECTED) {
+                        commitExecution(entity.getId(), status, eventId, entity.getExecutionId());
+                        return Optional.empty();
+                    }
+                } catch (Exception e) {
+                    log.error("[EXECUTION-RECOVERY] Failed to check stale order", e);
+                    return Optional.empty();
+                }
+            }
+
             try {
-                order.markExecuting();
-                OrderEntity updated = orderMapper.toEntity(order);
-                entity.setStatus(updated.getStatus());
+                // Используем Executor для атомарного перехода в EXECUTING
+                transitionExecutor.execute(order, entity, OrderStatus.EXECUTING, () -> {});
+
+                entity.setExecutionId(UUID.randomUUID());
+                entity.setExecutionStartedAt(Instant.now());
+                entity.setExecutionAttempts(entity.getExecutionAttempts() + 1);
                 entity.setUpdatedAt(Instant.now());
-                return Optional.of(orderRepository.saveAndFlush(entity));
+
+                orderRepository.saveAndFlush(entity);
+                return Optional.of(mapToApproved(entity, entity.getExecutionId()));
             } catch (IllegalStateException e) {
+                log.error("[EXECUTION-POLICY-VIOLATION] {}", e.getMessage());
                 return Optional.empty();
             }
         });
     }
-    private ExecutionResult execute(ApprovedOrder approvedOrder) throws Exception {
+
+    private ExecutionResult executeExternal(ApprovedOrder approvedOrder) throws Exception {
         ExecutionResult result = executionPort.placeOrder(approvedOrder);
-        return result.getStatus() == ExecutionResult.Status.TIMEOUT ?
-                executionPort.getOrderStatus(approvedOrder.getClientOrderId()) : result;
+        if (result.getStatus() == ExecutionResult.Status.TIMEOUT) {
+            return executionPort.getOrderStatus(approvedOrder.getClientOrderId());
+        }
+        return result;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void commitResult(UUID orderId, ExecutionResult result, UUID eventId) {
-        OrderEntity entity = orderRepository.findById(orderId)
-                .orElseThrow(() -> new IllegalStateException("Order not found at commit: " + orderId));
-
+    public void commitExecution(UUID orderId, ExecutionResult result, UUID eventId, UUID executionId) {
         if (idempotencyService.isAlreadyProcessed(eventId)) return;
 
+        OrderEntity entity = orderRepository.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+
+        if (transitionValidator.isTerminal(entity.getStatus())) {
+            log.warn("[EXECUTION] Order {} already terminal: {}", orderId, entity.getStatus());
+            return;
+        }
+        if (executionId != null && !executionId.equals(entity.getExecutionId())) {
+            log.warn("[EXECUTION] Stale execution ID for order {}", orderId);
+            return;
+        }
+
         applyExecutionResult(entity, result);
-        orderRepository.saveAndFlush(entity);
 
         if (result.getStatus() == ExecutionResult.Status.REJECTED) {
             riskEngine.release(orderId);
@@ -142,39 +176,66 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
     private void applyExecutionResult(OrderEntity entity, ExecutionResult result) {
         Order order = orderMapper.toDomain(entity);
-        switch (result.getStatus()) {
-            case SUCCESS -> order.markAsFilled(result.getExchangeOrderId(), result.getExecutedQty(), result.getExecutedPrice());
-            case REJECTED -> order.markAsRejected(result.getErrorMessage());
-        }        OrderEntity updated = orderMapper.toEntity(order);
-        entity.setStatus(updated.getStatus());
-        entity.setExchangeOrderId(updated.getExchangeOrderId());
+
+        OrderStatus targetStatus = OrderStateTransitionPolicy.mapExecutionResult(result.getStatus());
+        if (targetStatus == null) {
+            targetStatus = order.getStatus();
+        }
+
+        transitionExecutor.execute(order, entity, targetStatus, () -> {
+            switch (result.getStatus()) {
+                case SUCCESS -> order.fill(result.getExchangeOrderId(), result.getExecutedQty(), result.getExecutedPrice());
+                case REJECTED -> order.markAsRejected(result.getErrorMessage());
+            }
+        });
+
+        entity.setExchangeOrderId(order.getExchangeOrderId());
         entity.setUpdatedAt(Instant.now());
+    }
+
+    private void handleAlreadyProcessed(OutboxEventEntity event) {
+        orderRepository.findById(event.getAggregateId()).ifPresent(entity -> {
+            if (transitionValidator.isProcessed(entity.getStatus())) {
+                idempotencyService.markAsProcessed(event.getId(), "OrderExecutionHandler");
+            }
+        });
+    }
+    private ApprovedOrder mapToApproved(OrderEntity entity, UUID executionId) {
+        return ApprovedOrder.builder()
+                .orderId(entity.getId())
+                .clientOrderId(entity.getClientOrderId())
+                .symbol(entity.getSymbol())
+                .side(entity.getSide())
+                .type(entity.getType())
+                .quantity(entity.getQuantity())
+                .price(entity.getPrice())
+                .strategyId(entity.getStrategyId())
+                .approvedAt(entity.getCreatedAt())
+                .build();
     }
 
     private void saveOutbox(UUID aggregateId, String aggregateType, String eventType, Order order) {
         try {
             OrderEventPayload payload = OrderEventPayload.builder()
-                    .orderId(order.getId()).clientOrderId(order.getClientOrderId())
-                    .symbol(order.getSymbol()).quantity(order.getQuantity())
-                    .price(order.getPrice()).status(order.getStatus().name())
-                    .timestamp(Instant.now()).strategyId(order.getStrategyId()).build();
+                    .orderId(order.getId())
+                    .clientOrderId(order.getClientOrderId())
+                    .status(order.getStatus().name())
+                    .timestamp(Instant.now())
+                    .build();
 
             OutboxEventEntity event = OutboxEventEntity.builder()
-                    .id(UUID.randomUUID()).aggregateId(aggregateId).aggregateType(aggregateType)
-                    .eventType(eventType).payload(objectMapper.writeValueAsString(payload))
-                    .status(com.tradingbot.infrastructure.outbox.OutboxStatus.NEW).createdAt(Instant.now()).build();
+                    .id(UUID.randomUUID())
+                    .aggregateId(aggregateId)
+                    .aggregateType(aggregateType)
+                    .eventType(eventType)
+                    .payload(objectMapper.writeValueAsString(payload))
+                    .status(OutboxStatus.NEW)
+                    .createdAt(Instant.now())
+                    .build();
 
             outboxRepository.save(event);
         } catch (Exception e) {
             log.error("Failed to save outbox", e);
         }
-    }
-
-    private ApprovedOrder mapToApproved(OrderEntity entity) {
-        return ApprovedOrder.builder()
-                .orderId(entity.getId()).clientOrderId(entity.getClientOrderId())
-                .symbol(entity.getSymbol()).side(entity.getSide()).type(entity.getType())
-                .quantity(entity.getQuantity()).price(entity.getPrice()).strategyId(entity.getStrategyId())
-                .approvedAt(entity.getCreatedAt()).build();
     }
 }

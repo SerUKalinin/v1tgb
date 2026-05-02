@@ -1,6 +1,7 @@
 package com.tradingbot.application.service.execution;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.event.OrderEventPayload;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Order;
@@ -60,9 +61,11 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
         BigDecimal executionPrice = payload.getPrice();
 
         if ("FILLED".equals(payload.getStatus())) {
-            order.markAsFilled(null, executedQty, executionPrice);
+            order.fill(null, executedQty, executionPrice); // Используем существующий метод fill
+            order.updateStatus(OrderStatus.FILLED);
         } else if ("PARTIALLY_FILLED".equals(payload.getStatus())) {
             order.markAsPartiallyFilled(executedQty, executionPrice);
+            order.updateStatus(OrderStatus.PARTIALLY_FILLED);
         }
 
         // 5. Обновление позиции через PositionService

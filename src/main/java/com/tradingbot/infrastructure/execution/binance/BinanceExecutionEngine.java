@@ -34,13 +34,14 @@ public class BinanceExecutionEngine implements ExecutionEngine {
 
         // 1. Проверка идемпотентности перед отправкой
         Optional<OrderEntity> existingOrder = orderRepository.findByClientOrderId(approvedOrder.getClientOrderId());
-        if (existingOrder.isPresent() && !"PENDING_EXECUTION".equals(existingOrder.get().getStatus())) {
-            log.warn("[EXECUTION] Ордер с clientOrderId {} уже обработан (статус: {}). Пропуск отправки.", 
-                    approvedOrder.getClientOrderId(), existingOrder.get().getStatus());
-            
-            return mapToResult(existingOrder.get(), approvedOrder);
+        if (existingOrder.isPresent()) {
+            com.tradingbot.common.enums.OrderStatus status = existingOrder.get().getStatus();
+            if (!com.tradingbot.domain.policy.OrderStateTransitionPolicy.isReadyForExecution(status)) {                log.warn("[EXECUTION] Ордер с clientOrderId {} уже обработан (статус: {}). Пропуск отправки.", 
+                        approvedOrder.getClientOrderId(), existingOrder.get().getStatus());
+                
+                return mapToResult(existingOrder.get(), approvedOrder);
+            }
         }
-
         // 2. Отправка через порт
         ExecutionResult result = executionPort.placeOrder(approvedOrder);
 

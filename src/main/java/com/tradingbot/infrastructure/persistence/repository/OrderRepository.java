@@ -26,6 +26,8 @@ public interface OrderRepository extends JpaRepository<OrderEntity, UUID> {
     @Query("SELECT o FROM OrderEntity o WHERE o.id = :id")
     Optional<OrderEntity> findByIdForUpdate(@Param("id") UUID id);
 
+    @Query("SELECT o FROM OrderEntity o WHERE o.status IN :statuses AND o.createdAt < :threshold")
+    List<OrderEntity> findStuckOrdersInStatuses(@Param("statuses") java.util.Collection<com.tradingbot.common.enums.OrderStatus> statuses, @Param("threshold") Instant threshold);
+
     @Query("SELECT o FROM OrderEntity o WHERE o.status = :status AND o.createdAt < :threshold")
-    List<OrderEntity> findStuckOrders(@Param("status") String status, @Param("threshold") Instant threshold);
-}
+    List<OrderEntity> findStuckOrders(@Param("status") com.tradingbot.common.enums.OrderStatus status, @Param("threshold") Instant threshold);}
