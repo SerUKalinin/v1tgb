@@ -88,7 +88,7 @@ public class RiskStateReducer {
         if (MoneyMath.isZero(state.getMaxEquity()) || MoneyMath.isLess(state.getMaxEquity(), BigDecimal.ZERO)) {
             return BigDecimal.ZERO;
         }
-        
+
         BigDecimal diff = MoneyMath.subtract(state.getMaxEquity(), state.getTotalEquity());
         return MoneyMath.multiply(
                 MoneyMath.divide(diff, state.getMaxEquity()),
@@ -142,7 +142,6 @@ public class RiskStateReducer {
 
         return state.toBuilder()
                 .balance(MoneyMath.subtract(state.getBalance(), event.amount()))
-                .reserved(MoneyMath.add(state.getReserved(), event.amount()))
                 .activeReservations(Map.copyOf(newReservations))
                 .lastUpdateTimestamp(event.timestamp())
                 .build();
@@ -156,20 +155,20 @@ public class RiskStateReducer {
             return state;
         }
 
-        // Используем сумму из резерва, если в событии 0 (компенсация)
         BigDecimal amountToRelease = (event.amount() == null || MoneyMath.isZero(event.amount()))
                 ? reservedAmount
                 : event.amount();
 
-        log.info("[RiskReducer] Releasing {} for order {} (Reason: {})", amountToRelease, event.orderId(), event.reason());
+        log.info("[RiskReducer] Releasing {} for order {} (Reason: {})",
+                amountToRelease, event.orderId(), event.reason());
 
         Map<UUID, BigDecimal> newReservations = new HashMap<>(state.getActiveReservations());
         newReservations.remove(event.orderId());
 
         return state.toBuilder()
                 .balance(MoneyMath.add(state.getBalance(), amountToRelease))
-                .reserved(MoneyMath.subtract(state.getReserved(), amountToRelease))
                 .activeReservations(Map.copyOf(newReservations))
                 .lastUpdateTimestamp(event.timestamp())
                 .build();
-    }}
+    }
+}

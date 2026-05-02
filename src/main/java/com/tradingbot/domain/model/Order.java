@@ -115,9 +115,18 @@ public class Order {
     }
 
     /**
-     * Переводит ордер в статус EXECUTING (захват для исполнения).
+     * Переводит ордер в статус SENT_TO_EXCHANGE (отправлен в шлюз биржи).
      */
-    public void markExecuting() {
+    public void markAsSentToExchange() {
+        if (this.status != OrderStatus.EXECUTING) {
+            throw new IllegalStateException("Invalid transition to SENT_TO_EXCHANGE from " + status);
+        }
+        this.status = OrderStatus.SENT_TO_EXCHANGE;
+    }
+
+    /**
+     * Переводит ордер в статус EXECUTING (захват для исполнения).
+     */    public void markExecuting() {
         if (this.status != OrderStatus.PENDING_EXECUTION && this.status != OrderStatus.EXECUTING) {
             throw new IllegalStateException(String.format(
                 "Невозможный переход в EXECUTING из %s для ордера %s", 

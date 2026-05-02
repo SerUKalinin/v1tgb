@@ -1,6 +1,8 @@
 package com.tradingbot.domain.risk;
 
 import com.tradingbot.common.util.MoneyMath;
+import com.tradingbot.infrastructure.persistence.entity.RiskReservationLogEntity;
+import com.tradingbot.infrastructure.persistence.repository.RiskReservationLogRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -9,6 +11,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -23,11 +26,14 @@ public class RiskService {
     private final RiskRepository riskRepository;
     private final RiskStateReducer reducer;
     private final RiskStateStore riskStateStore;
+    private final RiskReservationLogRepository riskReservationLogRepository;
 
     @Transactional
     public void publish(RiskEvent event) {
+        // GUARANTEE:
+        // event -> reducer -> log -> commit happen in same transaction
+        // ensures logical consistency even if commit order differs
         RiskState state = riskRepository.get();
-
         if (state.isHalted() && !(event instanceof RiskEvent.TradingHalted)) {
             log.warn("[RISK] Engine HALTED. Event ignored: {}", event.getEventId());
             return;
@@ -41,16 +47,39 @@ public class RiskService {
         }
 
         try {
+            // Извлекаем сумму резерва ДО применения редьюсера
+            BigDecimal reservedAmountBefore = null;
+            if (event instanceof RiskEvent.CapitalReleased e) {
+                reservedAmountBefore = state.getActiveReservations().get(e.orderId());
+            }
+
             RiskState newState = reducer.reduce(state, event);
             riskRepository.markEventProcessed(eventId, newState, event);
+
+            // Логирование после успешного применения reducer
+            if (event instanceof RiskEvent.CapitalReserved e) {
+                logReservation(e.orderId(), "RESERVE", e.amount());
+            } else if (event instanceof RiskEvent.CapitalReleased e) {
+                if (reservedAmountBefore != null) {
+                    logReservation(e.orderId(), "RELEASE", reservedAmountBefore);
+                }
+            }
+
             syncCacheAfterCommit(newState);
-        } catch (Exception e) {
-            log.error("[RISK] Processing failed for event {}", event.getEventId(), e);
+        } catch (Exception e) {            log.error("[RISK] Processing failed for event {}", event.getEventId(), e);
             throw new RuntimeException("Risk processing failed", e);
         }
     }
 
-    @Transactional
+    private void logReservation(UUID orderId, String type, BigDecimal amount) {
+        riskReservationLogRepository.save(RiskReservationLogEntity.builder()
+                .id(UUID.randomUUID())
+                .orderId(orderId)
+                .eventType(type)
+                .amount(amount)
+                .createdAt(Instant.now())
+                .build());
+    }    @Transactional
     public RiskDecision reserve(UUID orderId, BigDecimal amount) {
         RiskState state = riskRepository.get();
         RiskDecision decision = RiskPolicy.canReserve(state, orderId, amount);
@@ -79,6 +108,9 @@ public class RiskService {
     }
 
     @Transactional
+    public void release(UUID orderId) {
+        release(orderId, BigDecimal.ZERO, "COMPENSATION");
+    }    @Transactional
     public void syncBalance(BigDecimal actualBalance) {
         RiskState state = riskRepository.get();
         RiskState newState = state.toBuilder()
