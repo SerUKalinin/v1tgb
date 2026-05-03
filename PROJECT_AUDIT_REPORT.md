@@ -197,3 +197,186 @@ Core Stabilization Phase 3 — Order State Machine Consolidation
 
 проблема не в коде
 а в отсутствии единой модели конечности состояния (finality model)
+
+
+
+
+Ниже — пересобранная инженерная карта фаз Core Stabilization с:
+
+📊 процентом готовности
+✔ что реально сделано
+❌ что не сделано
+⚠️ блокерами
+🎯 оценкой риска для production/live
+🧭 порядком, в котором нужно закрывать оставшиеся gaps
+📊 ОБЩАЯ ГОТОВНОСТЬ СИСТЕМЫ
+
+🧠 Система уже не MVP — это working trading engine skeleton
+
+Core correctness: 85–90%
+Production readiness: 60–70%
+Capital safety correctness: ~55%
+🧱 ФАЗЫ CORE STABILIZATION (по порядку)
+🥇 ФАЗА 1 — Bootstrap & System Lifecycle
+📊 Готовность: 100% (DONE)
+✔ Сделано:
+Детерминированный startup flow
+SystemStateManager управляет жизненным циклом
+Последовательность:
+INITIALIZING
+RISK_RECOVERING
+COLD_START_RECONCILIATION
+MARKET_WARMING
+READY
+TRADING_ENABLED
+Market warm-up + scheduler gating
+❌ Нет проблем (функционально)
+⚠ Риски:
+синхронный warmup может замедлять старт (non-critical)
+🎯 Вывод:
+
+✔ Можно считать полностью закрытой
+
+🥈 ФАЗА 2 — Risk Engine (Gate Layer)
+📊 Готовность: 70%
+✔ Сделано:
+DefaultRiskManager работает как gate
+Ledger-based recovery
+Reserve/Release модель есть
+RiskState восстановим через replay
+❌ НЕ сделано (критично):
+1. Exchange constraint awareness (ОСНОВНОЙ БЛОКЕР)
+   нет stepSize enforcement
+   нет minNotional enforcement
+   нет tickSize validation
+
+👉 (Risk не знает реальность биржи)
+
+2. applyConstraints = stub
+   ⚠ Блокер:
+   Risk может APPROVE ордер, который гарантированно REJECT на Binance
+   🎯 Вывод:
+
+❌ НЕ ГОТОВА для production risk gating
+
+🥉 ФАЗА 3 — Order State Machine (CRITICAL CORE)
+📊 Готовность: 90–95%
+✔ Сделано:
+OrderStateTransitionPolicy существует
+централизованные переходы
+запрещена прямая мутация Order.status
+transition executor + validator есть
+❌ НЕ сделано:
+1. Downstream consumers не полностью следуют finality model
+   PositionService может реагировать на REJECTED
+2. Final vs intermediate states не полностью формализованы
+   ⚠ Риск:
+   logical inconsistency downstream projection
+   🎯 Вывод:
+
+✔ Почти готово, но требует “finality enforcement cleanup”
+
+🏗 ФАЗА 4 — Execution Layer
+📊 Готовность: 95%
+✔ Сделано:
+ExecutionPort abstraction
+BinanceExecutionEngine изолирован
+ClientOrderId = external idempotency
+нет бизнес-логики внутри adapter
+❌ НЕ сделано:
+частичная обработка PARTIALLY_FILLED требует тестирования
+🎯 Вывод:
+
+✔ Готово
+
+📬 ФАЗА 5 — Outbox + Event Processing
+📊 Готовность: 80%
+✔ Сделано:
+OutboxProcessor работает
+идемпотентность есть
+transactional outbox pattern реализован
+❌ НЕ сделано (важное):
+1. Нет TTL / cleanup strategy
+   таблица будет расти бесконечно
+2. Нет archival / partitioning
+   ⚠ Риск:
+   деградация performance со временем (medium-term production risk)
+   🎯 Вывод:
+
+🟡 работает, но не production-sustainable
+
+🔄 ФАЗА 6 — Reconciliation Layer
+📊 Готовность: 95%
+✔ Сделано:
+read-only correction model
+не мутирует домен напрямую
+корректно триггерит события
+❌ Нет критических проблем
+⚠ Риск:
+HALT state требует ручного вмешательства
+🎯 Вывод:
+
+✔ Готово
+
+📈 ФАЗА 7 — Position Projection
+📊 Готовность: 85–90%
+✔ Сделано:
+event-driven projection
+отделена от execution
+rebuild service есть
+❌ НЕ сделано:
+1. Нарушение finality model
+   REJECTED может попадать в projection pipeline
+   ⚠ Риск:
+   искажение PnL / portfolio state
+   🎯 Вывод:
+
+🟡 почти готово, но требует finality filter
+
+🚨 КРИТИЧЕСКИЕ БЛОКЕРЫ (СИСТЕМНЫЙ УРОВЕНЬ)
+🔴 1. Exchange Feasibility Layer (НЕ СУЩЕСТВУЕТ)
+Готовность: 0%
+Что это:
+stepSize validation
+minNotional
+tickSize
+precision enforcement
+Почему критично:
+
+👉 Risk сейчас не знает реальности биржи
+
+🔴 2. Finality leakage into downstream systems
+REJECTED влияет на PositionService
+🔴 3. Outbox growth risk
+нет lifecycle management
+📊 ИТОГОВАЯ КАРТА ГОТОВНОСТИ
+Фаза	Готовность	Статус
+Bootstrap	100%	DONE
+Risk Engine	70%	PARTIAL
+Order State Machine	90–95%	ALMOST DONE
+Execution	95%	DONE
+Outbox	80%	PARTIAL
+Reconciliation	95%	DONE
+Position Projection	85–90%	NEEDS FIX
+🧭 РЕАЛЬНЫЙ ПОРЯДОК ДАЛЬНЕЙШИХ РАБОТ
+🥇 1. Exchange Feasibility Layer (САМЫЙ ВАЖНЫЙ ШАГ)
+
+👉 защита капитала до execution
+
+🥈 2. Finality enforcement fix
+
+👉 PositionService + downstream consumers
+
+🥉 3. Outbox lifecycle management
+
+👉 TTL + cleanup + archival
+
+🟡 4. RiskState replay hardening (позже)
+
+👉 consistency edge cases
+
+🚀 КЛЮЧЕВОЙ ВЫВОД
+
+Сейчас система находится здесь:
+
+🧠 “Core trading engine is complete, but capital safety layer is incomplete”

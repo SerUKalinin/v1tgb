@@ -3,9 +3,12 @@ package com.tradingbot.domain.risk;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.domain.exchange.*;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.Signal;
-import lombok.RequiredArgsConstructor;import lombok.extern.slf4j.Slf4j;import org.springframework.stereotype.Service;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -27,6 +30,8 @@ import java.util.concurrent.locks.ReentrantLock;
 public class DefaultRiskManager implements RiskManager {
     private final List<RiskRule> rules;
     private final RiskStateStore stateStore;
+    private final ExchangeFeasibilityPort feasibilityPort;
+    private final OrderNormalizationService normalizationService;
     private final Map<String, Lock> symbolLocks = new ConcurrentHashMap<>();
 
     @Override
@@ -48,21 +53,38 @@ public class DefaultRiskManager implements RiskManager {
             }
 
             // 2. Calculate Quantity (Centralized Sizing)
-            BigDecimal quantity = calculateQuantity(signal, currentState);
+            BigDecimal rawQuantity = calculateQuantity(signal, currentState);
             
-            // 3. Apply Constraints (LOT_SIZE, MIN_NOTIONAL - placeholder for now)
-            quantity = applyConstraints(quantity, signal.getSymbol());
+            // 3. Normalization
+            NormalizedOrder normalized = normalizationService.normalize(new FeasibilityRequest(
+                    signal.getSymbol(),
+                    rawQuantity,
+                    signal.getPrice()
+            ));
 
-            // 4. Evaluate Rules (Optional for Stage 3, can be expanded)
+            // 4. Feasibility Check
+            FeasibilityResult feasibility = feasibilityPort.check(new FeasibilityRequest(
+                    normalized.getSymbol(),
+                    normalized.getQuantity(),
+                    normalized.getPrice()
+            ));
+
+            if (!feasibility.isFeasible()) {
+                log.warn("[Risk-EFL] Signal rejected by exchange constraints: {} - Reason: {}", 
+                        signal.getSymbol(), feasibility.getReason());
+                return Optional.empty();
+            }
 
             // 5. Create ApprovedOrder
             UUID orderId = UUID.randomUUID();
             ApprovedOrder approvedOrder = new ApprovedOrder(
                     orderId,
                     com.tradingbot.common.util.ClientOrderIdGenerator.generate(orderId),
-                    signal.getSymbol(),                    signal.getType() == com.tradingbot.common.enums.SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,                    OrderType.MARKET,
-                    quantity,
-                    signal.getPrice(),
+                    signal.getSymbol(),
+                    signal.getType() == com.tradingbot.common.enums.SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,
+                    OrderType.MARKET,
+                    normalized.getQuantity(),
+                    normalized.getPrice(),
                     signal.getStopLoss(),
                     signal.getTakeProfit(),
                     signal.getStrategyId(),
@@ -70,7 +92,8 @@ public class DefaultRiskManager implements RiskManager {
                     currentState.getVersion()
             );
 
-            log.info("[Risk] Signal APPROVED: {} {} qty={}", approvedOrder.getSymbol(), approvedOrder.getSide(), approvedOrder.getQuantity());
+            log.info("[Risk] Signal APPROVED: {} {} qty={} (raw={})", 
+                    approvedOrder.getSymbol(), approvedOrder.getSide(), normalized.getQuantity(), rawQuantity);
             return Optional.of(approvedOrder);
 
         } finally {

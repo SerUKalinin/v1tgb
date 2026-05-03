@@ -10,10 +10,10 @@ import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.domain.event.OrderEventPayload;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderSnapshot;
-import com.tradingbot.infrastructure.persistence.entity.OrderEntity;import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
+import com.tradingbot.infrastructure.outbox.OutboxService;
+import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
-import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -30,8 +30,7 @@ public class OrderApplicationService {
     private final OrderRepository orderRepository;
     private final OrderMapper orderMapper;
     private final RiskManager riskManager;
-    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
-    private final OutboxEventRepository outboxRepository;
+    private final OutboxService outboxService;
 
     @Transactional
     public void onSignalReceived(SignalEvent signal) {
@@ -78,26 +77,8 @@ public class OrderApplicationService {
                 .strategyId(order.getStrategyId())
                 .build();
 
-        saveOutbox(order.getId(), "ORDER", "ORDER_CREATED", payload);
+        outboxService.publishEvent(order.getId(), "ORDER", "ORDER_CREATED", payload);
 
         log.info("[FINANCIAL-CORE] Order created and outbox saved: {}", order.getId());
-    }
-
-    private void saveOutbox(UUID aggregateId, String aggregateType, String eventType, Object payload) {
-        try {
-            OutboxEventEntity event = OutboxEventEntity.builder()
-                    .id(UUID.randomUUID())
-                    .aggregateId(aggregateId != null ? aggregateId : UUID.randomUUID())
-                    .aggregateType(aggregateType)
-                    .eventType(eventType)
-                    .payload(objectMapper.writeValueAsString(payload))
-                    .status(com.tradingbot.infrastructure.outbox.OutboxStatus.NEW)
-                    .createdAt(Instant.now())
-                    .build();
-
-            outboxRepository.save(event);
-        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-            throw new RuntimeException("Critical: Outbox serialization failed for " + aggregateType, e);
-        }
     }
 }

@@ -72,19 +72,23 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
             }
         });
 
-        // 5. Обновление позиции через PositionService
-        TradeCreatedEvent tradeEvent = new TradeCreatedEvent(
-                event.getId(),
-                orderId,
-                order.getSymbol(),
-                order.getStrategyId(),
-                executedQty,
-                executionPrice,
-                order.getSide(),
-                null, // stopLoss
-                null  // takeProfit
-        );        
-        positionService.updatePosition(tradeEvent);
+        // 5. Обновление позиции через PositionService (только если есть реальное исполнение)
+        if (executedQty != null && executedQty.compareTo(BigDecimal.ZERO) > 0) {
+            TradeCreatedEvent tradeEvent = new TradeCreatedEvent(
+                    event.getId(),
+                    orderId,
+                    order.getSymbol(),
+                    order.getStrategyId(),
+                    executedQty,
+                    executionPrice,
+                    order.getSide(),
+                    null, // stopLoss
+                    null  // takeProfit
+            );
+            positionService.updatePosition(tradeEvent);
+        } else {
+            log.debug("[FINALITY] Skip trade creation, no execution: orderId={}, status={}", orderId, targetStatus);
+        }
 
         // 6. Сохранение ордера
         orderPort.save(order);

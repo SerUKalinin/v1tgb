@@ -2,7 +2,6 @@ package com.tradingbot.application.service.execution;
 
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.common.enums.OrderStatus;
-import com.tradingbot.domain.event.OrderEventPayload;
 import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
@@ -10,15 +9,14 @@ import com.tradingbot.domain.policy.OrderStateTransitionPolicy;
 import com.tradingbot.domain.policy.TransitionValidator;
 import com.tradingbot.domain.risk.ApprovedOrder;
 import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.infrastructure.execution.ExecutionLockService;
 import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
-import com.tradingbot.infrastructure.outbox.OutboxStatus;
+import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
-import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -39,9 +37,9 @@ public class OrderExecutionHandler implements OutboxConsumer {
     private final OrderMapper orderMapper;
     private final SystemStateManager stateManager;
     private final IdempotencyService idempotencyService;
+    private final ExecutionLockService lockService;
     private final RiskEngine riskEngine;
-    private final ObjectMapper objectMapper;
-    private final OutboxEventRepository outboxRepository;
+    private final OutboxService outboxService;
     private final StateTransitionExecutor transitionExecutor;
     private final TransitionValidator transitionValidator;
 
@@ -52,6 +50,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
     @Override
     public void consume(OutboxEventEntity event) throws Exception {
+        // 1. Глобальная идемпотентность
         if (idempotencyService.isAlreadyProcessed(event.getId())) {
             log.info("[EXECUTION] Event {} already processed, skipping", event.getId());
             return;
@@ -63,15 +62,32 @@ public class OrderExecutionHandler implements OutboxConsumer {
         }
 
         UUID orderId = event.getAggregateId();
+        String lockKey = "EXEC_ORDER_" + orderId;
 
-        // ЭТАП 1: CLAIM (Блокировка и перевод в EXECUTING)
+        // 2. Проверка состояния блокировки
+        String currentState = lockService.getLockState(lockKey);
+        if ("EXECUTED".equals(currentState)) {
+            log.info("[EXECUTION] Order {} already EXECUTED, skipping", orderId);
+            idempotencyService.markAsProcessed(event.getId(), "OrderExecutionHandler");
+            return;
+        }
+
+        // 3. Атомарный захват права на исполнение
+        if (currentState == null && !lockService.tryClaim(lockKey)) {
+            log.warn("[EXECUTION] Order {} already claimed by another processor", orderId);
+            return;
+        }
+
+        // ЭТАП 1: CLAIM (Блокировка и перевод в EXECUTING в БД)
         Optional<ApprovedOrder> approvedOrder = claimOrder(orderId, event.getId());
         if (approvedOrder.isEmpty()) {
             handleAlreadyProcessed(event);
             return;
         }
 
-        // Получаем актуальный executionId для фиксации попытки
+        // 4. Атомарный переход в состояние EXECUTING (GUARD)
+        boolean isNewExecution = lockService.tryEnterExecuting(lockKey);
+
         UUID executionId = orderRepository.findById(orderId)
                 .map(OrderEntity::getExecutionId)
                 .orElse(null);
@@ -79,7 +95,12 @@ public class OrderExecutionHandler implements OutboxConsumer {
         // ЭТАП 2: EXECUTE (Внешний IO запрос к бирже)
         ExecutionResult result;
         try {
-            result = executeExternal(approvedOrder.get());
+            if (isNewExecution) {
+                result = executeExternal(approvedOrder.get());
+            } else {
+                log.info("[EXECUTION-RECOVERY] Order {} was in EXECUTING state. Checking status...", orderId);
+                result = executionPort.getOrderStatus(approvedOrder.get().getClientOrderId());
+            }
         } catch (Exception e) {
             log.error("[EXECUTION-FAILED] Network IO error for order {}", orderId, e);
             return;
@@ -88,6 +109,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
         // ЭТАП 3: COMMIT (Фиксация результата исполнения)
         try {
             commitExecution(orderId, result, event.getId(), executionId);
+            lockService.markExecuted(lockKey);
         } catch (Exception e) {
             log.error("[EXECUTION-COMMIT-FAILED] Failed to commit result for order {}", orderId, e);
             throw e;
@@ -122,7 +144,6 @@ public class OrderExecutionHandler implements OutboxConsumer {
             }
 
             try {
-                // Используем Executor для атомарного перехода в EXECUTING
                 transitionExecutor.execute(order, entity, OrderStatus.EXECUTING, () -> {});
 
                 entity.setExecutionId(UUID.randomUUID());
@@ -170,7 +191,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
         }
 
         Order order = orderMapper.toDomain(entity);
-        saveOutbox(order.getId(), "ORDER", "ORDER_EXECUTED", order);
+        outboxService.publishEvent(order.getId(), "ORDER", "ORDER_EXECUTED", order);
         idempotencyService.markAsProcessed(eventId, "OrderExecutionHandler");
     }
 
@@ -192,6 +213,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
         orderMapper.updateEntity(order, entity);
         entity.setUpdatedAt(Instant.now());
     }
+
     private void handleAlreadyProcessed(OutboxEventEntity event) {
         orderRepository.findById(event.getAggregateId()).ifPresent(entity -> {
             if (transitionValidator.isProcessed(entity.getStatus())) {
@@ -199,6 +221,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
             }
         });
     }
+
     private ApprovedOrder mapToApproved(OrderEntity entity, UUID executionId) {
         return ApprovedOrder.builder()
                 .orderId(entity.getId())
@@ -211,30 +234,5 @@ public class OrderExecutionHandler implements OutboxConsumer {
                 .strategyId(entity.getStrategyId())
                 .approvedAt(entity.getCreatedAt())
                 .build();
-    }
-
-    private void saveOutbox(UUID aggregateId, String aggregateType, String eventType, Order order) {
-        try {
-            OrderEventPayload payload = OrderEventPayload.builder()
-                    .orderId(order.getId())
-                    .clientOrderId(order.getClientOrderId())
-                    .status(order.getStatus().name())
-                    .timestamp(Instant.now())
-                    .build();
-
-            OutboxEventEntity event = OutboxEventEntity.builder()
-                    .id(UUID.randomUUID())
-                    .aggregateId(aggregateId)
-                    .aggregateType(aggregateType)
-                    .eventType(eventType)
-                    .payload(objectMapper.writeValueAsString(payload))
-                    .status(OutboxStatus.NEW)
-                    .createdAt(Instant.now())
-                    .build();
-
-            outboxRepository.save(event);
-        } catch (Exception e) {
-            log.error("Failed to save outbox", e);
-        }
     }
 }
