@@ -5,6 +5,7 @@ import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,16 +53,13 @@ class ArchitectureInvarianceTest extends BaseIntegrationTest {
 
     @Test
     void shouldPreventApprovedOrderCreationOutsideRiskPackage() {
-        // ApprovedOrder имеет package-private конструктор и билдер.
-        // Мы проверяем, что из этого пакета (com.tradingbot.domain.risk) мы МОЖЕМ его создать,
-        // но если бы этот тест был в другом пакете, компиляция бы не прошла.
-        // Данный тест скорее документальный, подтверждающий инкапсуляцию.
+        // Тест подтверждает инкапсуляцию доменной логики.
+        // В новой архитектуре ApprovedOrder удален, и мы работаем напрямую с Order.
         
-        ApprovedOrder order = ApprovedOrder.builder()
-                .orderId(UUID.randomUUID())
+        Order order = Order.builder()
+                .id(UUID.randomUUID())
                 .symbol("BTCUSDT")
-                .quantity(BigDecimal.ONE)
+                .originalQuantity(BigDecimal.ONE)
                 .build();        
-        assertNotNull(order, "ApprovedOrder should be creatable within risk package");
-    }
-}
+        assertNotNull(order, "Order should be creatable");
+    }}

@@ -1,7 +1,7 @@
 package com.tradingbot.infrastructure.exchange.binance;
 
 import com.tradingbot.domain.model.ExecutionResult;
-import com.tradingbot.domain.risk.ApprovedOrder;
+import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.binance.BinanceExecutionAdapter;
 import com.tradingbot.infrastructure.execution.binance.BinanceClient;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,7 +28,7 @@ public class BinanceMappingTest {
     @Test
     void testMappingLotSizeErrorToRejected() {
         UUID orderId = UUID.randomUUID();
-        ApprovedOrder order = createOrder(orderId);
+        Order order = createOrder(orderId);
 
         when(binanceClient.post(anyString(), anyMap(), any(), anyBoolean()))
                 .thenThrow(new RuntimeException("400 Bad Request: {\"code\":-1013,\"msg\":\"Filter failure: LOT_SIZE\"}"));
@@ -42,7 +42,7 @@ public class BinanceMappingTest {
     @Test
     void testMappingTimeoutToTimeoutStatus() {
         UUID orderId = UUID.randomUUID();
-        ApprovedOrder order = createOrder(orderId);
+        Order order = createOrder(orderId);
 
         when(binanceClient.post(anyString(), anyMap(), any(), anyBoolean()))
                 .thenThrow(new RuntimeException("Read Timeout 504"));
@@ -57,14 +57,13 @@ public class BinanceMappingTest {
         }
     }
 
-    private ApprovedOrder createOrder(UUID orderId) {
-        return ApprovedOrder.builder()
-                .orderId(orderId)
+    private Order createOrder(UUID orderId) {
+        return Order.builder()
+                .id(orderId)
                 .clientOrderId("bot_" + orderId.toString().replace("-", ""))
                 .symbol("BTCUSDT")
                 .side(com.tradingbot.common.enums.OrderSide.BUY)
                 .type(com.tradingbot.common.enums.OrderType.MARKET)
-                .quantity(java.math.BigDecimal.ONE)
+                .originalQuantity(java.math.BigDecimal.ONE)
                 .build();
-    }
-}
+    }}

@@ -1,7 +1,6 @@
 package com.tradingbot.infrastructure.persistence.mapper;
 
 import com.tradingbot.domain.model.Order;
-import com.tradingbot.domain.model.OrderSnapshot;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import org.springframework.stereotype.Component;
 
@@ -38,44 +37,28 @@ public class OrderMapper {
     /**
      * Используется ТОЛЬКО для создания новой сущности (CREATE).
      */
-    public OrderEntity toEntity(OrderSnapshot snapshot) {
-        if (snapshot == null) return null;
+    public OrderEntity toEntity(Order order) {
+        if (order == null) return null;
         OrderEntity entity = new OrderEntity();
-        updateEntityFromSnapshot(snapshot, entity);
+        entity.setId(order.getId());
+        entity.setClientOrderId(order.getClientOrderId());
+        entity.setExchangeOrderId(order.getExchangeOrderId());
+        entity.setSymbol(order.getSymbol());
+        entity.setSide(order.getSide());
+        entity.setType(order.getType());
+        entity.setQuantity(order.getQuantity());
+        entity.setPrice(order.getPrice());
+        entity.setExecutedQuantity(order.getExecutedQuantity());
+        entity.setAveragePrice(order.getAveragePrice());
+        entity.setStrategyId(order.getStrategyId());
+        entity.setStatus(order.getStatus());
         return entity;
-    }
-
-    /**
-     * Обновляет существующую managed-сущность из снимка состояния (UPDATE).
-     * Это предотвращает пересоздание сущности в Hibernate.
-     */
-    public void updateEntityFromSnapshot(OrderSnapshot snapshot, OrderEntity entity) {
-        if (snapshot == null || entity == null) return;
-
-        // Проверка на соответствие ID при обновлении
-        if (entity.getId() != null && !entity.getId().equals(snapshot.getId())) {
-            throw new IllegalStateException("Cannot update entity with different ID");
-        }
-
-        entity.setId(snapshot.getId());
-        entity.setClientOrderId(snapshot.getClientOrderId());
-        entity.setExchangeOrderId(snapshot.getExchangeOrderId());
-        entity.setSymbol(snapshot.getSymbol());
-        entity.setSide(snapshot.getSide());
-        entity.setType(snapshot.getType());
-        entity.setQuantity(snapshot.getQuantity());
-        entity.setPrice(snapshot.getPrice());
-        entity.setStopLoss(snapshot.getStopLoss());
-        entity.setTakeProfit(snapshot.getTakeProfit());
-        entity.setExecutedQuantity(snapshot.getExecutedQuantity());
-        entity.setAveragePrice(snapshot.getAveragePrice());
-        entity.setStrategyId(snapshot.getStrategyId());
-        entity.setStatus(snapshot.getStatus());
     }
 
     public void updateEntity(Order order, OrderEntity entity) {
         if (order == null || entity == null) return;
         entity.setStatus(order.getStatus());
+        entity.setExchangeOrderId(order.getExchangeOrderId());
         entity.setSymbol(order.getSymbol());
         entity.setSide(order.getSide());
         entity.setType(order.getType());
@@ -87,5 +70,4 @@ public class OrderMapper {
         entity.setAveragePrice(order.getAveragePrice());
 
         entity.setStrategyId(order.getStrategyId());
-    }
-}
+    }}

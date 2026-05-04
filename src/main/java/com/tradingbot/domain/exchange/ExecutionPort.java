@@ -1,23 +1,16 @@
 package com.tradingbot.domain.exchange;
 
+import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.ExecutionResult;
-import com.tradingbot.domain.risk.ApprovedOrder;
-
 import java.math.BigDecimal;
 import java.util.Map;
 
-/**
- * Порт для взаимодействия с внешними биржами.
- * Определяет контракт исполнения ордеров в терминах доменной области.
- */
 public interface ExecutionPort {
-
     /**
-     * Разместить новый ордер на бирже.
-     * @param order Одобренный риск-движком ордер
-     * @return Результат исполнения
+     * Размещает ордер на бирже.
      */
-    ExecutionResult placeOrder(ApprovedOrder order);
+    ExecutionResult placeOrder(Order order);
+
 
     /**
      * Отменить существующий ордер.

@@ -4,7 +4,7 @@ import com.tradingbot.application.service.execution.TradeService;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
-import com.tradingbot.domain.risk.ApprovedOrder;
+import com.tradingbot.domain.model.Order;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
@@ -22,33 +22,33 @@ public class BacktestExecutionEngine implements ExecutionEngine {
     private final TradeService tradeService;
 
     @Override
-    public ExecutionResult execute(ApprovedOrder approvedOrder) {
+    public ExecutionResult execute(Order order) {
         log.info("[FAKE-EXEC] Executing order: {} {} {} @ {}",
-                approvedOrder.getSide(), approvedOrder.getQuantity(), approvedOrder.getSymbol(), approvedOrder.getPrice());
+                order.getSide(), order.getQuantity(), order.getSymbol(), order.getPrice());
 
         String externalOrderId = "fake-order-" + UUID.randomUUID().toString().substring(0, 8);
         String externalTradeId = "fake-trade-" + UUID.randomUUID().toString().substring(0, 8);
 
         // Прямой вызов TradeService вместо публикации события
         tradeService.onOrderFilled(new OrderFilledEvent(
-                approvedOrder.getOrderId(),
+                order.getId(),
                 externalTradeId,
-                approvedOrder.getSymbol(),
-                approvedOrder.getQuantity(),
-                approvedOrder.getPrice()
+                order.getSymbol(),
+                order.getQuantity(),
+                order.getPrice()
         ));
 
         return ExecutionResult.success(
-                approvedOrder.getOrderId(),
+                order.getId(),
                 externalOrderId,
                 externalTradeId,
-                approvedOrder.getSymbol(),
-                approvedOrder.getSide(),
-                approvedOrder.getQuantity(),
-                approvedOrder.getPrice(),
-                approvedOrder.getQuantity().multiply(new BigDecimal("0.001")),
+                order.getSymbol(),
+                order.getSide(),
+                order.getQuantity(),
+                order.getPrice(),
+                order.getQuantity().multiply(new BigDecimal("0.001")),
                 "USDT",
-                approvedOrder.getClientOrderId()
+                order.getClientOrderId()
         );
     }
 

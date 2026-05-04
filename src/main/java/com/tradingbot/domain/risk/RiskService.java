@@ -1,5 +1,6 @@
 package com.tradingbot.domain.risk;
 
+import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.exchange.ExchangeFeasibilityPort;
 import com.tradingbot.domain.exchange.FeasibilityRequest;
@@ -48,7 +49,7 @@ public class RiskService {
      * Обеспечивает SELECT FOR UPDATE -> Decision -> Reserve -> Commit.
      */
     @Transactional
-    public Optional<ApprovedOrder> evaluateAndReserve(SignalEvent signal) {
+    public Optional<Order> evaluateAndReserve(SignalEvent signal) {
         // 1. SELECT FOR UPDATE (через JpaRiskRepository.get())
         RiskState state = riskRepository.get();
 
@@ -101,30 +102,25 @@ public class RiskService {
         riskRepository.markEventProcessed(parseEventId(event.getEventId()), newState, event);
         logReservation(orderId, "RESERVE", requiredCapital);
 
-        // 6. Создание ApprovedOrder с актуальной версией состояния
-        ApprovedOrder approvedOrder = new ApprovedOrder(
-                orderId,
-                ClientOrderIdGenerator.generate(orderId),
-                signal.getSymbol(),
-                signal.getType() == SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,
-                OrderType.MARKET,
-                normalized.getQuantity(),
-                normalized.getPrice(),
-                signal.getStopLoss(),
-                signal.getTakeProfit(),
-                signal.getStrategyId(),
-                Instant.now(), // Это значение для approvedAt
-                newState.getVersion(), // version из нового состояния
-                UUID.randomUUID() // executionId, если нужно генерировать
-        );
+        // 6. Создание Order в статусе PENDING_EXECUTION
+        Order order = Order.builder()
+                .id(orderId)
+                .clientOrderId(ClientOrderIdGenerator.generate(orderId))
+                .symbol(signal.getSymbol())
+                .side(signal.getType() == SignalType.BUY ? OrderSide.BUY : OrderSide.SELL)
+                .type(OrderType.MARKET)
+                .originalQuantity(normalized.getQuantity())
+                .price(normalized.getPrice())
+                .strategyId(signal.getStrategyId())
+                .status(OrderStatus.PENDING_EXECUTION)
+                .build();
 
         syncCacheAfterCommit(newState);
 
         log.info("[RISK] Signal APPROVED & CAPITAL RESERVED: {} qty={} (version={})",
-                approvedOrder.getSymbol(), approvedOrder.getQuantity(), newState.getVersion());
+                order.getSymbol(), order.getQuantity(), newState.getVersion());
 
-        return Optional.of(approvedOrder);
-    }
+        return Optional.of(order);    }
 
     private BigDecimal calculateQuantity(SignalEvent signal, RiskState state) {
         BigDecimal riskPercent = new BigDecimal("0.01");

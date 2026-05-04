@@ -2,7 +2,6 @@ package com.tradingbot.application.service.risk;
 
 import com.tradingbot.application.service.system.AdminNotificationService;
 import com.tradingbot.application.service.execution.PositionRebuildService;
-import com.tradingbot.application.service.execution.StateTransitionExecutor;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.model.Order;
@@ -47,9 +46,7 @@ public class ReconciliationService {
     private final AdminNotificationService notifications;
     private final PositionRebuildService positionRebuildService;
     private final SystemStateManager stateManager;
-    private final StateTransitionExecutor transitionExecutor;
     private final TransitionValidator transitionValidator;
-
     private static final Duration STALE_THRESHOLD = Duration.ofMinutes(2);
     private static final Duration DRIFT_DETECTION_WINDOW = Duration.ofSeconds(45);
     private static final BigDecimal DRIFT_THRESHOLD = new BigDecimal("0.01"); // 1%
@@ -185,27 +182,20 @@ public class ReconciliationService {
             ExecutionResult exchangeState = exchangeQueryService.getOrderStatus(order.getClientOrderId());
 
             if (exchangeState.getStatus() == ExecutionResult.Status.SUCCESS) {
-                transitionExecutor.execute(order, orderEntity, OrderStatus.FILLED, () ->
-                        order.fill(exchangeState.getExchangeOrderId(), exchangeState.getExecutedQty(), exchangeState.getExecutedPrice())
-                );
+                order.fill(exchangeState.getExchangeOrderId(), exchangeState.getExecutedQty(), exchangeState.getExecutedPrice());
                 log.info("[RECON-SUCCESS] Order {} synchronized to FILLED", order.getId());
             } else if (exchangeState.getStatus() == ExecutionResult.Status.REJECTED) {
-                transitionExecutor.execute(order, orderEntity, OrderStatus.REJECTED, () ->
-                        order.markAsRejected(exchangeState.getErrorMessage())
-                );
+                order.markAsRejected(exchangeState.getErrorMessage());
                 riskEngine.release(order.getId());
                 log.warn("[RECON-SUCCESS] Order {} synchronized to REJECTED", order.getId());
             } else {
                 Instant graceThreshold = Instant.now().minus(RECONCILIATION_GRACE_PERIOD);
                 if (orderEntity.getExecutionStartedAt() != null && orderEntity.getExecutionStartedAt().isBefore(graceThreshold)) {
                     log.warn("[RECON-PROPOSAL] Order {} not found after grace period. Syncing to REJECTED.", order.getId());
-                    transitionExecutor.execute(order, orderEntity, OrderStatus.REJECTED, () ->
-                            order.markAsRejected("Not found on exchange after grace period")
-                    );
+                    order.markAsRejected("Not found on exchange after grace period");
                     riskEngine.release(order.getId());
                 }
             }
-
             // Синхронизируем технические поля через маппер
             orderMapper.updateEntity(order, orderEntity);
             orderEntity.setUpdatedAt(Instant.now());

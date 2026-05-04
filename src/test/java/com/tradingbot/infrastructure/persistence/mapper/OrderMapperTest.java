@@ -47,9 +47,8 @@ class OrderMapperTest {
         assertEquals(OrderStatus.PARTIALLY_FILLED, domain.getStatus());
 
         // When: Domain -> Entity
-        OrderEntity roundTripEntity = mapper.toEntity(domain.toSnapshot());
-        // Then: Entity state is preserved (Symmetry)
-        assertEquals(originalEntity.getExecutedQuantity(), roundTripEntity.getExecutedQuantity(), "Executed quantity lost in toEntity");
+        OrderEntity roundTripEntity = mapper.toEntity(domain);
+        // Then: Entity state is preserved (Symmetry)        assertEquals(originalEntity.getExecutedQuantity(), roundTripEntity.getExecutedQuantity(), "Executed quantity lost in toEntity");
         assertEquals(originalEntity.getAveragePrice(), roundTripEntity.getAveragePrice(), "Average price lost in toEntity");
         assertEquals(originalEntity.getStatus(), roundTripEntity.getStatus());
         assertEquals(originalEntity.getQuantity(), roundTripEntity.getQuantity());

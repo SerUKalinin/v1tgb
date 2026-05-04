@@ -14,7 +14,7 @@ public interface RiskManager {
      * Принимает сигнал и возвращает одобренный ордер с рассчитанным объемом.
      * Если риск-движок отклоняет сигнал, возвращает Optional.empty().
      */
-    Optional<ApprovedOrder> approveSignal(SignalEvent signal);
+    Optional<Order> approveSignal(SignalEvent signal);
 
     /**
      * Проверяет уже созданный ордер.
@@ -22,5 +22,5 @@ public interface RiskManager {
     RiskDecision check(Order order);
     RiskDecision evaluate(com.tradingbot.domain.model.Signal signal);
 
-    boolean isApprovalFresh(ApprovedOrder approvedOrder);
+    boolean isApprovalFresh(Order order);
 }

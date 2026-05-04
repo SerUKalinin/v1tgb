@@ -29,60 +29,33 @@ public class Order {
     private String exchangeOrderId;
     private BigDecimal executedQuantity;
     private BigDecimal averagePrice;
+    private String rejectionReason;
 
-    /**
-     * Внутренний метод для обновления статуса.
-     * Должен вызываться только через StateTransitionExecutor.
-     */
-    void updateStatus(OrderStatus targetStatus) {
-        this.status = targetStatus;
-    }
-
-    public void applyStateTransition(OrderStatus targetStatus, com.tradingbot.application.service.execution.StateTransitionExecutor initiator) {
-        this.status = targetStatus;
-    }
-
-    public OrderSnapshot toSnapshot() {        return new OrderSnapshot(
-                id, clientOrderId, exchangeOrderId, symbol, side, type,
-                originalQuantity, price, null, null,
-                executedQuantity, averagePrice, strategyId, status
-        );
-    }
-
-    public void fill(String exchangeOrderId, BigDecimal executedQty, BigDecimal executionPrice) {
-        if (exchangeOrderId != null) {
-            this.exchangeOrderId = exchangeOrderId;
-        }
+    public void fill(String exchangeOrderId, BigDecimal executedQty, BigDecimal executedPrice) {
+        this.exchangeOrderId = exchangeOrderId;
         this.executedQuantity = executedQty;
-        this.averagePrice = executionPrice != null ? executionPrice : (this.price != null ? this.price : BigDecimal.ZERO);
-    }
-
-    public void markAsPartiallyFilled(BigDecimal executedQtyDelta, BigDecimal executionPrice) {
-        BigDecimal currentExecutedQty = this.executedQuantity != null ? this.executedQuantity : BigDecimal.ZERO;
-        BigDecimal newExecutedQuantity = currentExecutedQty.add(executedQtyDelta);
-
-        BigDecimal currentAvgPrice = this.averagePrice != null ? this.averagePrice : BigDecimal.ZERO;
-
-        // Расчет новой средней цены: (P_old * Q_old + P_new * Q_delta) / Q_total
-        BigDecimal totalCost = currentAvgPrice.multiply(currentExecutedQty)
-                .add(executionPrice.multiply(executedQtyDelta));
-
-        if (newExecutedQuantity.compareTo(BigDecimal.ZERO) > 0) {
-            this.averagePrice = totalCost.divide(newExecutedQuantity, 18, RoundingMode.HALF_UP);
-        }
-        this.executedQuantity = newExecutedQuantity;
-    }
-
-    public BigDecimal getRemainingQuantity() {
-        BigDecimal executed = executedQuantity != null ? executedQuantity : BigDecimal.ZERO;
-        return originalQuantity.subtract(executed);
+        this.averagePrice = executedPrice;
+        this.status = OrderStatus.FILLED;
     }
 
     public void markAsRejected(String reason) {
-        // Логика обработки отклонения, если требуется
+        this.status = OrderStatus.REJECTED;
+        this.rejectionReason = reason;
+    }
+
+    public void markExecuting() {
+        this.status = OrderStatus.EXECUTING;
+    }
+
+    public BigDecimal getRemainingQuantity() {
+        return originalQuantity.subtract(executedQuantity == null ? BigDecimal.ZERO : executedQuantity);
+    }
+
+    public void applyPartialFill(BigDecimal qty, BigDecimal price) {
+        this.executedQuantity = qty;
+        this.averagePrice = price;
     }
 
     public BigDecimal getQuantity() {
         return originalQuantity;
-    }
-}
+    }}

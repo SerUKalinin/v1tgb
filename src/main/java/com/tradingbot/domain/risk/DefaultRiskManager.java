@@ -34,7 +34,7 @@ public class DefaultRiskManager implements RiskManager {
     private final OrderNormalizationService normalizationService;
 
     @Override
-    public Optional<ApprovedOrder> approveSignal(SignalEvent signal) {
+    public Optional<Order> approveSignal(SignalEvent signal) {
         // 1. Переносим принятие решения в RiskService, который обеспечит DB Lock
         return riskService.evaluateAndReserve(signal);
     }
@@ -58,22 +58,20 @@ public class DefaultRiskManager implements RiskManager {
         return RiskDecision.approve(quantity);
     }
     @Override
-    public boolean isApprovalFresh(ApprovedOrder approvedOrder) {
+    public boolean isApprovalFresh(Order order) {
         RiskState currentState = riskService.getState();
         
         if (currentState.isHalted()) {
-            log.error("[RiskGate] Stale approval detected: System is HALTED. Order: {}", approvedOrder.getOrderId());
+            log.error("[RiskGate] Stale approval detected: System is HALTED. Order: {}", order.getId());
             return false;
         }
 
-        if (approvedOrder.getRiskStateVersion() != currentState.getVersion()) {
-            log.warn("[RiskGate] Stale approval detected: Version mismatch. Order version: {}, Current version: {}", 
-                    approvedOrder.getRiskStateVersion(), currentState.getVersion());
-        }
-
+        // В новой архитектуре проверка версии через Order может быть не нужна или реализована иначе,
+        // так как Order теперь является основным объектом домена.
+        // Если версия все еще нужна, она должна быть в классе Order.
+        
         return true;
     }
-
     public BigDecimal calculateQuantity(Signal signal, RiskState state) {
         // Simple sizing logic: 1% of equity per trade
         BigDecimal riskPercent = new BigDecimal("0.01");
