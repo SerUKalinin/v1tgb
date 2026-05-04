@@ -16,7 +16,7 @@ public class ExecutionLockService {
         return repository.insertLock(idempotencyKey) > 0;
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean tryEnterExecuting(String idempotencyKey) {
         return repository.updateToExecuting(idempotencyKey) > 0;
     }

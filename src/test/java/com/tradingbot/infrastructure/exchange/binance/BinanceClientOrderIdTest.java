@@ -25,9 +25,6 @@ public class BinanceClientOrderIdTest {
     @Autowired
     private BinanceExecutionAdapter adapter;
 
-    @MockBean
-    private BinanceClient binanceClient;
-
     @Test
     void shouldThrowExceptionWhenClientOrderIdIsMissing() {
         UUID orderId = UUID.randomUUID();

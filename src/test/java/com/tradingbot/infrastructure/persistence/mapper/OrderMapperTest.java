@@ -23,20 +23,19 @@ class OrderMapperTest {
         BigDecimal executedQty = new BigDecimal("1.234567890123456789");
         BigDecimal avgPrice = new BigDecimal("50000.987654321098765432");
         
-        OrderEntity originalEntity = OrderEntity.builder()
-                .id(UUID.randomUUID())
-                .clientOrderId("CL-123")
-                .exchangeOrderId("EX-456")
-                .symbol("BTCUSDT")
-                .side(OrderSide.BUY)
-                .type(OrderType.LIMIT)
-                .quantity(new BigDecimal("2.0"))
-                .price(new BigDecimal("50000.0"))
-                .status(OrderStatus.PARTIALLY_FILLED.name())
-                .executedQuantity(executedQty)
-                .averagePrice(avgPrice)
-                .strategyId("STRAT-1")
-                .build();
+        OrderEntity originalEntity = new OrderEntity();
+        originalEntity.setId(UUID.randomUUID());
+        originalEntity.setClientOrderId("CL-123");
+        originalEntity.setExchangeOrderId("EX-456");
+        originalEntity.setSymbol("BTCUSDT");
+        originalEntity.setSide(OrderSide.BUY);
+        originalEntity.setType(OrderType.LIMIT);
+        originalEntity.setQuantity(new BigDecimal("2.0"));
+        originalEntity.setPrice(new BigDecimal("50000.0"));
+        originalEntity.setStatus(OrderStatus.PARTIALLY_FILLED);
+        originalEntity.setExecutedQuantity(executedQty);
+        originalEntity.setAveragePrice(avgPrice);
+        originalEntity.setStrategyId("STRAT-1");
 
         // When: Entity -> Domain
         Order domain = mapper.toDomain(originalEntity);
@@ -48,8 +47,7 @@ class OrderMapperTest {
         assertEquals(OrderStatus.PARTIALLY_FILLED, domain.getStatus());
 
         // When: Domain -> Entity
-        OrderEntity roundTripEntity = mapper.toEntity(domain);
-
+        OrderEntity roundTripEntity = mapper.toEntity(domain.toSnapshot());
         // Then: Entity state is preserved (Symmetry)
         assertEquals(originalEntity.getExecutedQuantity(), roundTripEntity.getExecutedQuantity(), "Executed quantity lost in toEntity");
         assertEquals(originalEntity.getAveragePrice(), roundTripEntity.getAveragePrice(), "Average price lost in toEntity");

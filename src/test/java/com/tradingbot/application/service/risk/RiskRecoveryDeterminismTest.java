@@ -23,8 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class RiskRecoveryDeterminismTest {
 
     @Autowired
-    private RiskStateRecoveryService recoveryService;
+    private com.tradingbot.domain.risk.RiskEngine riskEngine;
 
+    @Autowired
+    private RiskStateRecoveryService recoveryService;
     @Autowired
     private RiskReservationLogRepository repository;
 
@@ -86,10 +88,9 @@ public class RiskRecoveryDeterminismTest {
 
         // Recovery
         recoveryService.recover();
-        RiskState state = recoveryService.recoverStateReturn(); // Assuming we add a way to get state or check engine
+        com.tradingbot.domain.risk.RiskState state = riskEngine.getState();
 
-        // Assertions
-        // 1. sum(activeReservations) == getReserved()
+        // Assertions        // 1. sum(activeReservations) == getReserved()
         // 2. State is deterministic based on sequence_id, not commit order
         // (In this test, order1 should have lower sequence_id than order2)
     }

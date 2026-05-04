@@ -43,7 +43,7 @@ public class DefaultRiskManager implements RiskManager {
     public RiskDecision check(Order order) {
         RiskState currentState = riskService.getState();
         if (currentState.isHalted()) {
-            return RiskDecision.reject("System is HALTED");
+            return RiskDecision.reject(RiskDecision.Reason.HALTED, "System is HALTED", java.util.Collections.singletonList("Halt check"));
         }
         return RiskDecision.approve(order.getQuantity());
     }
@@ -51,13 +51,12 @@ public class DefaultRiskManager implements RiskManager {
     public RiskDecision evaluate(Signal signal) {
         RiskState currentState = riskService.getState();
         if (currentState.isHalted()) {
-            return RiskDecision.reject("System is HALTED");
+            return RiskDecision.reject(RiskDecision.Reason.HALTED, "System is HALTED", java.util.Collections.singletonList("Halt check"));
         }
 
         BigDecimal quantity = calculateQuantity(signal, currentState);
         return RiskDecision.approve(quantity);
     }
-
     @Override
     public boolean isApprovalFresh(ApprovedOrder approvedOrder) {
         RiskState currentState = riskService.getState();

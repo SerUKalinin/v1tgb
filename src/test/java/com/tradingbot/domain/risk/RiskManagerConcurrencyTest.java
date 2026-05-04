@@ -24,13 +24,21 @@ class RiskManagerConcurrencyTest {
         
         RiskStateStore store = new RiskStateStore();
         // Инициализируем состояние
-        store.updateInternal(RiskState.empty().toBuilder()
+        store.updateCache(RiskState.empty().toBuilder()
                 .totalEquity(new BigDecimal("100000"))
+                .balance(new BigDecimal("100000"))
                 .build());
         
         // В Stage 3 мы используем DefaultRiskManager вместо ExchangeFilterService
-        DefaultRiskManager riskManager = new DefaultRiskManager(List.of(), store);
-        
+        RiskService riskService = org.mockito.Mockito.mock(RiskService.class);
+        org.mockito.Mockito.when(riskService.getState()).thenReturn(store.getState());
+
+        DefaultRiskManager riskManager = new DefaultRiskManager(
+                java.util.List.of(),
+                riskService,
+                org.mockito.Mockito.mock(com.tradingbot.domain.exchange.ExchangeFeasibilityPort.class),
+                org.mockito.Mockito.mock(com.tradingbot.domain.exchange.OrderNormalizationService.class)
+        );        
         CountDownLatch latch = new CountDownLatch(1);
         List<Future<Optional<ApprovedOrder>>> futures = new ArrayList<>();
 

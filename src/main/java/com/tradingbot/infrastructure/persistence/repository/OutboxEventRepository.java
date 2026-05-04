@@ -75,4 +75,5 @@ public interface OutboxEventRepository
     boolean existsUnprocessedBefore(@org.springframework.data.repository.query.Param("aggregateId") UUID aggregateId,
                                    @org.springframework.data.repository.query.Param("sequenceNumber") long sequenceNumber);
 
-    @Query(value = "SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM outbox_events WHERE aggregate_id = :aggregateId FOR UPDATE", nativeQuery = true)    long getNextSequenceNumber(@org.springframework.data.repository.query.Param("aggregateId") UUID aggregateId);}
+    @Query(value = "SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM outbox_events WHERE aggregate_id = :aggregateId", nativeQuery = true)
+    long getNextSequenceNumber(@org.springframework.data.repository.query.Param("aggregateId") UUID aggregateId);}
