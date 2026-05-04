@@ -16,7 +16,6 @@ public class InMemoryProcessedCandleRepository implements ProcessedCandleReposit
 
     private final Map<String, Instant>   storage = new ConcurrentHashMap<>();
 
-
     /**
      * Отмечает свечу как обработанную.
      *

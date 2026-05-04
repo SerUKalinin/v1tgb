@@ -1,13 +1,7 @@
 package com.tradingbot.infrastructure.persistence.entity;
 
 import com.tradingbot.common.enums.OrderSide;
-import jakarta.persistence.*;
-import lombok.*;
-
-import java.math.BigDecimal;
-import java.time.Instant;
-
-import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.OrderType;
 import jakarta.persistence.*;
 import lombok.*;
@@ -27,11 +21,10 @@ import java.util.UUID;
 )
 @Getter
 @Setter
-@NoArgsConstructor(access = AccessLevel.PROTECTED)
-@AllArgsConstructor(access = AccessLevel.PRIVATE)
-@Builder
-public class OrderEntity {    @Id
-    private UUID id;
+@NoArgsConstructor(access = AccessLevel.PUBLIC)
+@AllArgsConstructor(access = AccessLevel.PACKAGE)
+public class OrderEntity {
+    @Id    private UUID id;
 
     @Column(name = "client_order_id", nullable = false, unique = true, updatable = false)
     private String clientOrderId;
@@ -61,6 +54,7 @@ public class OrderEntity {    @Id
 
     @Column(name = "take_profit", precision = 38, scale = 18)
     private BigDecimal takeProfit;
+
     @Column(name = "executed_quantity", precision = 38, scale = 18)
     private BigDecimal executedQuantity;
 
@@ -69,8 +63,19 @@ public class OrderEntity {    @Id
 
     @Column(name = "strategy_id", nullable = false)
     private String strategyId;
+
+    @Column(name = "execution_id")
+    private UUID executionId;
+
+    @Column(name = "execution_started_at")
+    private Instant executionStartedAt;
+
+    @Column(name = "execution_attempts")
+    private int executionAttempts;
+
+    @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    private String status;
+    private OrderStatus status;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -81,4 +86,14 @@ public class OrderEntity {    @Id
     @Version
     private Long version;
 
+    @PrePersist
+    protected void onCreate() {
+        this.createdAt = Instant.now();
+        this.updatedAt = Instant.now();
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        this.updatedAt = Instant.now();
+    }
 }

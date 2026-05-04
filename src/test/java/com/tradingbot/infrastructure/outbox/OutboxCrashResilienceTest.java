@@ -38,12 +38,12 @@ class OutboxCrashResilienceTest extends BaseIntegrationTest {
         OutboxEventEntity event = OutboxEventEntity.builder()
                 .id(eventId)
                 .aggregateId(UUID.randomUUID())
+                .sequenceNumber(1L) // Обязательное поле в новой архитектуре
                 .aggregateType("ORDER")
                 .eventType("ORDER_CREATED")
                 .payload("{}")
                 .status(OutboxStatus.NEW)
                 .build();
-
         outboxRepository.saveAndFlush(event);
 
         AtomicInteger exchangeCalls = new AtomicInteger();

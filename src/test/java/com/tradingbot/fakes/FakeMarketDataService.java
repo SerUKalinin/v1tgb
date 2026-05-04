@@ -15,12 +15,4 @@ public class FakeMarketDataService extends MarketDataService {
     public FakeMarketDataService() {
         super(null, null, null, null, null);
     }
-
-    public BigDecimal getCurrentPrice(String symbol) {
-        return prices.getOrDefault(symbol, new BigDecimal("100.0"));
-    }
-
-    public void setPrice(String symbol, BigDecimal price) {
-        prices.put(symbol, price);
-    }
 }

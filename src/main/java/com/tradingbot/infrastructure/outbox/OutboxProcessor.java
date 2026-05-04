@@ -16,6 +16,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Slf4j
@@ -28,6 +29,7 @@ public class OutboxProcessor implements ApplicationContextAware {
     private final OutboxRetryPolicy retryPolicy;
     private final DeadLetterAlertService alertService;
     private ApplicationContext applicationContext;
+    private final java.util.Set<UUID> activeAggregates = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     @Value("${app.outbox.enabled:true}")
     private boolean enabled;
@@ -63,10 +65,42 @@ public class OutboxProcessor implements ApplicationContextAware {
 
             log.info("[OUTBOX] Processing batch of {} events.", events.size());
 
-            for (OutboxEventEntity event : events) {
+            // Группируем события по aggregate_id для последовательной обработки
+            Map<UUID, List<OutboxEventEntity>> groupedEvents = events.stream()
+                    .collect(java.util.stream.Collectors.groupingBy(
+                            OutboxEventEntity::getAggregateId,
+                            java.util.LinkedHashMap::new,
+                            java.util.stream.Collectors.toList()
+                    ));
+
+            for (Map.Entry<UUID, List<OutboxEventEntity>> entry : groupedEvents.entrySet()) {
                 if (shuttingDown) break;
-                // 2. Каждое событие в изолированной транзакции REQUIRES_NEW
-                self().processSingleEvent(event);
+                
+                UUID aggregateId = entry.getKey();
+                
+                // Guard: если aggregateId уже обрабатывается другим потоком в этом инстансе — skip
+                if (!activeAggregates.add(aggregateId)) {
+                    log.debug("[OUTBOX] Aggregate {} is already being processed, skipping batch", aggregateId);
+                    continue;
+                }
+
+                try {
+                    List<OutboxEventEntity> aggregateEvents = entry.getValue();
+                    
+                    // Guard: Проверка на наличие "дыр" в последовательности
+                    if (outboxRepository.existsUnprocessedBefore(aggregateId, aggregateEvents.get(0).getSequenceNumber())) {
+                        log.warn("[OUTBOX] Gap detected for aggregate {}, skipping batch to maintain order", aggregateId);
+                        continue;
+                    }
+
+                    log.debug("[OUTBOX] Processing {} events for aggregate {}", aggregateEvents.size(), aggregateId);                    
+                    for (OutboxEventEntity event : aggregateEvents) {
+                        if (shuttingDown) break;
+                        self().processSingleEvent(event);
+                    }
+                } finally {
+                    activeAggregates.remove(aggregateId);
+                }
             }
         } catch (org.springframework.dao.InvalidDataAccessResourceUsageException e) {
             if (shuttingDown || (e.getMessage() != null && e.getMessage().contains("outbox_events"))) {

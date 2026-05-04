@@ -22,12 +22,10 @@ public class RiskMoneyMathDriftTest {
                 .totalEquity(new BigDecimal("10000"))
                 .maxEquity(new BigDecimal("10000"))
                 .dailyPnl(BigDecimal.ZERO)
-                .reserved(BigDecimal.ZERO)
                 .activeReservations(Map.of())
                 .symbolExposures(Map.of())
                 .processedEventIds(Set.of())
                 .build();
-
         BigDecimal amount = new BigDecimal("123.456789012345678901"); // More than 18 digits
         UUID orderId = UUID.randomUUID();
 

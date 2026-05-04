@@ -38,14 +38,14 @@ class ExchangeResilienceIntegrationTest extends BaseIntegrationTest {
         OutboxEventEntity event = OutboxEventEntity.builder()
                 .id(eventId)
                 .aggregateId(UUID.randomUUID())
+                .sequenceNumber(1L) // Обязательное поле в новой архитектуре
                 .aggregateType("ORDER")
                 .eventType("ORDER_CREATED")
                 .payload("{}")
                 .status(OutboxStatus.NEW)
                 .retryCount(0)
                 .attemptCount(0)
-                .build();
-        outboxEventRepository.saveAndFlush(event);
+                .build();        outboxEventRepository.saveAndFlush(event);
 
         // First call fails, second succeeds
         doThrow(new RuntimeException("Exchange Down"))

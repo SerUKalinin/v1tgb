@@ -36,7 +36,6 @@ public class RiskPersistenceIntegrationTest {    @Autowired
             RiskState initialState = RiskState.builder()
                     .balance(INITIAL_BALANCE)
                     .totalEquity(INITIAL_BALANCE)
-                    .reserved(BigDecimal.ZERO)
                     .halted(false)
                     .build();
             riskEngine.initialize(initialState);

@@ -21,9 +21,9 @@ public class RiskStateMapper {
         if (entity == null) {
             return RiskState.empty();
         }
+
         return RiskState.builder()
                 .balance(Objects.requireNonNullElse(entity.getAvailableBalance(), BigDecimal.ZERO))
-                .reserved(Objects.requireNonNullElse(entity.getReservedMargin(), BigDecimal.ZERO))
                 .totalEquity(Objects.requireNonNullElse(entity.getTotalEquity(), BigDecimal.ZERO))
                 .halted(entity.isHalted())
                 .version(entity.getVersion() != null ? entity.getVersion() : 0L)
@@ -34,8 +34,8 @@ public class RiskStateMapper {
 
     public void updateEntity(RiskStateEntity entity, RiskState state) {
         if (entity == null || state == null) return;
-        entity.setAvailableBalance(state.getAvailableBalance());
-        entity.setReservedMargin(state.getReservedMargin());
+        entity.setAvailableBalance(state.getBalance());
+        entity.setReservedMargin(state.getReserved());
         entity.setTotalEquity(state.getTotalEquity());
         entity.setHalted(state.isHalted());
         entity.setActiveReservations(state.getActiveReservations());
