@@ -1,5 +1,17 @@
 package com.tradingbot.domain.risk;
 
+import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.domain.exchange.ExchangeFeasibilityPort;
+import com.tradingbot.domain.exchange.FeasibilityRequest;
+import com.tradingbot.domain.exchange.FeasibilityResult;
+import com.tradingbot.domain.exchange.NormalizedOrder;
+import com.tradingbot.domain.exchange.OrderNormalizationService;
+import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.model.Signal;
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderType;
+import com.tradingbot.common.enums.SignalType;
+import com.tradingbot.common.util.ClientOrderIdGenerator;
 import com.tradingbot.common.util.MoneyMath;
 import com.tradingbot.infrastructure.persistence.entity.RiskReservationLogEntity;
 import com.tradingbot.infrastructure.persistence.repository.RiskReservationLogRepository;
@@ -12,6 +24,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -27,12 +40,106 @@ public class RiskService {
     private final RiskStateReducer reducer;
     private final RiskStateStore riskStateStore;
     private final RiskReservationLogRepository riskReservationLogRepository;
+    private final ExchangeFeasibilityPort feasibilityPort;
+    private final OrderNormalizationService normalizationService;
+
+    /**
+     * Единственная точка входа для одобрения сигнала.
+     * Обеспечивает SELECT FOR UPDATE -> Decision -> Reserve -> Commit.
+     */
+    @Transactional
+    public Optional<ApprovedOrder> evaluateAndReserve(SignalEvent signal) {
+        // 1. SELECT FOR UPDATE (через JpaRiskRepository.get())
+        RiskState state = riskRepository.get();
+
+        if (state.isHalted()) {
+            log.error("[RISK] System is HALTED. Rejecting signal for {}", signal.getSymbol());
+            return Optional.empty();
+        }
+
+        // 2. Расчет объема (Decision Logic)
+        BigDecimal rawQuantity = calculateQuantity(signal, state);
+
+        // 3. Нормализация и проверка лимитов биржи (Feasibility)
+        NormalizedOrder normalized = normalizationService.normalize(new FeasibilityRequest(
+                signal.getSymbol(),
+                rawQuantity,
+                signal.getPrice()
+        ));
+
+        FeasibilityResult feasibility = feasibilityPort.check(new FeasibilityRequest(
+                normalized.getSymbol(),
+                normalized.getQuantity(),
+                normalized.getPrice()
+        ));
+
+        if (!feasibility.isFeasible()) {
+            log.warn("[RISK] Signal rejected by exchange constraints: {} - {}",
+                    signal.getSymbol(), feasibility.getReason());
+            return Optional.empty();
+        }
+
+        // 4. Проверка достаточности капитала (Risk Policy)
+        BigDecimal requiredCapital = normalized.getQuantity().multiply(normalized.getPrice());
+        RiskDecision decision = RiskPolicy.canReserve(state, UUID.randomUUID(), requiredCapital);
+
+        if (!decision.isApproved()) {
+            log.warn("[RISK] Signal rejected by policy: {}", decision.getReason());
+            return Optional.empty();
+        }
+
+        // 5. Резервирование (Atomic Update)
+        UUID orderId = UUID.randomUUID();
+        RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(
+                "RESERVE-" + orderId,
+                orderId,
+                requiredCapital
+        );
+
+        // Применяем изменения и сохраняем в той же транзакции
+        RiskState newState = reducer.reduce(state, event);
+        riskRepository.markEventProcessed(parseEventId(event.getEventId()), newState, event);
+        logReservation(orderId, "RESERVE", requiredCapital);
+
+        // 6. Создание ApprovedOrder с актуальной версией состояния
+        ApprovedOrder approvedOrder = new ApprovedOrder(
+                orderId,
+                ClientOrderIdGenerator.generate(orderId),
+                signal.getSymbol(),
+                signal.getType() == SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,
+                OrderType.MARKET,
+                normalized.getQuantity(),
+                normalized.getPrice(),
+                signal.getStopLoss(),
+                signal.getTakeProfit(),
+                signal.getStrategyId(),
+                Instant.now(),
+                newState.getVersion()
+        );
+
+        syncCacheAfterCommit(newState);
+
+        log.info("[RISK] Signal APPROVED & CAPITAL RESERVED: {} qty={} (version={})",
+                approvedOrder.getSymbol(), approvedOrder.getQuantity(), newState.getVersion());
+
+        return Optional.of(approvedOrder);
+    }
+
+    private BigDecimal calculateQuantity(SignalEvent signal, RiskState state) {
+        BigDecimal riskPercent = new BigDecimal("0.01");
+        BigDecimal baseCapital = state.getTotalEquity().max(state.getBalance());
+
+        if (baseCapital.compareTo(BigDecimal.ZERO) <= 0 || signal.getPrice() == null || signal.getPrice().compareTo(BigDecimal.ZERO) <= 0) {
+            return new BigDecimal("0.001");
+        }
+
+        BigDecimal quantity = baseCapital.multiply(riskPercent).divide(signal.getPrice(), 8, java.math.RoundingMode.HALF_UP);
+        BigDecimal minQty = new BigDecimal("0.001");
+        return quantity.compareTo(minQty) < 0 ? minQty : quantity;
+    }
 
     @Transactional
     public void publish(RiskEvent event) {
-        // GUARANTEE:
-        // event -> reducer -> log -> commit happen in same transaction
-        // ensures logical consistency even if commit order differs
         RiskState state = riskRepository.get();
         if (state.isHalted() && !(event instanceof RiskEvent.TradingHalted)) {
             log.warn("[RISK] Engine HALTED. Event ignored: {}", event.getEventId());
@@ -47,7 +154,6 @@ public class RiskService {
         }
 
         try {
-            // Извлекаем сумму резерва ДО применения редьюсера
             BigDecimal reservedAmountBefore = null;
             if (event instanceof RiskEvent.CapitalReleased e) {
                 reservedAmountBefore = state.getActiveReservations().get(e.orderId());
@@ -56,7 +162,6 @@ public class RiskService {
             RiskState newState = reducer.reduce(state, event);
             riskRepository.markEventProcessed(eventId, newState, event);
 
-            // Логирование после успешного применения reducer
             if (event instanceof RiskEvent.CapitalReserved e) {
                 logReservation(e.orderId(), "RESERVE", e.amount());
             } else if (event instanceof RiskEvent.CapitalReleased e) {
@@ -66,7 +171,8 @@ public class RiskService {
             }
 
             syncCacheAfterCommit(newState);
-        } catch (Exception e) {            log.error("[RISK] Processing failed for event {}", event.getEventId(), e);
+        } catch (Exception e) {
+            log.error("[RISK] Processing failed for event {}", event.getEventId(), e);
             throw new RuntimeException("Risk processing failed", e);
         }
     }
@@ -79,7 +185,9 @@ public class RiskService {
                 .amount(amount)
                 .createdAt(Instant.now())
                 .build());
-    }    @Transactional
+    }
+
+    @Transactional
     public RiskDecision reserve(UUID orderId, BigDecimal amount) {
         RiskState state = riskRepository.get();
         RiskDecision decision = RiskPolicy.canReserve(state, orderId, amount);
@@ -90,7 +198,11 @@ public class RiskService {
                     orderId,
                     amount
             );
-            publish(event);
+
+            RiskState newState = reducer.reduce(state, event);
+            riskRepository.markEventProcessed(parseEventId(event.getEventId()), newState, event);
+            logReservation(orderId, "RESERVE", amount);
+            syncCacheAfterCommit(newState);
         }
 
         return decision;
@@ -104,13 +216,25 @@ public class RiskService {
                 amount,
                 reason
         );
-        publish(event);
+
+        RiskState state = riskRepository.get();
+        RiskState newState = reducer.reduce(state, event);
+        riskRepository.markEventProcessed(parseEventId(event.getEventId()), newState, event);
+
+        BigDecimal reservedAmount = state.getActiveReservations().get(orderId);
+        if (reservedAmount != null) {
+            logReservation(orderId, "RELEASE", reservedAmount);
+        }
+
+        syncCacheAfterCommit(newState);
     }
 
     @Transactional
     public void release(UUID orderId) {
         release(orderId, BigDecimal.ZERO, "COMPENSATION");
-    }    @Transactional
+    }
+
+    @Transactional
     public void syncBalance(BigDecimal actualBalance) {
         RiskState state = riskRepository.get();
         RiskState newState = state.toBuilder()

@@ -29,81 +29,19 @@ import java.util.concurrent.locks.ReentrantLock;
 @RequiredArgsConstructor
 public class DefaultRiskManager implements RiskManager {
     private final List<RiskRule> rules;
-    private final RiskStateStore stateStore;
+    private final RiskService riskService;
     private final ExchangeFeasibilityPort feasibilityPort;
     private final OrderNormalizationService normalizationService;
-    private final Map<String, Lock> symbolLocks = new ConcurrentHashMap<>();
 
     @Override
     public Optional<ApprovedOrder> approveSignal(SignalEvent signal) {
-        Lock lock = symbolLocks.computeIfAbsent(signal.getSymbol(), k -> new ReentrantLock());
-        
-        if (!lock.tryLock()) {
-            log.warn("[Risk] Concurrent signal processing for symbol: {}", signal.getSymbol());
-            return Optional.empty();
-        }
-
-        try {
-            RiskState currentState = stateStore.getState();
-            
-            // 1. Check if Halted
-            if (currentState.isHalted()) {
-                log.error("[Risk] System is HALTED. Rejecting signal for {}", signal.getSymbol());
-                return Optional.empty();
-            }
-
-            // 2. Calculate Quantity (Centralized Sizing)
-            BigDecimal rawQuantity = calculateQuantity(signal, currentState);
-            
-            // 3. Normalization
-            NormalizedOrder normalized = normalizationService.normalize(new FeasibilityRequest(
-                    signal.getSymbol(),
-                    rawQuantity,
-                    signal.getPrice()
-            ));
-
-            // 4. Feasibility Check
-            FeasibilityResult feasibility = feasibilityPort.check(new FeasibilityRequest(
-                    normalized.getSymbol(),
-                    normalized.getQuantity(),
-                    normalized.getPrice()
-            ));
-
-            if (!feasibility.isFeasible()) {
-                log.warn("[Risk-EFL] Signal rejected by exchange constraints: {} - Reason: {}", 
-                        signal.getSymbol(), feasibility.getReason());
-                return Optional.empty();
-            }
-
-            // 5. Create ApprovedOrder
-            UUID orderId = UUID.randomUUID();
-            ApprovedOrder approvedOrder = new ApprovedOrder(
-                    orderId,
-                    com.tradingbot.common.util.ClientOrderIdGenerator.generate(orderId),
-                    signal.getSymbol(),
-                    signal.getType() == com.tradingbot.common.enums.SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,
-                    OrderType.MARKET,
-                    normalized.getQuantity(),
-                    normalized.getPrice(),
-                    signal.getStopLoss(),
-                    signal.getTakeProfit(),
-                    signal.getStrategyId(),
-                    Instant.now(),
-                    currentState.getVersion()
-            );
-
-            log.info("[Risk] Signal APPROVED: {} {} qty={} (raw={})", 
-                    approvedOrder.getSymbol(), approvedOrder.getSide(), normalized.getQuantity(), rawQuantity);
-            return Optional.of(approvedOrder);
-
-        } finally {
-            lock.unlock();
-        }
+        // 1. Переносим принятие решения в RiskService, который обеспечит DB Lock
+        return riskService.evaluateAndReserve(signal);
     }
 
     @Override
     public RiskDecision check(Order order) {
-        RiskState currentState = stateStore.getState();
+        RiskState currentState = riskService.getState();
         if (currentState.isHalted()) {
             return RiskDecision.reject("System is HALTED");
         }
@@ -111,25 +49,18 @@ public class DefaultRiskManager implements RiskManager {
     }
     @Override
     public RiskDecision evaluate(Signal signal) {
-        RiskState currentState = stateStore.getState();
+        RiskState currentState = riskService.getState();
         if (currentState.isHalted()) {
             return RiskDecision.reject("System is HALTED");
         }
 
-        // Используем существующую логику расчета объема
         BigDecimal quantity = calculateQuantity(signal, currentState);
-        
-        // В будущем здесь можно добавить проверку правил (rules)
-        for (RiskRule rule : rules) {
-            // Если правила поддерживают Signal, можно добавить проверку
-        }
-
         return RiskDecision.approve(quantity);
     }
 
     @Override
     public boolean isApprovalFresh(ApprovedOrder approvedOrder) {
-        RiskState currentState = stateStore.getState();
+        RiskState currentState = riskService.getState();
         
         if (currentState.isHalted()) {
             log.error("[RiskGate] Stale approval detected: System is HALTED. Order: {}", approvedOrder.getOrderId());
@@ -144,7 +75,7 @@ public class DefaultRiskManager implements RiskManager {
         return true;
     }
 
-    private BigDecimal calculateQuantity(Signal signal, RiskState state) {
+    public BigDecimal calculateQuantity(Signal signal, RiskState state) {
         // Simple sizing logic: 1% of equity per trade
         BigDecimal riskPercent = new BigDecimal("0.01");
         
