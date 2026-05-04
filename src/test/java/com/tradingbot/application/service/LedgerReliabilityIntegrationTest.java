@@ -1,8 +1,9 @@
 package com.tradingbot.application.service;
 
+import com.tradingbot.application.service.execution.PositionRebuildService;
+import com.tradingbot.application.service.execution.TradeService;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.domain.event.OrderFilledEvent;
-import com.tradingbot.domain.model.Trade;
 import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
@@ -10,13 +11,10 @@ import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -93,22 +91,20 @@ public class LedgerReliabilityIntegrationTest extends com.tradingbot.BaseIntegra
         String clientOrderId = "C-" + tradeId;
         
         if (!orderRepository.existsById(orderId)) {
-            com.tradingbot.infrastructure.persistence.entity.OrderEntity order = com.tradingbot.infrastructure.persistence.entity.OrderEntity.builder()
-                    .id(orderId)
-                    .clientOrderId(clientOrderId)
-                    .symbol(symbol)
-                    .side(side)
-                    .type(com.tradingbot.common.enums.OrderType.MARKET)
-                    .strategyId("default")
-                    .quantity(new BigDecimal(qty))
-                    .price(new BigDecimal(price))
-                    .status("FILLED")
-                    .version(0L)
-                    .createdAt(Instant.now())
-                    .build();
+            com.tradingbot.infrastructure.persistence.entity.OrderEntity order = new com.tradingbot.infrastructure.persistence.entity.OrderEntity();
+            order.setId(orderId);
+            order.setClientOrderId(clientOrderId);
+            order.setSymbol(symbol);
+            order.setSide(side);
+            order.setType(com.tradingbot.common.enums.OrderType.MARKET);
+            order.setStrategyId("default");
+            order.setQuantity(new BigDecimal(qty));
+            order.setPrice(new BigDecimal(price));
+            order.setStatus(com.tradingbot.common.enums.OrderStatus.FILLED);
+            order.setVersion(0L);
+            order.setCreatedAt(Instant.now());
             orderRepository.saveAndFlush(order);
         }
-
         // Вызываем сервис напрямую, так как в новой архитектуре он не слушает события Spring автоматически
         tradeService.onOrderFilled(new OrderFilledEvent(orderId, "EXT-" + tradeId, symbol, new BigDecimal(qty), new BigDecimal(price)));
         entityManager.flush();

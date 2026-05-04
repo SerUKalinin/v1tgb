@@ -1,6 +1,9 @@
 spring:
   profiles:
     active: testnet
+  flyway:
+    baseline-on-migrate: true
+    baseline-version: 1
   datasource:
     url: jdbc:postgresql://localhost:5432/trading?currentSchema=public
     username: postgres
@@ -10,6 +13,25 @@ spring:
     hibernate:
       ddl-auto: validate
     show-sql: true
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      exchangeExecution:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        waitDurationInOpenState: 5s
+        failureRateThreshold: 50
+        eventConsumerBufferSize: 10
+  retry:
+    instances:
+      exchangeExecution:
+        maxAttempts: 3
+        waitDuration: 1s
+        enableExponentialBackoff: true
+        exponentialBackoffMultiplier: 2
 
 logging:
   level:

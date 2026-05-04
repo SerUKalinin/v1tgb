@@ -1,7 +1,7 @@
 package com.tradingbot.domain.risk;
 
 import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
+import com.tradingbot.domain.model.Order;
 
 import java.util.Optional;
 
@@ -19,8 +19,7 @@ public interface RiskManager {
     /**
      * Проверяет уже созданный ордер.
      */
-    RiskDecision check(OrderEntity order);
-
+    RiskDecision check(Order order);
     RiskDecision evaluate(com.tradingbot.domain.model.Signal signal);
 
     boolean isApprovalFresh(ApprovedOrder approvedOrder);

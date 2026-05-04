@@ -29,3 +29,8 @@ binance:
 
 trading:
   update-rate-ms: 60000
+
+app:
+  outbox:
+    enabled: false
+    scan-interval: 1000000

@@ -1,11 +1,12 @@
 package com.tradingbot.infrastructure.telegram;
 
-import com.tradingbot.application.service.AnalyticsService;
-import com.tradingbot.application.service.SubscriptionService;
-import com.tradingbot.application.service.UserService;
+import com.tradingbot.application.service.strategy.AnalyticsService;
+import com.tradingbot.application.service.system.SubscriptionService;
+import com.tradingbot.application.service.system.UserService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
@@ -17,10 +18,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Component
+@Profile("!test")
 @Slf4j
 @RequiredArgsConstructor
-public class TradingTelegramBot extends TelegramLongPollingBot {
-    private final UserService userService;
+public class TradingTelegramBot extends TelegramLongPollingBot {    private final UserService userService;
     private final SubscriptionService subscriptionService;
     private final AnalyticsService analyticsService;
 

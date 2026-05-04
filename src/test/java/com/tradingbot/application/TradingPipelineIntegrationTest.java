@@ -2,7 +2,7 @@ package com.tradingbot.application;
 
 import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.application.pipeline.TradingPipeline;
-import com.tradingbot.application.service.PositionService;
+import com.tradingbot.application.service.execution.PositionService;
 import com.tradingbot.domain.model.Position;
 import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.domain.strategy.TradingStrategy;
@@ -12,9 +12,7 @@ import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepositor
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.test.context.ActiveProfiles;
 
 import java.util.concurrent.TimeUnit;
 
@@ -55,19 +53,18 @@ class TradingPipelineIntegrationTest extends BaseIntegrationTest {
         java.util.UUID orderId = java.util.UUID.randomUUID();
 
         // 0. Предварительно создаем ордер в БД, так как TradeService требует его наличия
-        orderRepository.save(com.tradingbot.infrastructure.persistence.entity.OrderEntity.builder()
-                .id(orderId)
-                .clientOrderId("C-" + orderId)
-                .symbol(symbol)
-                .side(com.tradingbot.common.enums.OrderSide.BUY)
-                .type(com.tradingbot.common.enums.OrderType.MARKET)
-                .strategyId(strategyId)
-                .quantity(amount)
-                .price(price)
-                .status("SENT")
-                .createdAt(java.time.Instant.now())
-                .build());
-
+        com.tradingbot.infrastructure.persistence.entity.OrderEntity orderEntity = new com.tradingbot.infrastructure.persistence.entity.OrderEntity();
+        orderEntity.setId(orderId);
+        orderEntity.setClientOrderId("C-" + orderId);
+        orderEntity.setSymbol(symbol);
+        orderEntity.setSide(com.tradingbot.common.enums.OrderSide.BUY);
+        orderEntity.setType(com.tradingbot.common.enums.OrderType.MARKET);
+        orderEntity.setStrategyId(strategyId);
+        orderEntity.setQuantity(amount);
+        orderEntity.setPrice(price);
+        orderEntity.setStatus(com.tradingbot.common.enums.OrderStatus.EXECUTING);
+        orderEntity.setCreatedAt(java.time.Instant.now());
+        orderRepository.save(orderEntity);
         // 1. Имитируем исполнение ордера
         com.tradingbot.domain.event.OrderFilledEvent filledEvent = new com.tradingbot.domain.event.OrderFilledEvent(
                 orderId,

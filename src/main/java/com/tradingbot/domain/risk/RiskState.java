@@ -8,6 +8,7 @@ import lombok.NoArgsConstructor;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Immutable state of the risk engine.
@@ -19,21 +20,26 @@ import java.util.Map;
 public class RiskState {
     @Builder.Default
     private BigDecimal balance = BigDecimal.ZERO;
-    @Builder.Default
-    private BigDecimal reserved = BigDecimal.ZERO;
 
     public BigDecimal getAvailableBalance() {
         return balance;
     }
 
     public BigDecimal getReservedMargin() {
-        return reserved;
+        return getReserved();
+    }
+
+    public BigDecimal getReserved() {
+        if (activeReservations == null || activeReservations.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        return activeReservations.values().stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     public BigDecimal availableBalance() {
         return balance;
-    }
-    @Builder.Default
+    }    @Builder.Default
     private BigDecimal totalEquity = BigDecimal.ZERO;
     @Builder.Default
     private BigDecimal dailyPnl = BigDecimal.ZERO;
@@ -46,8 +52,9 @@ public class RiskState {
     @Builder.Default
     private Map<String, BigDecimal> symbolExposures = Map.of();
     @Builder.Default
-    private java.util.Set<String> processedEventIds = java.util.Set.of();
-    private String lastError;
+    private Map<UUID, BigDecimal> activeReservations = Map.of();
+    @Builder.Default
+    private java.util.Set<String> processedEventIds = java.util.Set.of();    private String lastError;
     private boolean halted;
     private long version;
 
@@ -59,16 +66,18 @@ public class RiskState {
         if (safeCompare(balance, BigDecimal.ZERO) < 0) {
             throw new IllegalStateException("Financial Invariant Violation: balance < 0");
         }
-        if (safeCompare(reserved, BigDecimal.ZERO) < 0) {
+        BigDecimal currentReserved = getReserved();
+        if (safeCompare(currentReserved, BigDecimal.ZERO) < 0) {
             throw new IllegalStateException("Financial Invariant Violation: reserved < 0");
         }
+
+        // sum(activeReservations) == getReserved() is guaranteed by getReserved() implementation
+        
         // available (balance) + reserved <= totalEquity
-        if (safeCompare(safeAdd(balance, reserved), totalEquity.add(new BigDecimal("0.00000001"))) > 0) {
+        if (safeCompare(safeAdd(balance, currentReserved), totalEquity.add(new BigDecimal("0.00000001"))) > 0) {
             throw new IllegalStateException("Financial Invariant Violation: balance + reserved > totalEquity");
         }
-    }
-
-    public static BigDecimal safeAdd(BigDecimal a, BigDecimal b) {
+    }    public static BigDecimal safeAdd(BigDecimal a, BigDecimal b) {
         return (a == null ? BigDecimal.ZERO : a).add(b == null ? BigDecimal.ZERO : b);
     }
 

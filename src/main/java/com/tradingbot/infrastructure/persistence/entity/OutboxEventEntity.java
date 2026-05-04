@@ -21,9 +21,11 @@ public class OutboxEventEntity {
     @Column(name = "aggregate_id", nullable = false, updatable = false)
     private UUID aggregateId;
 
+    @Column(name = "sequence_number", nullable = false)
+    private Long sequenceNumber;
+
     @Column(name = "aggregate_type", nullable = false, updatable = false)
     private String aggregateType;
-
     @Column(name = "event_type", nullable = false, updatable = false)
     private String eventType;
 
@@ -49,13 +51,26 @@ public class OutboxEventEntity {
     @Column(name = "last_error", columnDefinition = "TEXT")
     private String lastError;
 
-    @PrePersist    protected void onCreate() {
+    @Column(name = "lock_owner")
+    private String lockOwner;
+
+    @Column(name = "locked_until")
+    private Instant lockedUntil;
+
+    @Column(name = "next_attempt_at")
+    private Instant nextAttemptAt;
+
+    @Column(name = "attempt_count", nullable = false)    private int attemptCount;
+
+    @PrePersist
+    protected void onCreate() {
+        if (sequenceNumber == null) {
+            throw new IllegalStateException("OutboxEvent must have sequenceNumber before persisting");
+        }
         if (status == null) status = OutboxStatus.NEW;
         if (createdAt == null) createdAt = Instant.now();
-        updatedAt = createdAt;
-    }
-
-    @PreUpdate
+        if (updatedAt == null) updatedAt = createdAt;
+    }    @PreUpdate
     protected void onUpdate() {
         updatedAt = Instant.now();
     }

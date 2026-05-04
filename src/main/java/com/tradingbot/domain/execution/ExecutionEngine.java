@@ -5,16 +5,21 @@ import com.tradingbot.domain.risk.ApprovedOrder;
 
 /**
  * Интерфейс движка исполнения ордеров.
+ * Определяет логику взаимодействия с внешними системами исполнения.
  */
-/**
- * Интерфейс исполнительного движка.
- * Реализации ДОЛЖНЫ обеспечивать идемпотентность исполнения на основе clientOrderId.
- */
-import com.tradingbot.infrastructure.execution.binance.OrderStatusResponse;
-import com.tradingbot.domain.model.ExecutionResult;
-import com.tradingbot.domain.risk.ApprovedOrder;
-
 public interface ExecutionEngine {
+
+    /**
+     * Исполнить одобренный ордер.
+     * @param approvedOrder Данные ордера
+     * @return Результат исполнения
+     */
     ExecutionResult execute(ApprovedOrder approvedOrder);
-    OrderStatusResponse verifyOrder(String clientOrderId);
+
+    /**
+     * Проверить статус ордера.
+     * @param clientOrderId Идентификатор ордера
+     * @return Результат запроса статуса в доменном формате
+     */
+    ExecutionResult verifyOrder(String clientOrderId);
 }
