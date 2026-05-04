@@ -113,8 +113,9 @@ public class RiskService {
                 signal.getStopLoss(),
                 signal.getTakeProfit(),
                 signal.getStrategyId(),
-                Instant.now(),
-                newState.getVersion()
+                Instant.now(), // Это значение для approvedAt
+                newState.getVersion(), // version из нового состояния
+                UUID.randomUUID() // executionId, если нужно генерировать
         );
 
         syncCacheAfterCommit(newState);

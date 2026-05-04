@@ -21,12 +21,10 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class ExchangeTimeoutRecoveryTest {
@@ -64,6 +62,13 @@ class ExchangeTimeoutRecoveryTest {
         );
 
         when(stateManager.isReady()).thenReturn(true);
+
+        // FIX: чтобы лямбда внутри execute реально выполнялась
+        doAnswer(invocation -> {
+            Runnable runnable = invocation.getArgument(3);
+            runnable.run();
+            return null;
+        }).when(transitionExecutor).execute(any(), any(), any(), any());
     }
 
     @Test
@@ -90,18 +95,21 @@ class ExchangeTimeoutRecoveryTest {
                 .aggregateId(orderId)
                 .build();
 
-        // 1. First attempt setup
+        // Моки
         when(idempotencyService.isAlreadyProcessed(eventId)).thenReturn(false);
         when(lockService.getLockState(lockKey)).thenReturn(null);
-        when(lockService.tryClaim(lockKey)).thenReturn(true);
+        when(lockService.tryEnterExecuting(lockKey)).thenReturn(true);
         when(orderRepository.findByIdForUpdate(orderId)).thenReturn(Optional.of(orderEntity));
         when(orderRepository.findById(orderId)).thenReturn(Optional.of(orderEntity));
-        
-        // Simulate Timeout on first placeOrder
+
+        // Симуляция timeout
         when(executionPort.placeOrder(any())).thenReturn(
-                ExecutionResult.builder().status(ExecutionResult.Status.TIMEOUT).build()
+                ExecutionResult.builder()
+                        .status(ExecutionResult.Status.TIMEOUT)
+                        .build()
         );
-        // But getOrderStatus returns SUCCESS (order actually reached exchange)
+
+        // При getOrderStatus — SUCCESS
         when(executionPort.getOrderStatus(clientOrderId)).thenReturn(
                 ExecutionResult.builder()
                         .status(ExecutionResult.Status.SUCCESS)
@@ -111,31 +119,28 @@ class ExchangeTimeoutRecoveryTest {
                         .build()
         );
 
-        when(lockService.tryEnterExecuting(lockKey)).thenReturn(true);
-
-        // When: First call (simulating first processing attempt)
+        // When: первая попытка
         handler.consume(event);
 
         // Then
         verify(executionPort, times(1)).placeOrder(any());
         verify(executionPort, times(1)).getOrderStatus(clientOrderId);
-        
-        // Verify that order status was updated to FILLED (via SUCCESS mapping)
+
+        // Проверяем, что статус сменился на FILLED
         ArgumentCaptor<OrderStatus> statusCaptor = ArgumentCaptor.forClass(OrderStatus.class);
         verify(transitionExecutor, atLeastOnce()).execute(any(), eq(orderEntity), statusCaptor.capture(), any());
-        // The last transition in commitExecution should be to FILLED (mapped from SUCCESS)
         assertEquals(OrderStatus.FILLED, statusCaptor.getValue());
-        
-        // Verify execution attempts incremented
+
+        // Проверяем, что executionAttempts увеличился
         assertEquals(1, orderEntity.getExecutionAttempts());
 
-        // 2. Simulate Retry (Second call)
+        // Симуляция повторной обработки (retry)
         reset(executionPort);
         when(lockService.getLockState(lockKey)).thenReturn("EXECUTED");
-        
+
         handler.consume(event);
 
-        // Then: placeOrder MUST NOT be called again
+        // placeOrder не вызывается повторно
         verify(executionPort, never()).placeOrder(any());
     }
 }

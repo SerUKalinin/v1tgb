@@ -31,11 +31,12 @@ public final class ApprovedOrder {
     private final String strategyId;
     private final Instant approvedAt;
     private final long riskStateVersion;
+    private final UUID executionId;
 
     // Package-private constructor to restrict creation to the risk package
     ApprovedOrder(UUID orderId, String clientOrderId, String symbol, OrderSide side, OrderType type, 
                   BigDecimal quantity, BigDecimal price, BigDecimal stopLoss, BigDecimal takeProfit,
-                  String strategyId, Instant approvedAt, long riskStateVersion) {
+                  String strategyId, Instant approvedAt, long riskStateVersion, UUID executionId) {
         this.orderId = orderId;
         this.clientOrderId = clientOrderId;
         this.symbol = symbol;
@@ -48,5 +49,5 @@ public final class ApprovedOrder {
         this.strategyId = strategyId;
         this.approvedAt = approvedAt;
         this.riskStateVersion = riskStateVersion;
-    }
-}
+        this.executionId = executionId;
+    }}
