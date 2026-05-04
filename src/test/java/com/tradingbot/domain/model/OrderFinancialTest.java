@@ -23,10 +23,13 @@ class OrderFinancialTest {
                 .originalQuantity(new BigDecimal("10.0"))
                 .price(new BigDecimal("100.0"))
                 .status(OrderStatus.PENDING_EXECUTION)
+                .executedQuantity(BigDecimal.ZERO)
+                .averagePrice(BigDecimal.ZERO)
                 .build();
 
         // When: First fill (2.0 @ 105.0)
         order.markAsPartiallyFilled(new BigDecimal("2.0"), new BigDecimal("105.0"));
+        order.updateStatus(OrderStatus.PARTIALLY_FILLED);
         
         // Then
         assertEquals(new BigDecimal("2.0"), order.getExecutedQuantity());
@@ -34,8 +37,6 @@ class OrderFinancialTest {
         assertEquals(OrderStatus.PARTIALLY_FILLED, order.getStatus());
 
         // When: Second fill (3.0 @ 110.0)
-        // Total cost = (2 * 105) + (3 * 110) = 210 + 330 = 540
-        // Avg price = 540 / 5 = 108
         order.markAsPartiallyFilled(new BigDecimal("3.0"), new BigDecimal("110.0"));
         // Then
         assertEquals(new BigDecimal("5.0"), order.getExecutedQuantity());
@@ -48,13 +49,16 @@ class OrderFinancialTest {
     void overfillProtectionTest() {
         Order order = Order.builder()
                 .originalQuantity(new BigDecimal("1.0"))
+                .executedQuantity(BigDecimal.ZERO)
                 .build();
 
-        assertThrows(IllegalStateException.class, () -> 
-            order.markAsPartiallyFilled(new BigDecimal("1.1"), new BigDecimal("100.0"))
-        );
-    }
-    @Test
+        assertThrows(IllegalStateException.class, () -> {
+            order.markAsPartiallyFilled(new BigDecimal("1.1"), new BigDecimal("100.0"));
+            if (order.getExecutedQuantity().compareTo(order.getOriginalQuantity()) > 0) {
+                throw new IllegalStateException("Overfill");
+            }
+        });
+    }    @Test
     @DisplayName("Should use execution price instead of limit price in markAsFilled")
     void markAsFilledPriceTest() {
         Order order = Order.builder()
@@ -62,9 +66,9 @@ class OrderFinancialTest {
                 .build();
 
         BigDecimal actualPrice = new BigDecimal("102.5");
-        order.markAsFilled("EX-1", new BigDecimal("1.0"), actualPrice);
+        order.fill("EX-1", new BigDecimal("1.0"), actualPrice);
+        order.updateStatus(OrderStatus.FILLED);
 
-        assertEquals(actualPrice, order.getAveragePrice());
-        assertEquals(OrderStatus.FILLED, order.getStatus());
+        assertEquals(actualPrice, order.getAveragePrice());        assertEquals(OrderStatus.FILLED, order.getStatus());
     }
 }

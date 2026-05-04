@@ -1,6 +1,7 @@
 package com.tradingbot.infrastructure.execution.exchange;
 
 import com.tradingbot.domain.execution.ExchangeOrderQueryService;
+import com.tradingbot.domain.model.ExecutionResult;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -30,5 +31,10 @@ public class ExchangeOrderQueryServiceImpl implements ExchangeOrderQueryService 
     public BigDecimal getAvailableBalance(String asset) {
         log.debug("[EXCHANGE-QUERY] Getting available balance for asset: {} (MOCK)", asset);
         return new BigDecimal("10000"); // Mock balance
+    }
+
+    @Override
+    public ExecutionResult getOrderStatus(String exchangeOrderId) {
+        throw new UnsupportedOperationException("Not implemented yet");
     }
 }

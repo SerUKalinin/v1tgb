@@ -28,10 +28,9 @@ public class RiskIdempotencyTest extends BaseIntegrationTest {
         RiskState initialState = RiskState.builder()
                 .balance(new BigDecimal("10000"))
                 .totalEquity(new BigDecimal("10000"))
-                .reserved(BigDecimal.ZERO)
+                .activeReservations(java.util.Map.of())
                 .halted(false)
-                .build();
-        riskEngine.initialize(initialState);
+                .build();        riskEngine.initialize(initialState);
     }
 
     @Test

@@ -13,9 +13,12 @@ public class TradeMapper {
     public TradeEntity toEntity(Trade domain) {
         if (domain == null) return null;
 
+        OrderEntity orderEntity = new OrderEntity();
+        orderEntity.setId(domain.getOrderId());
+
         return TradeEntity.builder()
                 .id(domain.getId())
-                .order(OrderEntity.builder().id(domain.getOrderId()).build())
+                .order(orderEntity)
                 .clientOrderId(domain.getClientOrderId())           // ✅ Теперь поле есть
                 .exchangeTradeId(domain.getExchangeTradeId())
                 .symbol(domain.getSymbol())
@@ -28,7 +31,6 @@ public class TradeMapper {
                 .executedAt(domain.getExecutedAt())
                 .build();
     }
-
     public Trade toDomain(TradeEntity entity) {
         if (entity == null) return null;
 

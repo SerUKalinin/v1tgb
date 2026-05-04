@@ -142,7 +142,6 @@ public class RiskStateReducer {
 
         return state.toBuilder()
                 .balance(MoneyMath.subtract(state.getBalance(), event.amount()))
-                .reserved(MoneyMath.add(state.getReserved(), event.amount()))
                 .activeReservations(Map.copyOf(newReservations))
                 .lastUpdateTimestamp(event.timestamp())
                 .build();
@@ -168,7 +167,6 @@ public class RiskStateReducer {
 
         return state.toBuilder()
                 .balance(MoneyMath.add(state.getBalance(), amountToRelease))
-                .reserved(MoneyMath.subtract(state.getReserved(), amountToRelease))
                 .activeReservations(Map.copyOf(newReservations))
                 .lastUpdateTimestamp(event.timestamp())
                 .build();

@@ -28,14 +28,20 @@ class RiskServiceTest {
     @Mock
     private RiskStateStore riskStateStore;
 
-    @InjectMocks
-    private RiskService riskService;
+    @Mock
+    private com.tradingbot.infrastructure.persistence.repository.RiskReservationLogRepository riskReservationLogRepository;
 
-    private RiskState createValidRiskState() {
+    @Mock
+    private com.tradingbot.domain.exchange.ExchangeFeasibilityPort feasibilityPort;
+
+    @Mock
+    private com.tradingbot.domain.exchange.OrderNormalizationService normalizationService;
+
+    @InjectMocks
+    private RiskService riskService;    private RiskState createValidRiskState() {
         return RiskState.builder()
                 .totalEquity(new BigDecimal("10000"))
                 .balance(new BigDecimal("10000"))
-                .reserved(BigDecimal.ZERO)
                 .halted(false)
                 .version(0L)
                 .build();
@@ -63,22 +69,34 @@ class RiskServiceTest {
 
     @Test
     void shouldReserveCapital() {
+        // Given
         RiskState initialState = createValidRiskState();
         RiskState newState = initialState.toBuilder()
-                .reserved(new BigDecimal("1000"))
+                .version(1L)
                 .build();
 
         when(riskRepository.get()).thenReturn(initialState);
-        when(riskRepository.isEventProcessed(any())).thenReturn(false);
         when(reducer.reduce(any(), any())).thenReturn(newState);
 
         UUID orderId = UUID.randomUUID();
-        RiskDecision decision = riskService.reserve(orderId, new BigDecimal("1000"));
+        BigDecimal amount = new BigDecimal("1000");
 
+        // When
+        RiskDecision decision = riskService.reserve(orderId, amount);
+
+        // Then
         assertThat(decision.isApproved()).isTrue();
-        verify(riskRepository, times(1)).markEventProcessed(any(), eq(newState), any());
+        
+        // Проверяем, что событие было помечено как обработанное
+        verify(riskRepository).markEventProcessed(any(), eq(newState), any());
+        
+        // Проверяем, что лог резервирования был сохранен с правильными данными
+        verify(riskReservationLogRepository).save(argThat(logEntity -> 
+            logEntity.getOrderId().equals(orderId) && 
+            logEntity.getAmount().compareTo(amount) == 0 &&
+            "RESERVE".equals(logEntity.getEventType())
+        ));
     }
-
     @Test
     void shouldThrowExceptionWhenRepositoryFails() {
         when(riskRepository.get()).thenThrow(new RuntimeException("DB Error"));

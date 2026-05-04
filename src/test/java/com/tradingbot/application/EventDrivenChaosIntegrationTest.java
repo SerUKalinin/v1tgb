@@ -52,20 +52,20 @@ public class EventDrivenChaosIntegrationTest extends BaseIntegrationTest {
         String externalTradeId = "ext-trade-123";
 
         // 0. Предварительно создаем ордер в БД, так как TradeService теперь требует его наличия
-        orderRepository.save(com.tradingbot.infrastructure.persistence.entity.OrderEntity.builder()
-                .id(orderId)
-                .clientOrderId("C-" + orderId)
-                .symbol(symbol)
-                .side(OrderSide.BUY)
-                .type(com.tradingbot.common.enums.OrderType.MARKET)
-                .strategyId(strategyId)
-                .quantity(new BigDecimal("1.0"))
-                .price(new BigDecimal("50000"))
-                .status("SENT")
-                .createdAt(java.time.Instant.now())
-                .build());        // 1. Публикуем событие исполнения ордера (BUY)
-        OrderFilledEvent buyEvent = new OrderFilledEvent(
-                orderId,
+        com.tradingbot.infrastructure.persistence.entity.OrderEntity orderEntity = new com.tradingbot.infrastructure.persistence.entity.OrderEntity();
+        orderEntity.setId(orderId);
+        orderEntity.setClientOrderId("C-" + orderId);
+        orderEntity.setSymbol(symbol);
+        orderEntity.setSide(OrderSide.BUY);
+        orderEntity.setType(com.tradingbot.common.enums.OrderType.MARKET);
+        orderEntity.setStrategyId(strategyId);
+        orderEntity.setQuantity(new BigDecimal("1.0"));
+        orderEntity.setPrice(new BigDecimal("50000"));
+        orderEntity.setStatus(com.tradingbot.common.enums.OrderStatus.EXECUTING);
+        orderEntity.setCreatedAt(java.time.Instant.now());
+        orderRepository.save(orderEntity);
+        // 1. Публикуем событие исполнения ордера (BUY)
+        OrderFilledEvent buyEvent = new OrderFilledEvent(                orderId,
                 externalTradeId,
                 symbol,
                 new BigDecimal("1.0"),

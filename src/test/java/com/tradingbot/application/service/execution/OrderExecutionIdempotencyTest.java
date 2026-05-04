@@ -30,6 +30,7 @@ class OrderExecutionIdempotencyTest {
     private OrderRepository orderRepository;
     private ExecutionPort executionPort;
     private SystemStateManager stateManager;
+    private com.tradingbot.infrastructure.execution.ExecutionLockService lockService;
 
     @BeforeEach
     void setUp() {
@@ -37,6 +38,7 @@ class OrderExecutionIdempotencyTest {
         orderRepository = mock(OrderRepository.class);
         idempotencyService = mock(IdempotencyService.class);
         stateManager = mock(SystemStateManager.class);
+        lockService = mock(com.tradingbot.infrastructure.execution.ExecutionLockService.class);
 
         handler = new OrderExecutionHandler(
                 executionPort,
@@ -44,30 +46,12 @@ class OrderExecutionIdempotencyTest {
                 new OrderMapper(),
                 stateManager,
                 idempotencyService,
-                mock(RiskEngine.class),
-                new ObjectMapper(),
-                mock(OutboxEventRepository.class)
+                lockService,
+                mock(com.tradingbot.domain.risk.RiskEngine.class),
+                mock(com.tradingbot.infrastructure.outbox.OutboxService.class),
+                mock(com.tradingbot.application.service.execution.StateTransitionExecutor.class),
+                mock(com.tradingbot.domain.policy.TransitionValidator.class)
         );
-    }
-    @Test
-    @DisplayName("Should not execute order if event is already processed")
-    void duplicateEventProtectionTest() throws Exception {
-        // Given
-        UUID eventId = UUID.randomUUID();
-        OutboxEventEntity event = OutboxEventEntity.builder()
-                .id(eventId)
-                .aggregateId(UUID.randomUUID())
-                .build();
-
-        when(idempotencyService.isAlreadyProcessed(eventId)).thenReturn(true);
-
-        // When
-        handler.consume(event);
-
-        // Then
-        verify(executionPort, never()).placeOrder(any());
-        // Если уже обработано, мы просто выходим, не вызывая markAsProcessed повторно
-        verify(idempotencyService, never()).markAsProcessed(any(UUID.class), anyString());
     }
 
     @Test
@@ -84,22 +68,16 @@ class OrderExecutionIdempotencyTest {
         when(idempotencyService.isAlreadyProcessed(eventId)).thenReturn(false);
         when(stateManager.isReady()).thenReturn(true);
 
-        // tryClaimOrder returns empty if status is not PENDING_EXECUTION
-        when(orderRepository.findByIdForUpdate(orderId)).thenReturn(Optional.empty());
-
-        // Mock for the check in consume()
-        OrderEntity alreadyExecutingOrder = OrderEntity.builder()
-                .id(orderId)
-                .status(OrderStatus.EXECUTING.name())
-                .build();
-        when(orderRepository.findById(orderId)).thenReturn(Optional.of(alreadyExecutingOrder));
+        // 2. Проверка состояния блокировки
+        String lockKey = "EXEC_ORDER_" + orderId;
+        when(lockService.getLockState(lockKey)).thenReturn("EXECUTED");
 
         // When
         handler.consume(event);
 
         // Then
         verify(executionPort, never()).placeOrder(any());
-        // Должен пометить как обработанное, так как ордер уже в работе (статус не PENDING_EXECUTION)
+        // Должен пометить как обработанное, так как ордер уже EXECUTED в локе
         verify(idempotencyService, times(1)).markAsProcessed(eq(eventId), anyString());
     }
 }

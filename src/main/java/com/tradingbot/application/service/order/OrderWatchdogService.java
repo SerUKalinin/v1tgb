@@ -29,10 +29,9 @@ public class OrderWatchdogService {
 
         // Ищем ордера, которые зависли в EXECUTING (уже ушли на биржу, но не подтверждены)
         List<OrderEntity> stuckOrders = orderRepository.findStuckOrders(
-                OrderStatus.EXECUTING.name(), 
+                OrderStatus.EXECUTING, 
                 threshold
         );
-
         if (!stuckOrders.isEmpty()) {
             log.warn("[WATCHDOG] Found {} stuck orders in EXECUTING state. Initiating reconciliation...", stuckOrders.size());
 
