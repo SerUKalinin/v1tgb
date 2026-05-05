@@ -1,7 +1,7 @@
 package com.tradingbot.application.service.risk;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.domain.risk.RiskState;
 import com.tradingbot.domain.risk.RiskStateReducer;

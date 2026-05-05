@@ -2,7 +2,7 @@ package com.tradingbot.application.bootstrap;
 
 import com.tradingbot.application.market.MarketDataService;
 import com.tradingbot.application.service.risk.RiskStateRecoveryService;
-import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.application.risk.RiskEngine;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;

@@ -1,5 +1,9 @@
-package com.tradingbot.domain.risk;
+package com.tradingbot.application.risk;
 
+import com.tradingbot.domain.risk.RiskDecision;
+import com.tradingbot.domain.risk.RiskEvent;
+import com.tradingbot.domain.risk.RiskService;
+import com.tradingbot.domain.risk.RiskState;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -7,8 +11,8 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * Фасад для работы с системой рисков.
- * Делегирует выполнение RiskService.
+ * Facade layer over RiskService.
+ * Used by application layer for risk operations.
  */
 @Component
 @RequiredArgsConstructor

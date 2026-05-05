@@ -1,5 +1,6 @@
 package com.tradingbot.domain.risk;
 
+import com.tradingbot.application.risk.DefaultRiskManager;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.SignalEvent;
 import org.junit.jupiter.api.Test;
@@ -14,19 +15,13 @@ import com.tradingbot.domain.exchange.ExchangeFeasibilityPort;
 import com.tradingbot.domain.exchange.OrderNormalizationService;
 import java.util.ArrayList;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 class RiskManagerConcurrencyTest {
 
     @Test
     void concurrentRiskCheckShouldBeThreadSafe() throws InterruptedException {
         RiskService riskService = mock(RiskService.class);
-        DefaultRiskManager riskManager = new DefaultRiskManager(
-                new ArrayList<>(),
-                riskService,
-                mock(ExchangeFeasibilityPort.class),
-                mock(OrderNormalizationService.class)
-        );
+        DefaultRiskManager riskManager = new DefaultRiskManager(riskService);
         ExecutorService executor = Executors.newFixedThreadPool(10);
         CountDownLatch latch = new CountDownLatch(10);
 

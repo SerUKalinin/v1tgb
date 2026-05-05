@@ -7,7 +7,7 @@ import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
-import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.infrastructure.execution.ExecutionLockService;
 import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxService;

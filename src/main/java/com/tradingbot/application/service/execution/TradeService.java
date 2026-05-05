@@ -4,7 +4,7 @@ import com.tradingbot.application.service.risk.EquityService;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Trade;
-import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.TradeEntity;

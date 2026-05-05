@@ -1,27 +1,21 @@
 package com.tradingbot.application.service.execution;
 
 import com.tradingbot.application.bootstrap.SystemStateManager;
-import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
-import com.tradingbot.domain.policy.OrderStateTransitionPolicy;
 import com.tradingbot.domain.policy.TransitionValidator;
-import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.infrastructure.execution.ExecutionLockService;
 import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import com.tradingbot.infrastructure.outbox.OutboxService;
-import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 

@@ -3,7 +3,7 @@ package com.tradingbot.application.market;
 import com.tradingbot.application.event.CandleTransitionDetector;
 import com.tradingbot.domain.model.Candle;
 import com.tradingbot.domain.model.CandleWindow;
-import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.infrastructure.client.binance.BinanceMarketDataClient;
 import lombok.RequiredArgsConstructor;

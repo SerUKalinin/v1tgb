@@ -1,37 +1,27 @@
-package com.tradingbot.domain.risk;
+package com.tradingbot.application.risk;
 
-import com.tradingbot.common.enums.OrderSide;
-import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.domain.exchange.*;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.Signal;
+import com.tradingbot.domain.risk.RiskDecision;
+import com.tradingbot.domain.risk.RiskManager;
+import com.tradingbot.domain.risk.RiskService;
+import com.tradingbot.domain.risk.RiskState;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.Instant;
-import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Implementation of RiskManager that acts as the Enforcement Gate.
  */
 @Slf4j
-@Service
 @RequiredArgsConstructor
 public class DefaultRiskManager implements RiskManager {
-    private final List<RiskRule> rules;
     private final RiskService riskService;
-    private final ExchangeFeasibilityPort feasibilityPort;
-    private final OrderNormalizationService normalizationService;
 
     @Override
     public Optional<Order> approveSignal(SignalEvent signal) {
@@ -89,14 +79,6 @@ public class DefaultRiskManager implements RiskManager {
             return minQty;
         }
         
-        return quantity;
-    }
-
-    private BigDecimal calculateQuantity(SignalEvent signal, RiskState state) {
-        // Переиспользуем логику для SignalEvent
-        Signal adapter = new Signal(signal.getSymbol(), signal.getStrategyId(), signal.getType(), signal.getPrice(), BigDecimal.ZERO);
-        return calculateQuantity(adapter, state);
-    }    private BigDecimal applyConstraints(BigDecimal quantity, String symbol) {
         return quantity;
     }
 }

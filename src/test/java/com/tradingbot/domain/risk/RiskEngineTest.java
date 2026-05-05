@@ -1,6 +1,6 @@
 package com.tradingbot.domain.risk;
 
-import org.junit.jupiter.api.BeforeEach;
+import com.tradingbot.application.risk.RiskEngine;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;

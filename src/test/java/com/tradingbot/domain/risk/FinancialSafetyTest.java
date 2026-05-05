@@ -1,10 +1,8 @@
 package com.tradingbot.domain.risk;
 
-import com.tradingbot.common.enums.SignalType;
-import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.application.risk.DefaultRiskManager;
+import com.tradingbot.application.risk.RiskStateStore;
 import com.tradingbot.domain.model.Order;
-import com.tradingbot.domain.exchange.ExchangeFeasibilityPort;
-import com.tradingbot.domain.exchange.OrderNormalizationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -30,12 +28,7 @@ class FinancialSafetyTest {
         reducer = new RiskStateReducer();
         riskService = mock(RiskService.class);
 
-        riskManager = new DefaultRiskManager(
-                Collections.emptyList(),
-                riskService,
-                mock(ExchangeFeasibilityPort.class),
-                mock(OrderNormalizationService.class)
-        );
+        riskManager = new DefaultRiskManager(riskService);
 
         RiskState initialState = RiskState.builder()
                 .totalEquity(new BigDecimal("10000"))

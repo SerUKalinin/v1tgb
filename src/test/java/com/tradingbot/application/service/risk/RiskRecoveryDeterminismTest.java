@@ -1,6 +1,6 @@
 package com.tradingbot.application.service.risk;
 
-import com.tradingbot.domain.risk.RiskState;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.infrastructure.persistence.entity.RiskReservationLogEntity;
 import com.tradingbot.infrastructure.persistence.repository.RiskReservationLogRepository;
 import org.junit.jupiter.api.Test;
@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class RiskRecoveryDeterminismTest {
 
     @Autowired
-    private com.tradingbot.domain.risk.RiskEngine riskEngine;
+    private RiskEngine riskEngine;
 
     @Autowired
     private RiskStateRecoveryService recoveryService;

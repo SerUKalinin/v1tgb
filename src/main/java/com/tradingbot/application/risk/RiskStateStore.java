@@ -1,19 +1,13 @@
-package com.tradingbot.domain.risk;
+package com.tradingbot.application.risk;
 
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.UnaryOperator;
 
 /**
  * Thread-safe atomic storage for RiskState.
  * Uses compare-and-set for lock-free updates.
  */
-import org.springframework.stereotype.Component;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.UnaryOperator;
+import com.tradingbot.domain.risk.RiskState;
 
-@Component
 public class RiskStateStore {
 
     private final AtomicReference<RiskState> globalCache = new AtomicReference<>(RiskState.empty());

@@ -1,23 +1,29 @@
-package com.tradingbot.infrastructure.persistence.repository;
+package com.tradingbot.infrastructure.persistence.adapter;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.domain.risk.RiskState;
 import com.tradingbot.domain.risk.RiskStatePort;
 import com.tradingbot.infrastructure.persistence.entity.RiskEventEntity;
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import com.tradingbot.infrastructure.persistence.mapper.RiskStateMapper;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tradingbot.infrastructure.persistence.repository.RiskEventRepository;
+import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Repository;
+import org.springframework.context.annotation.Primary;
+import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.UUID;
 
+@Component
 @RequiredArgsConstructor
+@Primary
 @Slf4j
-public class JpaRiskRepository implements RiskStatePort {
+public class RiskStateRepositoryAdapter implements RiskStatePort {
+
     private final RiskStateRepository riskStateRepository;
     private final RiskEventRepository eventRepository;
     private final RiskStateMapper riskStateMapper;
@@ -55,12 +61,11 @@ public class JpaRiskRepository implements RiskStatePort {
             return;
         }
 
-        // Increment version before saving
         long nextVersion = eventRepository.findMaxVersionByAggregateId(AGGREGATE_ID).orElse(0L) + 1;
         RiskState stateWithVersion = state.toBuilder().version(nextVersion).build();
-        
+
         save(stateWithVersion);
-        
+
         try {
             RiskEventEntity eventEntity = RiskEventEntity.builder()
                     .eventId(eventId)
@@ -73,7 +78,9 @@ public class JpaRiskRepository implements RiskStatePort {
         } catch (Exception e) {
             throw new RuntimeException("Failed to persist risk event", e);
         }
-    }    private RiskStateEntity loadOrInit() {
+    }
+
+    private RiskStateEntity loadOrInit() {
         return riskStateRepository.findByIdForUpdate(AGGREGATE_ID)
                 .orElseGet(() -> {
                     try {
@@ -84,14 +91,12 @@ public class JpaRiskRepository implements RiskStatePort {
                         newEntity.setHalted(false);
                         newEntity.setActiveReservations(new java.util.HashMap<>());
                         newEntity.setProcessedEventIds(new java.util.HashSet<>());
-                        
-                        // Ensure version is null for new entity to trigger INSERT
                         newEntity.setVersion(null);
-                        
                         return riskStateRepository.saveAndFlush(newEntity);
                     } catch (org.springframework.dao.DataIntegrityViolationException | org.springframework.orm.ObjectOptimisticLockingFailureException e) {
                         log.info("[RISK] Singleton entity already exists, reloading...");
                         return riskStateRepository.findByIdForUpdate(AGGREGATE_ID).orElseThrow();
                     }
                 });
-    }}
+    }
+}

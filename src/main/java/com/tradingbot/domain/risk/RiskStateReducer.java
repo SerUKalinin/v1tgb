@@ -13,7 +13,6 @@ import java.util.HashSet;
 
 import static com.tradingbot.domain.risk.RiskState.safeCompare;
 
-@Component
 @Slf4j
 public class RiskStateReducer {
 

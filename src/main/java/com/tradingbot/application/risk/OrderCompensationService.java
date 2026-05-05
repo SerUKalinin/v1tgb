@@ -1,4 +1,4 @@
-package com.tradingbot.domain.risk;
+package com.tradingbot.application.risk;
 
 import com.tradingbot.domain.model.Order;
 import lombok.RequiredArgsConstructor;
@@ -12,7 +12,6 @@ import java.math.BigDecimal;
  * Использует доменную модель Order для расчета неисполненных остатков.
  */
 @Slf4j
-@Service
 @RequiredArgsConstructor
 public class OrderCompensationService {
 
