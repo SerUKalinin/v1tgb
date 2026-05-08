@@ -48,9 +48,69 @@ class OrderMapperTest {
 
         // When: Domain -> Entity
         OrderEntity roundTripEntity = mapper.toEntity(domain);
-        // Then: Entity state is preserved (Symmetry)        assertEquals(originalEntity.getExecutedQuantity(), roundTripEntity.getExecutedQuantity(), "Executed quantity lost in toEntity");
+        // Then: Entity state is preserved (Symmetry)
+        assertEquals(originalEntity.getExecutedQuantity(), roundTripEntity.getExecutedQuantity(), "Executed quantity lost in toEntity");
         assertEquals(originalEntity.getAveragePrice(), roundTripEntity.getAveragePrice(), "Average price lost in toEntity");
         assertEquals(originalEntity.getStatus(), roundTripEntity.getStatus());
         assertEquals(originalEntity.getQuantity(), roundTripEntity.getQuantity());
+    }
+
+    @Test
+    void shouldKeepExecutionOwnershipDuringMapping() {
+        UUID executionId = UUID.randomUUID();
+        long version = 17L;
+
+        OrderEntity source = new OrderEntity();
+        source.setId(UUID.randomUUID());
+        source.setClientOrderId("CL-OWN");
+        source.setSymbol("ETHUSDT");
+        source.setSide(OrderSide.SELL);
+        source.setType(OrderType.LIMIT);
+        source.setQuantity(new BigDecimal("0.5"));
+        source.setPrice(new BigDecimal("2500"));
+        source.setStatus(OrderStatus.PENDING_EXECUTION);
+        source.setStrategyId("STRAT-OWN");
+        source.setExecutionId(executionId);
+        source.setVersion(version);
+
+        Order domain = mapper.toDomain(source);
+        assertEquals(executionId, domain.getExecutionId());
+        assertEquals(version, domain.getVersion());
+
+        OrderEntity target = mapper.toEntity(domain);
+        assertEquals(executionId, target.getExecutionId());
+        assertEquals(version, target.getVersion());
+    }
+
+    @Test
+    void updateEntityShouldPreserveOwnershipState() {
+        UUID executionId = UUID.randomUUID();
+        long version = 99L;
+
+        Order order = Order.builder()
+                .id(UUID.randomUUID())
+                .clientOrderId("OWN-UPDATE")
+                .symbol("SOLUSDT")
+                .side(OrderSide.BUY)
+                .type(OrderType.LIMIT)
+                .originalQuantity(new BigDecimal("3"))
+                .price(new BigDecimal("15"))
+                .strategyId("STRAT-UPDATE")
+                .executionId(executionId)
+                .version(version)
+                .status(OrderStatus.EXECUTING)
+                .executedQuantity(BigDecimal.ZERO)
+                .averagePrice(BigDecimal.ZERO)
+                .build();
+
+        OrderEntity entity = new OrderEntity();
+        entity.setExecutionId(UUID.randomUUID());
+        entity.setVersion(5L);
+
+        mapper.updateEntity(order, entity);
+
+        assertEquals(executionId, entity.getExecutionId());
+        assertEquals(version, entity.getVersion());
+        assertEquals(order.getStatus(), entity.getStatus());
     }
 }

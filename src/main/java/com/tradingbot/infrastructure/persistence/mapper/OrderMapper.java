@@ -29,6 +29,9 @@ public class OrderMapper {
                 .price(entity.getPrice())
                 .strategyId(entity.getStrategyId())
                 .status(entity.getStatus())
+                .executionId(entity.getExecutionId())
+                .executionStartedAt(entity.getExecutionStartedAt())
+                .version(entity.getVersion() != null ? entity.getVersion() : 0L)
                 .executedQuantity(entity.getExecutedQuantity())
                 .averagePrice(entity.getAveragePrice())
                 .build();
@@ -51,14 +54,17 @@ public class OrderMapper {
         entity.setExecutedQuantity(order.getExecutedQuantity());
         entity.setAveragePrice(order.getAveragePrice());
         entity.setStrategyId(order.getStrategyId());
-        entity.setStatus(order.getStatus());
+        entity.setExecutionId(order.getExecutionId());
+        entity.setVersion(order.getVersion());
         return entity;
     }
+
 
     public void updateEntity(Order order, OrderEntity entity) {
         if (order == null || entity == null) return;
         entity.setStatus(order.getStatus());
         entity.setExchangeOrderId(order.getExchangeOrderId());
+        entity.setExecutionId(order.getExecutionId());
         entity.setSymbol(order.getSymbol());
         entity.setSide(order.getSide());
         entity.setType(order.getType());
@@ -70,4 +76,6 @@ public class OrderMapper {
         entity.setAveragePrice(order.getAveragePrice());
 
         entity.setStrategyId(order.getStrategyId());
-    }}
+        entity.setVersion(order.getVersion());
+    }
+}

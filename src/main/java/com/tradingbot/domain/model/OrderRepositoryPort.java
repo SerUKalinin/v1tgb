@@ -1,10 +1,18 @@
 package com.tradingbot.domain.model;
 
+import com.tradingbot.common.enums.OrderStatus;
+
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 public interface OrderRepositoryPort {
     Optional<Order> claimForExecution(UUID orderId);
-    void save(Order order);
+    Optional<Order> claimForExecutionInCurrentTransaction(UUID orderId);
+    Optional<Order> claimForReconciliation(UUID orderId);
     Optional<Order> findById(UUID orderId);
+    List<Order> findStuckOrdersInStatuses(Set<OrderStatus> statuses, Instant threshold);
+    void save(Order order);
 }

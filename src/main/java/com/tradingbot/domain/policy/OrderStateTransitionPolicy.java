@@ -2,6 +2,7 @@ package com.tradingbot.domain.policy;
 
 import com.tradingbot.common.enums.OrderStatus;
 
+import com.tradingbot.domain.exception.InvalidOrderTransitionException;
 import java.time.Instant;
 import java.util.*;
 
@@ -13,16 +14,17 @@ public class OrderStateTransitionPolicy {
         // NEW -> PENDING_EXECUTION (одобрен), REJECTED (отклонен рисками)
         STATE_GRAPH.put(OrderStatus.NEW, Set.of(OrderStatus.PENDING_EXECUTION, OrderStatus.REJECTED));
 
-        // PENDING_EXECUTION -> EXECUTING (захват), CANCELED (отмена до отправки), REJECTED (таймаут)
-        STATE_GRAPH.put(OrderStatus.PENDING_EXECUTION, Set.of(OrderStatus.EXECUTING, OrderStatus.CANCELED, OrderStatus.REJECTED));
+        // PENDING_EXECUTION -> EXECUTING (захват), CANCELED (отмена до отправки), UNKNOWN (timeout / ambiguity)
+        STATE_GRAPH.put(OrderStatus.PENDING_EXECUTION, Set.of(OrderStatus.EXECUTING, OrderStatus.CANCELED, OrderStatus.UNKNOWN));
 
-        // EXECUTING -> EXECUTING (идемпотентность), SENT_TO_EXCHANGE, FILLED, PARTIALLY_FILLED, REJECTED, CANCELED
+        // EXECUTING -> EXECUTING (идемпотентность), SENT_TO_EXCHANGE, FILLED, PARTIALLY_FILLED, REJECTED, UNKNOWN, CANCELED
         STATE_GRAPH.put(OrderStatus.EXECUTING, Set.of(
             OrderStatus.EXECUTING, 
             OrderStatus.SENT_TO_EXCHANGE, 
             OrderStatus.FILLED, 
             OrderStatus.PARTIALLY_FILLED, 
             OrderStatus.REJECTED, 
+            OrderStatus.UNKNOWN,
             OrderStatus.CANCELED
         ));
 
@@ -40,6 +42,13 @@ public class OrderStateTransitionPolicy {
             OrderStatus.FILLED, 
             OrderStatus.CANCELED, 
             OrderStatus.REJECTED
+        ));
+
+        // UNKNOWN -> FILLED, REJECTED, EXECUTING (retry / recovery)
+        STATE_GRAPH.put(OrderStatus.UNKNOWN, Set.of(
+            OrderStatus.FILLED,
+            OrderStatus.REJECTED,
+            OrderStatus.EXECUTING
         ));
 
         // TERMINAL STATES (пустые сеты - переходы запрещены)
@@ -82,6 +91,7 @@ public class OrderStateTransitionPolicy {
         return switch (resultStatus) {
             case SUCCESS -> OrderStatus.FILLED;
             case REJECTED -> OrderStatus.REJECTED;
+            case TIMEOUT -> OrderStatus.UNKNOWN;
             default -> null;
         };
     }
@@ -106,10 +116,11 @@ public class OrderStateTransitionPolicy {
         return status == OrderStatus.PENDING_EXECUTION;
     }
 
-    public static boolean isActive(OrderStatus status) {        return !isTerminal(status) && status != OrderStatus.NEW;
+    public static boolean isActive(OrderStatus status) {
+        return !isTerminal(status) && status != OrderStatus.NEW;
     }
     public static Set<OrderStatus> getReconcilableStatuses() {
-        return Set.of(OrderStatus.PENDING_EXECUTION, OrderStatus.EXECUTING, OrderStatus.SENT_TO_EXCHANGE, OrderStatus.PARTIALLY_FILLED);
+        return Set.of(OrderStatus.PENDING_EXECUTION, OrderStatus.EXECUTING, OrderStatus.SENT_TO_EXCHANGE, OrderStatus.PARTIALLY_FILLED, OrderStatus.UNKNOWN);
     }
 
     public static boolean isReconcilable(OrderStatus status) {

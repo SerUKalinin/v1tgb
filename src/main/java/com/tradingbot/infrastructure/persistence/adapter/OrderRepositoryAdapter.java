@@ -1,20 +1,25 @@
 package com.tradingbot.infrastructure.persistence.adapter;
 
 import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.domain.exception.StaleOrderStateException;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
+import jakarta.persistence.OptimisticLockException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
@@ -25,8 +30,8 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
     private final TransitionValidator transitionValidator;
 
     @Override
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public Optional<Order> claimForExecution(UUID orderId) {
+    @Transactional(propagation = Propagation.REQUIRED)
+    public Optional<Order> claimForExecutionInCurrentTransaction(UUID orderId) {
         return orderRepository.findByIdForUpdate(orderId).flatMap(entity -> {
             if (transitionValidator.isTerminal(entity.getStatus())) {
                 return Optional.empty();
@@ -45,6 +50,7 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
             entity.setExecutionAttempts(entity.getExecutionAttempts() + 1);
             entity.setUpdatedAt(Instant.now());
             
+            order.assignExecutionOwner(entity.getExecutionId());
             orderMapper.updateEntity(order, entity);
             orderRepository.saveAndFlush(entity);
 
@@ -54,8 +60,38 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
 
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void save(Order order) {
-        OrderEntity entity = orderRepository.findByIdForUpdate(order.getId())
+    public Optional<Order> claimForExecution(UUID orderId) {
+        return claimForExecutionInCurrentTransaction(orderId);
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Optional<Order> claimForReconciliation(UUID orderId) {
+        return orderRepository.findByIdForUpdate(orderId).flatMap(entity -> {
+            if (transitionValidator.isTerminal(entity.getStatus())) {
+                return Optional.empty();
+            }
+
+            // Reconciliation разрешена только если ордер НЕ находится в активном исполнении
+            // или если исполнение зависло (stale)
+            boolean isExecuting = entity.getStatus() == OrderStatus.EXECUTING;
+            boolean isStale = transitionValidator.isStale(entity.getStatus(), entity.getExecutionStartedAt());
+
+            if (isExecuting && !isStale) {
+                return Optional.empty();
+            }
+
+            Order order = orderMapper.toDomain(entity);
+            
+            // Reconciliation НЕ меняет executionId, она использует существующий или работает без него
+            // Но она должна гарантировать, что никто другой не мутирует ордер сейчас
+            return Optional.of(order);
+        });
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void save(Order order) {        OrderEntity entity = orderRepository.findByIdForUpdate(order.getId())
                 .orElseThrow(() -> new IllegalStateException("Order lost: " + order.getId()));
 
         orderMapper.updateEntity(order, entity);
@@ -66,5 +102,13 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
     @Override
     public Optional<Order> findById(UUID orderId) {
         return orderRepository.findById(orderId).map(orderMapper::toDomain);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<Order> findStuckOrdersInStatuses(Set<OrderStatus> statuses, Instant threshold) {
+        return orderRepository.findStuckOrdersInStatuses(statuses, threshold).stream()
+                .map(orderMapper::toDomain)
+                .collect(Collectors.toList());
     }
 }

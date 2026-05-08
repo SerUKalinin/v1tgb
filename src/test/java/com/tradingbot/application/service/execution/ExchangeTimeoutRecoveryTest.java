@@ -52,33 +52,39 @@ class ExchangeTimeoutRecoveryTest {
     }
 
     @Test
-    @DisplayName("Should recover and mark FILLED if exchange timed out but order was actually placed")
     void recoveryFromTimeoutTest() throws Exception {
         UUID orderId = UUID.randomUUID();
         String clientOrderId = "CL-" + orderId;
+
         Order order = Order.builder()
                 .id(orderId)
                 .clientOrderId(clientOrderId)
-                .status(OrderStatus.PENDING_EXECUTION)
+                .status(OrderStatus.EXECUTING) // 🔥 FIX: должен быть EXECUTING
                 .build();
 
-        when(orderRepository.claimForExecution(orderId)).thenReturn(Optional.of(order));
+        when(orderRepository.claimForExecution(orderId))
+                .thenReturn(Optional.of(order));
 
-        // Симулируем, что лок уже есть (восстановление)
-        when(lockService.tryEnterExecuting(any())).thenReturn(false);
-        when(lockService.getLockState(any())).thenReturn("PENDING");
+        // recovery branch
+        when(lockService.tryEnterExecuting(any()))
+                .thenReturn(false);
 
-        // Биржа подтверждает исполнение
-        when(executionPort.getOrderStatus(clientOrderId)).thenReturn(
-                ExecutionResult.builder()
+        when(lockService.getLockState(any()))
+                .thenReturn("PENDING");
+
+        when(executionPort.getOrderStatus(clientOrderId))
+                .thenReturn(ExecutionResult.builder()
                         .status(ExecutionResult.Status.SUCCESS)
                         .exchangeOrderId("EX-123")
                         .executedQty(BigDecimal.ONE)
                         .executedPrice(new BigDecimal("50000"))
+                        .build());
+
+        handler.consume(
+                OutboxEventEntity.builder()
+                        .aggregateId(orderId)
                         .build()
         );
-
-        handler.consume(OutboxEventEntity.builder().aggregateId(orderId).build());
 
         verify(executionPort, never()).placeOrder(any());
         verify(lockService).markExecuted(any());

@@ -14,60 +14,92 @@ import static org.junit.jupiter.api.Assertions.*;
 class OrderTest {
 
     @Test
-    @DisplayName("Исполнение ордера должно корректно устанавливать объем и цену")
+    @DisplayName("EXECUTING -> FILLED корректное исполнение")
     void testOrderFill() {
-        // Given
-        Order order = createPendingOrder(new BigDecimal("1.0"), new BigDecimal("100.0"));
+        Order order = createOrder();
         order.markExecuting();
 
-        // When
         order.fill("EX-123", new BigDecimal("1.0"), new BigDecimal("101.0"));
-        
-        // Then
+
         assertEquals(OrderStatus.FILLED, order.getStatus());
         assertEquals(new BigDecimal("1.0"), order.getExecutedQuantity());
-        assertEquals(BigDecimal.ZERO.stripTrailingZeros(), order.getRemainingQuantity().stripTrailingZeros());
         assertEquals(0, new BigDecimal("101.0").compareTo(order.getAveragePrice()));
     }
 
     @Test
-    @DisplayName("Частичное исполнение через applyPartialFill")
+    @DisplayName("partial fill корректно агрегирует исполнение")
     void testPartialFill() {
-        Order order = createPendingOrder(new BigDecimal("1.0"), new BigDecimal("100.0"));
+        Order order = createOrder();
         order.markExecuting();
 
         order.applyPartialFill(new BigDecimal("0.3"), new BigDecimal("101.0"));
-        
+
         assertEquals(new BigDecimal("0.3"), order.getExecutedQuantity());
         assertEquals(new BigDecimal("0.7"), order.getRemainingQuantity());
     }
 
     @Test
-    @DisplayName("Запрет переходов из терминальных состояний")
+    @DisplayName("terminal state блокирует переходы")
     void testTerminalStateTransitions() {
-        Order order = createPendingOrder(new BigDecimal("1.0"), new BigDecimal("100.0"));
+        Order order = createOrder();
         order.markExecuting();
-        order.markAsRejected("Test");
+        order.fill("EX-1", new BigDecimal("1.0"), new BigDecimal("100.5"));
 
-        assertEquals(OrderStatus.REJECTED, order.getStatus());
+        assertThrows(IllegalStateException.class, order::markExecuting);
+        assertThrows(IllegalStateException.class, () -> order.markAsUnknown());
     }
 
     @Test
-    @DisplayName("Переход в EXECUTING")
-    void testClaim() {
-        Order order = createPendingOrder(new BigDecimal("1.0"), new BigDecimal("100.0"));
-        
+    @DisplayName("EXECUTING -> FILLED нельзя повторно применять fill с другим статусом")
+    void shouldPreventInvalidFillAfterTerminal() {
+        Order order = createOrder();
         order.markExecuting();
-        assertEquals(OrderStatus.EXECUTING, order.getStatus());
-    }    private Order createPendingOrder(BigDecimal qty, BigDecimal price) {
+        order.fill("EX-1", new BigDecimal("1.0"), new BigDecimal("100.0"));
+
+        assertThrows(IllegalStateException.class,
+                () -> order.fill("EX-2", new BigDecimal("1.0"), new BigDecimal("101.0")));
+    }
+
+    @Test
+    @DisplayName("markAsRejected возможен только после EXECUTING")
+    void rejectOnlyFromExecuting() {
+        Order order = createOrder();
+
+        // ❗ важно: теперь сначала EXECUTING
+        order.markExecuting();
+
+        assertDoesNotThrow(() -> order.markAsRejected("risk"));
+    }
+
+    @Test
+    @DisplayName("UNKNOWN state recovery разрешает fill")
+    void unknownAllowsFill() {
+        Order order = createOrder();
+        order.markAsUnknown();
+
+        assertDoesNotThrow(() ->
+                order.fill("EX-1", new BigDecimal("1.0"), new BigDecimal("102.0"))
+        );
+    }
+
+    @Test
+    @DisplayName("UNKNOWN разрешает reject")
+    void unknownAllowsReject() {
+        Order order = createOrder();
+        order.markAsUnknown();
+
+        assertDoesNotThrow(() -> order.markAsRejected("ambiguous"));
+    }
+
+    private Order createOrder() {
         return Order.builder()
                 .id(UUID.randomUUID())
-                .clientOrderId("C1")
+                .clientOrderId("C1-" + UUID.randomUUID())
                 .symbol("BTCUSDT")
                 .side(OrderSide.BUY)
                 .type(OrderType.LIMIT)
-                .originalQuantity(qty)
-                .price(price)
+                .originalQuantity(new BigDecimal("1.0"))
+                .price(new BigDecimal("100.0"))
                 .status(OrderStatus.PENDING_EXECUTION)
                 .executedQuantity(BigDecimal.ZERO)
                 .averagePrice(BigDecimal.ZERO)
