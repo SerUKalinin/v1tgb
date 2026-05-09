@@ -21,4 +21,5 @@ public class OrderEventPayload {
     String status;
     Instant timestamp;
     String strategyId;
+    String signalId;
 }

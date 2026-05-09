@@ -16,10 +16,10 @@ import java.util.UUID;
 @Table(name = "orders",
         indexes = {
                 @Index(name = "idx_orders_client_order_id", columnList = "client_order_id"),
-                @Index(name = "idx_orders_strategy_id", columnList = "strategy_id")
+                @Index(name = "idx_orders_strategy_id", columnList = "strategy_id"),
+                @Index(name = "idx_orders_signal_id", columnList = "signal_id", unique = true)
         }
-)
-@Getter
+)@Getter
 @Setter
 @NoArgsConstructor(access = AccessLevel.PUBLIC)
 @AllArgsConstructor(access = AccessLevel.PACKAGE)
@@ -63,6 +63,9 @@ public class OrderEntity {
 
     @Column(name = "strategy_id", nullable = false)
     private String strategyId;
+
+    @Column(name = "signal_id", nullable = false, updatable = false)
+    private String signalId;
 
     @Column(name = "execution_id")
     private UUID executionId;

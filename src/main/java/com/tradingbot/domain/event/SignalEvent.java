@@ -7,12 +7,15 @@ import lombok.AllArgsConstructor;
 import lombok.NoArgsConstructor;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.UUID;
 
 @Data
 @Builder
 @AllArgsConstructor
-@NoArgsConstructor
+@NoArgsConstructor(force = true)
 public class SignalEvent {
+    @Builder.Default
+    private final String signalId = UUID.randomUUID().toString();
     private String symbol;
     private SignalType type;
     private BigDecimal price;
@@ -54,3 +57,5 @@ public class SignalEvent {
         return strategyId;
     }
 }
+
+

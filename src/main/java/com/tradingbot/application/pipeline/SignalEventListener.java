@@ -1,9 +1,11 @@
 package com.tradingbot.application.pipeline;
 
-import com.tradingbot.application.service.order.OrderApplicationService;
+import com.tradingbot.application.service.execution.SignalExecutionFacade;
 import com.tradingbot.application.service.strategy.SignalRouter;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.domain.execution.AlreadyClaimedException;
+import com.tradingbot.tracing.ExecutionLogger;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
@@ -14,28 +16,30 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class SignalEventListener {
 
-    private final OrderApplicationService orderApplicationService;
+    private final SignalExecutionFacade signalExecutionFacade;
     private final SystemStateManager stateManager;
-    private final SignalRouter signalRouter;
 
     @EventListener
     public void onSignal(SignalEvent signal) {
+
+        log.info("[TRACE_FLOW] ENTER SignalEventListener.onSignal for {}", signal.getSignalId());
+
         if (!stateManager.isReady()) {
-            log.warn("[SIGNAL] System not ready. Ignoring signal for {}", signal.getSymbol());
+            log.warn("[TRACE_FLOW] EXIT SignalEventListener - System not ready. State: {}", stateManager.getState());
             return;
         }
 
-        log.info("[SIGNAL] Received signal event for symbol: {}", signal.getSymbol());        
-        
-        // 1. Маршрутизация (уведомления и т.д.)
-        signalRouter.route(signal);
-
-        // 2. Обработка сигнала
         try {
-            orderApplicationService.onSignalReceived(signal);
+            signalExecutionFacade.execute(signal);
+
+            log.info("[TRACE_FLOW] EXIT SignalEventListener.onSignal - Success");
+
+        } catch (AlreadyClaimedException e) {
+            log.warn("[TRACE_FLOW] IDEMPOTENT_SKIP: Signal {} already claimed", signal.getSignalId());
+            log.info("[TRACE_FLOW] EXIT SignalEventListener.onSignal - Idempotent skip");
+
         } catch (Exception e) {
-            log.error("[SIGNAL] Error processing signal for {}: {}", 
-                    signal.getSymbol(), e.getMessage());
+            log.error("[TRACE_FLOW] EXIT SignalEventListener.onSignal - FAILED", e);
         }
     }
 }

@@ -6,6 +6,8 @@ import com.tradingbot.domain.risk.RiskReservationLogPort;
 import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.domain.risk.RiskStatePort;
 import com.tradingbot.domain.risk.RiskStateReducer;
+import com.tradingbot.infrastructure.outbox.OutboxService;
+import com.tradingbot.tracing.ExecutionLogger;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -23,14 +25,18 @@ public class RiskDomainConfig {
             RiskStateReducer reducer,
             RiskReservationLogPort logPort,
             ExchangeFeasibilityPort feasibilityPort,
-            OrderNormalizationService normalizationService
+            OrderNormalizationService normalizationService,
+            ExecutionLogger executionLogger,
+            OutboxService outboxService
     ) {
         return new RiskService(
                 port,
                 reducer,
                 logPort,
                 feasibilityPort,
-                normalizationService
+                normalizationService,
+                executionLogger,
+                outboxService
         );
     }
 }

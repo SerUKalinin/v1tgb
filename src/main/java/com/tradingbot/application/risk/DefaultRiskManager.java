@@ -7,6 +7,10 @@ import com.tradingbot.domain.risk.RiskDecision;
 import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.domain.risk.RiskState;
+import com.tradingbot.tracing.ExecutionEventType;
+import com.tradingbot.tracing.ExecutionLogFactory;
+import com.tradingbot.tracing.ExecutionLogger;
+import com.tradingbot.tracing.ExecutionStateMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -22,11 +26,19 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class DefaultRiskManager implements RiskManager {
     private final RiskService riskService;
+    private final ExecutionLogger executionLogger;
 
     @Override
     public Optional<Order> approveSignal(SignalEvent signal) {
         // 1. Переносим принятие решения в RiskService, который обеспечит DB Lock
-        return riskService.evaluateAndReserve(signal);
+        Optional<Order> approved = riskService.evaluateAndReserve(signal);
+        approved.ifPresent(order -> executionLogger.log(ExecutionLogFactory.from(
+                order,
+                ExecutionEventType.RISK_APPROVED,
+                ExecutionStateMapper.toContractState(order.getStatus()),
+                "Risk approved for signal " + signal.getSymbol()
+        )));
+        return approved;
     }
 
     @Override

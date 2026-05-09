@@ -28,6 +28,7 @@ public class OrderMapper {
                 .originalQuantity(entity.getQuantity())
                 .price(entity.getPrice())
                 .strategyId(entity.getStrategyId())
+                .signalId(entity.getSignalId())
                 .status(entity.getStatus())
                 .executionId(entity.getExecutionId())
                 .executionStartedAt(entity.getExecutionStartedAt())
@@ -54,6 +55,7 @@ public class OrderMapper {
         entity.setExecutedQuantity(order.getExecutedQuantity());
         entity.setAveragePrice(order.getAveragePrice());
         entity.setStrategyId(order.getStrategyId());
+        entity.setSignalId(order.getSignalId());
         entity.setExecutionId(order.getExecutionId());
         entity.setVersion(order.getVersion());
         return entity;
@@ -76,6 +78,7 @@ public class OrderMapper {
         entity.setAveragePrice(order.getAveragePrice());
 
         entity.setStrategyId(order.getStrategyId());
+        entity.setSignalId(order.getSignalId());
         entity.setVersion(order.getVersion());
     }
 }

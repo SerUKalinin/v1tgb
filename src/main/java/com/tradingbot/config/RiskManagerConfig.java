@@ -3,6 +3,7 @@ package com.tradingbot.config;
 import com.tradingbot.application.risk.DefaultRiskManager;
 import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.domain.risk.RiskService;
+import com.tradingbot.tracing.ExecutionLogger;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -10,7 +11,13 @@ import org.springframework.context.annotation.Configuration;
 public class RiskManagerConfig {
 
     @Bean
-    public RiskManager riskManager(RiskService riskService) {
-        return new DefaultRiskManager(riskService);
+    public RiskManager riskManager(
+            RiskService riskService,
+            ExecutionLogger executionLogger
+    ) {
+        return new DefaultRiskManager(
+                riskService,
+                executionLogger
+        );
     }
 }

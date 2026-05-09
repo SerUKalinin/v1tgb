@@ -60,7 +60,17 @@ public class OutboxEventEntity {
     @Column(name = "next_attempt_at")
     private Instant nextAttemptAt;
 
-    @Column(name = "attempt_count", nullable = false)    private int attemptCount;
+    @Column(name = "claimed_by")
+    private String claimedBy;
+
+    @Column(name = "claimed_at")
+    private Instant claimedAt;
+
+    @Column(name = "lease_until")
+    private Instant leaseUntil;
+
+    @Column(name = "attempt_count", nullable = false)
+    private int attemptCount;
 
     @PrePersist
     protected void onCreate() {

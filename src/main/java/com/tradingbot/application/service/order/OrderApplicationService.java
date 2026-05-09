@@ -1,13 +1,17 @@
 package com.tradingbot.application.service.order;
 
 import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.domain.risk.RiskManager;
 import com.tradingbot.domain.event.OrderEventPayload;
 import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
+import com.tradingbot.tracing.ExecutionEventType;
+import com.tradingbot.tracing.ExecutionLogFactory;
+import com.tradingbot.tracing.ExecutionLogger;
+import com.tradingbot.tracing.ExecutionStateMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -22,8 +26,9 @@ import java.util.Optional;
 public class OrderApplicationService {
     private final OrderRepository orderRepository;
     private final OrderMapper orderMapper;
-    private final RiskManager riskManager;
+    private final RiskService riskService;
     private final OutboxService outboxService;
+    private final ExecutionLogger executionLogger;
 
     @Transactional
     public void onSignalReceived(SignalEvent signal) {
@@ -32,18 +37,26 @@ public class OrderApplicationService {
 
     @Transactional
     public void createOrder(SignalEvent signal) {
-        // 1. Risk Check
-        Optional<Order> approved = riskManager.approveSignal(signal);
-        if (approved.isEmpty()) return;
+        log.info("[TRACE_FLOW] ENTER OrderApplicationService.createOrder for signal: {}", signal.getSignalId());
+        log.info("[TRACE_FLOW] [RISK_STARTED] signal={}", signal.getSignalId());
 
-        Order order = approved.get();
+        Optional<Order> orderOpt = riskService.evaluateAndReserve(signal);
 
-        // 2. Save Entity
+        if (orderOpt.isEmpty()) {
+            log.warn("[TRACE_FLOW] EXIT - ORDER_REJECTED: Risk or Feasibility check failed for signal {}", signal.getSignalId());
+            return;
+        }
+
+        Order order = orderOpt.get();
+        log.info("[TRACE_FLOW] [RISK_COMPLETED] orderId={} signalId={}", order.getId(), signal.getSignalId());
+        log.info("[TRACE_FLOW] Order approved and capital reserved: {}", order.getId());
+
         OrderEntity entity = orderMapper.toEntity(order);
         entity.setCreatedAt(Instant.now());
         orderRepository.save(entity);
+        log.info("[TRACE_FLOW] [ORDER_PERSISTED] orderId={} signalId={}", order.getId(), signal.getSignalId());
+        log.info("[TRACE_FLOW] Order entity persisted");
 
-        // 3. Save Outbox Event using stable DTO
         OrderEventPayload payload = OrderEventPayload.builder()
                 .orderId(order.getId())
                 .clientOrderId(order.getClientOrderId())
@@ -53,9 +66,19 @@ public class OrderApplicationService {
                 .status(order.getStatus().name())
                 .timestamp(Instant.now())
                 .strategyId(order.getStrategyId())
+                .signalId(order.getSignalId())
                 .build();
 
         outboxService.publishEvent(order.getId(), "ORDER", "ORDER_CREATED", payload);
+        log.info("[TRACE_FLOW] Outbox event published");
 
-        log.info("[FINANCIAL-CORE] Order created and outbox saved: {}", order.getId());
-    }}
+        executionLogger.log(ExecutionLogFactory.from(
+                order,
+                ExecutionEventType.ORDER_CREATED,
+                ExecutionStateMapper.toContractState(order.getStatus()),
+                "Order created from signal " + signal.getSymbol()
+        ));
+
+        log.info("[TRACE_FLOW] EXIT - ORDER_CREATED: {} for signal {}", order.getId(), signal.getSignalId());
+    }
+}

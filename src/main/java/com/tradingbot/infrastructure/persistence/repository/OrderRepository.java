@@ -22,7 +22,7 @@ import java.util.UUID;
 public interface OrderRepository extends JpaRepository<OrderEntity, UUID> {
     List<OrderEntity> findBySymbol(String symbol);
     Optional<OrderEntity> findByClientOrderId(String clientOrderId);
-
+    boolean existsBySignalId(String signalId);
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @QueryHints({@QueryHint(name = "jakarta.persistence.lock.timeout", value = "-2")})
     @Query("SELECT o FROM OrderEntity o WHERE o.id = :id")

@@ -14,6 +14,10 @@ import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
+import com.tradingbot.tracing.ExecutionEventType;
+import com.tradingbot.tracing.ExecutionLogFactory;
+import com.tradingbot.tracing.ExecutionLogger;
+import com.tradingbot.tracing.ExecutionStateMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -36,6 +40,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
     private final RiskEngine riskEngine;
     private final OutboxService outboxService;
     private final TransitionValidator transitionValidator;
+    private final com.tradingbot.tracing.ExecutionLogger executionLogger;
 
     @Override
     public boolean supports(String eventType) {
@@ -53,6 +58,13 @@ public class OrderExecutionHandler implements OutboxConsumer {
         Order order = orderOpt.get();
         UUID executionId = order.getExecutionId();
         String lockKey = "EXEC_ORDER_" + order.getId();
+
+        executionLogger.log(ExecutionLogFactory.from(
+                order,
+                ExecutionEventType.EXECUTION_START,
+                ExecutionStateMapper.toContractState(order.getStatus()),
+                "Order claimed and execution starting"
+        ));
 
         // PHASE 2: EXTERNAL IO (NO TX)
         ExecutionResult result;
@@ -73,7 +85,15 @@ public class OrderExecutionHandler implements OutboxConsumer {
             log.error("[EXECUTION-COMMIT-ERROR] order {}. Critical inconsistency risk.", order.getId(), e);
             throw e;
         }
+
+        executionLogger.log(ExecutionLogFactory.from(
+                order,
+                ExecutionEventType.EXECUTION_SUCCESS,
+                ExecutionStateMapper.toContractState(order.getStatus()),
+                "Execution committed with status " + order.getStatus()
+        ));
     }
+
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public Optional<Order> claimOrder(OutboxEventEntity event) {
@@ -111,9 +131,23 @@ public class OrderExecutionHandler implements OutboxConsumer {
         } else if (result.getStatus() == ExecutionResult.Status.REJECTED) {
             order.markAsRejected(result.getErrorMessage());
             riskEngine.release(order.getId());
+
+            executionLogger.log(ExecutionLogFactory.from(
+                    order,
+                    ExecutionEventType.EXECUTION_FAIL,
+                    ExecutionStateMapper.toContractState(order.getStatus()),
+                    "Rejected by exchange: " + result.getErrorMessage()
+            ));
         } else if (result.getStatus() == ExecutionResult.Status.TIMEOUT) {
             order.markAsUnknown();
             log.warn("[EXECUTION-TIMEOUT] Order {} moved to UNKNOWN.", order.getId());
+
+            executionLogger.log(ExecutionLogFactory.from(
+                    order,
+                    ExecutionEventType.EXECUTION_FAIL,
+                    ExecutionStateMapper.toContractState(order.getStatus()),
+                    "Execution timed out"
+            ));
         }
 
         if (OrderStateTransitionPolicy.isTerminal(order.getStatus())) {

@@ -27,6 +27,8 @@ public class Order {
     private final BigDecimal originalQuantity;
     private final BigDecimal price;
     private final String strategyId;
+    @Builder.Default
+    private final String signalId = UUID.randomUUID().toString();
     private UUID executionId;
     @Builder.Default
     private long version = 0L;

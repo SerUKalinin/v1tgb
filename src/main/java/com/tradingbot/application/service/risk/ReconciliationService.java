@@ -14,6 +14,10 @@ import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.application.risk.RiskEngine;
+import com.tradingbot.tracing.ExecutionEventType;
+import com.tradingbot.tracing.ExecutionLogFactory;
+import com.tradingbot.tracing.ExecutionLogger;
+import com.tradingbot.tracing.ExecutionStateMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -21,6 +25,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.context.event.EventListener;
 import com.tradingbot.application.event.SystemEvents;
+
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -50,6 +55,7 @@ public class ReconciliationService {
     private final PositionRebuildService positionRebuildService;
     private final SystemStateManager stateManager;
     private final TransitionValidator transitionValidator;
+    private final com.tradingbot.tracing.ExecutionLogger executionLogger;
     private static final Duration STALE_THRESHOLD = Duration.ofMinutes(2);
     private static final Duration DRIFT_DETECTION_WINDOW = Duration.ofSeconds(45);
     private static final BigDecimal DRIFT_THRESHOLD = new BigDecimal("0.01"); // 1%
@@ -184,6 +190,13 @@ public class ReconciliationService {
             }
 
             Order order = orderOpt.get();
+
+            executionLogger.log(ExecutionLogFactory.from(
+                    order,
+                    ExecutionEventType.RECON_START,
+                    ExecutionStateMapper.toContractState(order.getStatus()),
+                    "Reconciling order " + order.getId()
+            ));
 
             log.info("[RECON] Syncing order {} (status: {})", order.getId(), order.getStatus());
             ExecutionResult exchangeState = exchangeQueryService.getOrderStatus(order.getClientOrderId());

@@ -3,6 +3,8 @@ package com.tradingbot.infrastructure.outbox;
 import com.tradingbot.application.event.OutboxEventRouter;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
+import com.tradingbot.tracing.ExecutionEventType;
+import com.tradingbot.tracing.ExecutionLogRecord;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -24,10 +26,11 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class OutboxProcessor implements ApplicationContextAware {
 
-    private final OutboxEventRepository outboxRepository;
+private final OutboxEventRepository outboxRepository;
     private final OutboxEventRouter router;
     private final OutboxRetryPolicy retryPolicy;
     private final DeadLetterAlertService alertService;
+    private final com.tradingbot.tracing.ExecutionLogger executionLogger;
     private ApplicationContext applicationContext;
     private final java.util.Set<UUID> activeAggregates = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
@@ -74,10 +77,18 @@ public class OutboxProcessor implements ApplicationContextAware {
                     ));
 
             for (Map.Entry<UUID, List<OutboxEventEntity>> entry : groupedEvents.entrySet()) {
-                if (shuttingDown) break;
-                
                 UUID aggregateId = entry.getKey();
-                
+
+                executionLogger.log(com.tradingbot.tracing.ExecutionLogFactory.forEvent(
+                        aggregateId.toString(),
+                        aggregateId.toString(),
+                        aggregateId.toString(),
+                        com.tradingbot.tracing.ExecutionEventType.OUTBOX_CLAIM_START,
+                        "CLAIMED",
+                        "Claimed outbox aggregate " + aggregateId
+                ));
+                if (shuttingDown) break;
+
                 // Guard: если aggregateId уже обрабатывается другим потоком в этом инстансе — skip
                 if (!activeAggregates.add(aggregateId)) {
                     log.debug("[OUTBOX] Aggregate {} is already being processed, skipping batch", aggregateId);
@@ -160,8 +171,14 @@ public class OutboxProcessor implements ApplicationContextAware {
             e.setStatus(OutboxStatus.PROCESSING);
             e.setLockOwner(ownerId);
             e.setLockedUntil(lockUntil);
+            e.setClaimedBy(ownerId);
+            e.setClaimedAt(now);
+            e.setLeaseUntil(lockUntil);
             e.setAttemptCount(e.getAttemptCount() + 1);
             e.setUpdatedAt(now);
+
+            log.info("[OUTBOX_LEASE_ACQUIRED] eventId={} claimedBy={} claimedAt={} leaseUntil={} executionId={}",
+                    e.getId(), ownerId, now, lockUntil, e.getAggregateId());
         });
         return outboxRepository.saveAllAndFlush(events);
     }
