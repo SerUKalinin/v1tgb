@@ -80,14 +80,13 @@ private final OutboxEventRepository outboxRepository;
                 UUID aggregateId = entry.getKey();
 
                 executionLogger.log(com.tradingbot.tracing.ExecutionLogFactory.forEvent(
-                        aggregateId.toString(),
-                        aggregateId.toString(),
-                        aggregateId.toString(),
+                        aggregateId,
+                        aggregateId,
+                        aggregateId,
                         com.tradingbot.tracing.ExecutionEventType.OUTBOX_CLAIM_START,
                         "CLAIMED",
                         "Claimed outbox aggregate " + aggregateId
-                ));
-                if (shuttingDown) break;
+                ));                if (shuttingDown) break;
 
                 // Guard: если aggregateId уже обрабатывается другим потоком в этом инстансе — skip
                 if (!activeAggregates.add(aggregateId)) {

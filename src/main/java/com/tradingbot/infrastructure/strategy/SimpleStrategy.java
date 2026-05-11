@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.util.UUID;
 
 /**
  * Простейшая тестовая стратегия.
@@ -23,7 +24,7 @@ public class SimpleStrategy implements TradingStrategy {
         int size = window.getCandles().size();
         if (size < 2) {
             log.info("[STRATEGY] Not enough candles for {}: {}", window.getSymbol(), size);
-            return new Signal(window.getSymbol(), "simple-strategy", SignalType.HOLD, window.getLast().getClose(), BigDecimal.ZERO);
+            return new Signal(UUID.randomUUID(), window.getSymbol(), "simple-strategy", SignalType.HOLD, window.getLast().getClose(), BigDecimal.ZERO);
         }
 
         BigDecimal currentClose = window.getLast().getClose();
@@ -35,6 +36,6 @@ public class SimpleStrategy implements TradingStrategy {
         log.info("[STRATEGY] Signal generated for {}: {} (current={}, prev={})", 
                 window.getSymbol(), type, currentClose, prevClose);
         
-        return new Signal(window.getSymbol(), "simple-strategy", type, currentClose, quantity);
+        return new Signal(UUID.randomUUID(), window.getSymbol(), "simple-strategy", type, currentClose, quantity);
     }
 }

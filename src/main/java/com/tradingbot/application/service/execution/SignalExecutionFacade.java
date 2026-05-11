@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.UUID;
+
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -18,9 +20,8 @@ public class SignalExecutionFacade {
 
     @Transactional
     public void execute(SignalEvent signal) {
-        String signalId = signal.getSignalId();
-        executionClaimPort.claim(signalId);
-        log.info("[CLAIMED] signalId={}", signalId);
+        UUID signalId = signal.getSignalId();
+        executionClaimPort.claim(signalId);        log.info("[CLAIMED] signalId={}", signalId);
 
         log.info("[EXECUTION_STARTED] signalId={}", signalId);
         try {
@@ -29,5 +30,4 @@ public class SignalExecutionFacade {
             log.error("[EXECUTION_FAILED] signalId={} message={}", signalId, e.getMessage(), e);
             throw e;
         }
-    }
-}
+    }}

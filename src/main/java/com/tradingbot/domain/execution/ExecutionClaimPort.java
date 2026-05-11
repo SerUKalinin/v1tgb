@@ -1,15 +1,12 @@
 package com.tradingbot.domain.execution;
 
+import java.util.UUID;
+
 /**
  * Порт, позволяющий атомарно зарегистрировать попытку обработки сигнала.
  */
-public interface ExecutionClaimPort {
+import java.util.UUID;
 
-    /**
-     * Пытается заявить сигнал к исполнению.
-     *
-     * @param signalId идентификатор сигнала
-     * @throws AlreadyClaimedException если сигнал уже заблокирован другой обработкой
-     */
-    void claim(String signalId);
+public interface ExecutionClaimPort {
+    void claim(UUID signalId);
 }

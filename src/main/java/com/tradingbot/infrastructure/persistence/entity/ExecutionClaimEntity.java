@@ -26,7 +26,7 @@ public class ExecutionClaimEntity {
     private UUID id;
 
     @Column(name = "signal_id", nullable = false, updatable = false)
-    private String signalId;
+    private UUID signalId;
 
     @Column(name = "status", nullable = false)
     private String status;

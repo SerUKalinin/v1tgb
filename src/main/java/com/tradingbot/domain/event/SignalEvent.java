@@ -15,7 +15,7 @@ import java.util.UUID;
 @NoArgsConstructor(force = true)
 public class SignalEvent {
     @Builder.Default
-    private final String signalId = UUID.randomUUID().toString();
+    private final UUID signalId = UUID.randomUUID();
     private String symbol;
     private SignalType type;
     private BigDecimal price;
@@ -25,10 +25,9 @@ public class SignalEvent {
     private Instant candleTime;
     private String strategyId;
 
-    public String getSymbol() {
-        return symbol;
+    public UUID getSignalId() {
+        return signalId;
     }
-
     public SignalType getType() {
         return type;
     }
@@ -57,5 +56,3 @@ public class SignalEvent {
         return strategyId;
     }
 }
-
-

@@ -2,10 +2,11 @@ package com.tradingbot.application.service.execution;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.common.enums.OrderStatus;
-import com.tradingbot.domain.event.OrderEventPayload;
+import com.tradingbot.domain.event.OrderExecutedEvent;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Order;
-import com.tradingbot.domain.model.OrderPort;import com.tradingbot.infrastructure.outbox.IdempotencyService;
+import com.tradingbot.domain.model.OrderPort;
+import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
@@ -38,28 +39,28 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
 
     @Override
     @Transactional
-    public void consume(OutboxEventEntity event) throws Exception {        // 1. Проверка идемпотентности
+    public void consume(OutboxEventEntity event) throws Exception {
+        // 1. Проверка идемпотентности
         if (idempotencyService.isAlreadyProcessed(event.getId())) {
             log.info("[ORDER-EXECUTED-HANDLER] Event {} already processed, skipping", event.getId());
             return;
         }
 
-        // 2. Десериализация данных
-        OrderEventPayload payload = objectMapper.readValue(event.getPayload(), OrderEventPayload.class);
+        // 2. Десериализация данных в строгое DTO
+        OrderExecutedEvent payload = objectMapper.readValue(event.getPayload(), OrderExecutedEvent.class);
         UUID orderId = payload.getOrderId();
-
-        // 3. Поиск ордера через репозиторий для получения managed entity
-        OrderEntity entity = ((com.tradingbot.infrastructure.persistence.adapter.JpaOrderAdapter)orderPort).getEntityById(orderId)
-                .orElseThrow(() -> new IllegalStateException("Order entity not found: " + orderId));
-        Order order = orderPort.findById(orderId).get();
 
         log.info("[ORDER-EXECUTED-HANDLER] Processing execution for order {}. Status: {}, Qty: {}, Price: {}", 
                 orderId, payload.getStatus(), payload.getQuantity(), payload.getPrice());
 
+        // 3. Поиск ордера через порт (агрегат)
+        Order order = orderPort.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
+
         // 4. Применение результата исполнения
         BigDecimal executedQty = payload.getQuantity();
         BigDecimal executionPrice = payload.getPrice();
-        OrderStatus targetStatus = OrderStatus.valueOf(payload.getStatus());
+        OrderStatus targetStatus = payload.getStatus();
 
         if (targetStatus == OrderStatus.FILLED) {
             order.fill(null, executedQty, executionPrice);
@@ -81,8 +82,6 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
                     null  // takeProfit
             );
             positionService.updatePosition(tradeEvent);
-        } else {
-            log.debug("[FINALITY] Skip trade creation, no execution: orderId={}, status={}", orderId, targetStatus);
         }
 
         // 6. Сохранение ордера
@@ -90,4 +89,5 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
         
         // 7. Пометка события как обработанного
         idempotencyService.markAsProcessed(event.getId(), "OrderExecutedEventHandler");
-    }}
+    }
+}

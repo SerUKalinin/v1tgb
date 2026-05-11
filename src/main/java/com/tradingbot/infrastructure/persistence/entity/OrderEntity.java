@@ -65,8 +65,7 @@ public class OrderEntity {
     private String strategyId;
 
     @Column(name = "signal_id", nullable = false, updatable = false)
-    private String signalId;
-
+    private UUID signalId;
     @Column(name = "execution_id")
     private UUID executionId;
 

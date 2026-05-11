@@ -3,8 +3,11 @@ package com.tradingbot.application.service.risk;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.application.risk.RiskEngine;
+import com.tradingbot.application.service.risk.RiskReconciler;
+import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.domain.risk.RiskState;
+import com.tradingbot.domain.risk.RiskStateCorruptionException;
 import com.tradingbot.domain.risk.RiskStateReducer;
 import com.tradingbot.infrastructure.persistence.entity.*;
 import com.tradingbot.infrastructure.persistence.repository.*;
@@ -27,9 +30,12 @@ public class RiskStateRecoveryService {
     private final RiskEngine riskEngine;
     private final RiskStateReducer reducer;
     private final ObjectMapper objectMapper;
+    private final RiskReconciler riskReconciler;
+    private final ExchangeOrderQueryService exchangeQueryService;
     private final SystemStateManager stateManager;
 
     private static final String AGGREGATE_ID = RiskStateEntity.SINGLETON_ID;
+    private static final String CAPITAL_ASSET = "USDT";
 
     // HARD SINGLE EXECUTION GUARANTEE
     private final AtomicBoolean recovered = new AtomicBoolean(false);
@@ -98,12 +104,11 @@ public class RiskStateRecoveryService {
         log.info("[RISK-RECOVERY] reservations={}, reserved={}",
                 reservations.size(), state.getReserved());
 
-        // 4. INVARIANTS CHECK
-        try {
-            state.validateInvariants();
-        } catch (Exception e) {
-            log.warn("[RISK-RECOVERY] invariant violation: {}", e.getMessage());
-        }
+        state = reconcileWithExchange(state);
+
+        log.info("[RISK-RECOVERY] reconciled balance={}, totalEquity={}",
+                state.getAvailableBalance(),
+                state.getTotalEquity());
 
         // 5. ENGINE INIT
         riskEngine.initialize(state);
@@ -140,6 +145,18 @@ public class RiskStateRecoveryService {
 
         } catch (Exception e) {
             throw new RuntimeException("event deserialization failed", e);
+        }
+    }
+
+    private RiskState reconcileWithExchange(RiskState state) {
+        BigDecimal exchangeBalance = exchangeQueryService.getAvailableBalance(CAPITAL_ASSET);
+        try {
+            return riskReconciler.reconcile(state, exchangeBalance);
+        } catch (RiskStateCorruptionException e) {
+            log.error("[RISK-RECOVERY] reconciliation failed: {}", e.getMessage());
+            stateManager.updateState(SystemStateManager.SystemState.HALTED);
+            riskEngine.emergencyStop("Reconciliation failure: " + e.getMessage());
+            throw e;
         }
     }
 }

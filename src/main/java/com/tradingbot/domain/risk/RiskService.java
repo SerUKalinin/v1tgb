@@ -26,7 +26,7 @@ public class RiskService {
     private final RiskReservationLogPort riskReservationLogPort;
     private final ExchangeFeasibilityPort feasibilityPort;
     private final OrderNormalizationService normalizationService;
-    private final ExecutionLogger executionLogger;
+   private final ExecutionLogger executionLogger;
     private final OutboxService outboxService;
 
     public RiskService(
@@ -99,8 +99,9 @@ public class RiskService {
         }
 
         // 5. Резервирование капитала
+        UUID eventId = UUID.randomUUID();
         RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(
-                "RESERVE-" + orderId,
+                eventId.toString(),
                 orderId,
                 requiredCapital
         );
@@ -109,28 +110,25 @@ public class RiskService {
 
         log.info("[TRACE_FLOW] Persisting risk state change...");
         riskStatePort.markEventProcessed(
-                parseEventId(event.getEventId()),
+                eventId,
                 newState,
                 event
         );
         log.info("[TRACE_FLOW] Risk state persisted");
 
         logReservation(orderId, RiskReservationEventType.RESERVE, requiredCapital);
-
         // 6. Создание доменного объекта Order
-        Order order = Order.builder()
-                .id(orderId)
-                .clientOrderId(ClientOrderIdGenerator.generate(orderId))
-                .symbol(signal.getSymbol())
-                .side(signal.getType() == SignalType.BUY ? OrderSide.BUY : OrderSide.SELL)
-                .type(OrderType.MARKET)
-                .originalQuantity(normalized.getQuantity())
-                .price(normalized.getPrice())
-                .strategyId(signal.getStrategyId())
-                .signalId(signal.getSignalId())
-                .status(OrderStatus.PENDING_EXECUTION)
-                .build();
-
+        Order order = Order.createPendingExecution(
+                orderId,
+                ClientOrderIdGenerator.generate(orderId),
+                signal.getSymbol(),
+                signal.getType() == SignalType.BUY ? OrderSide.BUY : OrderSide.SELL,
+                OrderType.MARKET,
+                normalized.getQuantity(),
+                normalized.getPrice(),
+                signal.getStrategyId(),
+                signal.getSignalId()
+        );
         log.info("[TRACE_FLOW] EXIT RiskService.evaluateAndReserve - APPROVED: {}", orderId);
 
         return Optional.of(order);
@@ -145,7 +143,13 @@ public class RiskService {
             return;
         }
 
-        UUID eventId = parseEventId(event.getEventId());
+        UUID eventId;
+        try {
+            eventId = UUID.fromString(event.getEventId());
+        } catch (IllegalArgumentException e) {
+            eventId = UUID.nameUUIDFromBytes(event.getEventId().getBytes());
+        }
+
         if (riskStatePort.isEventProcessed(eventId)) {
             return;
         }
@@ -174,14 +178,15 @@ public class RiskService {
         RiskDecision decision = RiskPolicy.canReserve(state, orderId, amount);
 
         if (decision.isApproved()) {
+            UUID eventId = UUID.randomUUID();
             RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(
-                    "RESERVE-" + orderId,
+                    eventId.toString(),
                     orderId,
                     amount
             );
 
             RiskState newState = reducer.reduce(state, event);
-            riskStatePort.markEventProcessed(parseEventId(event.getEventId()), newState, event);
+            riskStatePort.markEventProcessed(eventId, newState, event);
             logReservation(orderId, RiskReservationEventType.RESERVE, amount);
         }
 
@@ -189,8 +194,9 @@ public class RiskService {
     }
 
     public void release(UUID orderId, BigDecimal amount, String reason) {
+        UUID eventId = UUID.randomUUID();
         RiskEvent.CapitalReleased event = new RiskEvent.CapitalReleased(
-                "RELEASE-" + orderId,
+                eventId.toString(),
                 orderId,
                 amount,
                 reason
@@ -198,10 +204,9 @@ public class RiskService {
 
         RiskState state = riskStatePort.get();
         RiskState newState = reducer.reduce(state, event);
-        riskStatePort.markEventProcessed(parseEventId(event.getEventId()), newState, event);
+        riskStatePort.markEventProcessed(eventId, newState, event);
         logReservation(orderId, RiskReservationEventType.RELEASE, amount);
     }
-
     // ==================== STATE MANAGEMENT ====================
 
     public void syncBalance(BigDecimal actualBalance) {

@@ -66,9 +66,8 @@ public class OrderApplicationService {
                 .status(order.getStatus().name())
                 .timestamp(Instant.now())
                 .strategyId(order.getStrategyId())
-                .signalId(order.getSignalId())
+                .signalId(order.getSignalId() != null ? order.getSignalId().toString() : null)
                 .build();
-
         outboxService.publishEvent(order.getId(), "ORDER", "ORDER_CREATED", payload);
         log.info("[TRACE_FLOW] Outbox event published");
 

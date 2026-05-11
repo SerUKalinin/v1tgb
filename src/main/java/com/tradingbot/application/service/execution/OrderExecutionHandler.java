@@ -24,6 +24,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.tradingbot.domain.event.OrderExecutedEvent;
+
 import java.util.Optional;
 import java.util.UUID;
 
@@ -150,12 +152,14 @@ public class OrderExecutionHandler implements OutboxConsumer {
             ));
         }
 
+        OrderExecutedEvent executedEvent = OrderExecutedEvent.from(order);
+
         if (OrderStateTransitionPolicy.isTerminal(order.getStatus())) {
             order.clearExecutionOwner();
         }
 
         orderRepository.save(order);
-        outboxService.publishEvent(order.getId(), "ORDER", "ORDER_EXECUTED", order);
+        outboxService.publishEvent(order.getId(), "ORDER", "ORDER_EXECUTED", executedEvent);
         idempotencyService.markAsProcessed(event.getId(), "OrderExecutionHandler");
         lockService.markExecuted(lockKey);
 

@@ -13,34 +13,34 @@ public final class ExecutionLogFactory {
                                          ExecutionEventType event,
                                          String state,
                                          String message) {
-        String executionId = resolveExecutionId(order);
-        String orderId = order != null ? order.getId().toString() : null;
-        String signalId = order != null ? order.getSignalId() : null;
+        java.util.UUID executionId = resolveExecutionId(order);
+        java.util.UUID orderId = order != null ? order.getId() : null;
+        java.util.UUID signalId = order != null ? order.getSignalId() : null;
         return new ExecutionLogRecord(executionId, orderId, signalId, event, Optional.ofNullable(state).orElse(event.name()), message);
     }
 
-    public static ExecutionLogRecord forSignal(String signalId,
+    public static ExecutionLogRecord forSignal(java.util.UUID signalId,
                                                ExecutionEventType event,
                                                String state,
                                                String message) {
         return new ExecutionLogRecord(signalId, null, signalId, event, Optional.ofNullable(state).orElse(event.name()), message);
     }
 
-    public static ExecutionLogRecord forEvent(String executionId,
-                                              String orderId,
-                                              String signalId,
+    public static ExecutionLogRecord forEvent(java.util.UUID executionId,
+                                              java.util.UUID orderId,
+                                              java.util.UUID signalId,
                                               ExecutionEventType event,
                                               String state,
                                               String message) {
         return new ExecutionLogRecord(executionId, orderId, signalId, event, Optional.ofNullable(state).orElse(event.name()), message);
     }
 
-    private static String resolveExecutionId(Order order) {
+    private static java.util.UUID resolveExecutionId(Order order) {
         if (order == null) {
             return null;
         }
         if (order.getExecutionId() != null) {
-            return order.getExecutionId().toString();
+            return order.getExecutionId();
         }
         return order.getSignalId();
     }

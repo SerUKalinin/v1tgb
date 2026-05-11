@@ -11,6 +11,8 @@ import org.springframework.stereotype.Component;
 
 import static jakarta.transaction.Transactional.TxType.REQUIRES_NEW;
 
+import java.util.UUID;
+
 @Component
 @RequiredArgsConstructor
 public class ExecutionClaimAdapter implements ExecutionClaimPort {
@@ -19,13 +21,11 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
 
     @Override
     @Transactional(REQUIRES_NEW)
-    public void claim(String signalId) {
+    public void claim(UUID signalId) {
         ExecutionClaimEntity entity = ExecutionClaimEntity.builder()
                 .signalId(signalId)
                 .status(ExecutionClaimEntity.STATUS_CLAIMED)
-                .build();
-
-        try {
+                .build();        try {
             repository.saveAndFlush(entity);
         } catch (DataIntegrityViolationException e) {
             if (isSignalAlreadyClaimed(e)) {
