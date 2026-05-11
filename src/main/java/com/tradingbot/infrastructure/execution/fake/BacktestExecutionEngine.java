@@ -33,8 +33,7 @@ public class BacktestExecutionEngine implements ExecutionEngine {
         // Восстанавливаем контекст из ордера (в бэктесте aggregateId = signalId)
         ExecutionContext context = ExecutionContext.init(order.getSignalId())
                 .attachOrder(order.getId(), UUID.randomUUID())
-                .startExecutionAttempt(UUID.randomUUID(), UUID.randomUUID());
-
+                .startExecutionAttempt(UUID.randomUUID());
         // Прямой вызов TradeService вместо публикации события
         tradeService.onOrderFilled(new OrderFilledEvent(
                 context,

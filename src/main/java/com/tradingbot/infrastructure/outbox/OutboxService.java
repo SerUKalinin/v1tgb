@@ -27,6 +27,7 @@ public class OutboxService {
 
             OutboxEventEntity event = OutboxEventEntity.builder()
                     .id(eventId)
+                    .eventId(eventId) // Explicit eventId
                     .aggregateId(context.aggregateId())
                     .aggregateType(aggregateType)
                     .eventType(eventType)
@@ -43,16 +44,8 @@ public class OutboxService {
                     .build();
 
             outboxRepository.save(event);
-        } catch (Exception e) {
-            log.error("[OUTBOX-ERROR] Failed to publish event {} for context {}", eventType, context, e);
+        } catch (Exception e) {            log.error("[OUTBOX-ERROR] Failed to publish event {} for context {}", eventType, context, e);
             throw new RuntimeException("Outbox publication failed", e);
         }
-    }
-
-    @Deprecated
-    @Transactional
-    public void publishEvent(UUID aggregateId, String aggregateType, String eventType, Object payload) {
-        ExecutionContext context = ExecutionContext.init(aggregateId); 
-        publishEvent(context, aggregateType, eventType, payload);
     }
 }

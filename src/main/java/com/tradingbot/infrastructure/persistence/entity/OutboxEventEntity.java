@@ -3,6 +3,7 @@ package com.tradingbot.infrastructure.persistence.entity;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import jakarta.persistence.*;
 import lombok.*;
+
 import java.time.Instant;
 import java.util.UUID;
 
@@ -83,20 +84,28 @@ public class OutboxEventEntity {
     @Column(name = "execution_id")
     private UUID executionId;
 
-    @Column(name = "causation_id")
+    @Column(name = "causation_id", nullable = false)
     private UUID causationId;
 
-    @Column(name = "correlation_id")
+    @Column(name = "correlation_id", nullable = false)
     private UUID correlationId;
 
-    @PrePersist    protected void onCreate() {
+    @Column(name = "event_id", nullable = false, unique = true)
+    private UUID eventId;
+
+    @PrePersist
+    protected void onCreate() {
         if (sequenceNumber == null) {
             throw new IllegalStateException("OutboxEvent must have sequenceNumber before persisting");
+        }
+        if (eventId == null) {
+            throw new IllegalStateException("Invariant violation: eventId cannot be null in OutboxEvent");
         }
         if (status == null) status = OutboxStatus.NEW;
         if (createdAt == null) createdAt = Instant.now();
         if (updatedAt == null) updatedAt = createdAt;
-    }    @PreUpdate
+    }
+    @PreUpdate
     protected void onUpdate() {
         updatedAt = Instant.now();
     }

@@ -71,17 +71,15 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
 
         // 5. Обновление позиции через PositionService (только если есть реальное исполнение)
         if (executedQty != null && executedQty.compareTo(BigDecimal.ZERO) > 0) {
-            ExecutionContext context = new ExecutionContext(
+            ExecutionContext context = ExecutionContext.restore(
                     event.getAggregateId(),
                     event.getCorrelationId(),
                     event.getSignalId(),
                     event.getOrderId(),
                     event.getExecutionId(),
-                    event.getId()
-            );
-            
-            TradeCreatedEvent tradeEvent = new TradeCreatedEvent(
-                    context,
+                    event.getEventId()
+            );            
+            TradeCreatedEvent tradeEvent = new TradeCreatedEvent(                    context,
                     UUID.randomUUID(),
                     orderId,
                     order.getSymbol(),

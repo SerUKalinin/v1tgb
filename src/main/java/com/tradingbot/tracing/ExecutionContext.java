@@ -12,25 +12,24 @@ import java.util.Objects;
  * 
  * <h2>ARCHITECTURAL DECISION: AGGREGATE ROOT</h2>
  * <p>Aggregate Root для всего execution pipeline — это <b>Signal UUID</b>.
- * Он фиксируется как {@code aggregateId} в момент входа сигнала в систему и остается 
- * неизменным (IMMUTABLE) на протяжении всего жизненного цикла, включая создание ордеров, 
- * попытки исполнения и ретраи.
+ * Он зафиксирован как {@code aggregateId} и является неизменным алиасом {@code signalId}.
  * 
  * <h2>SEMANTICS</h2>
  * <ul>
- *   <li>{@code aggregateId}: (SSOT) Всегда равен {@code signalId}. Неизменен.</li>
- *   <li>{@code correlationId}: Сквозной ID бизнес-потока. Равен {@code signalId}.</li>
+ *   <li>{@code aggregateId}: (SSOT) Системный immutable root identity.</li>
+ *   <li>{@code correlationId}: Сквозной ID бизнес-потока.</li>
  *   <li>{@code signalId}: ID исходного сигнала.</li>
  *   <li>{@code orderId}: ID созданного ордера. Null до момента создания.</li>
- *   <li>{@code executionId}: ID конкретной попытки исполнения. Меняется при ретраях.</li>
- *   <li>{@code causationId}: ID события, вызвавшего текущий шаг.</li>
+ *   <li>{@code executionId}: ID конкретной попытки исполнения (attempt). Null до начала исполнения.</li>
+ *   <li>{@code causationId}: ID события (eventId), вызвавшего текущий шаг.</li>
  * </ul>
  * 
  * <h2>INVARIANTS</h2>
  * <ol>
- *   <li>{@code aggregateId == correlationId == signalId}</li>
- *   <li>{@code aggregateId} никогда не равен {@code orderId}</li>
- *   <li>{@code causationId} всегда указывает на непосредственного родителя</li>
+ *   <li>{@code aggregateId == signalId} (ALWAYS, IMMUTABLE, FINAL, EXPLICIT)</li>
+ *   <li>{@code correlationId == signalId}</li>
+ *   <li>{@code aggregateId} никогда не может быть равен {@code orderId} или {@code executionId}</li>
+ *   <li>{@code executionId} генерируется ТОЛЬКО при старте попытки исполнения</li>
  * </ol>
  */
 public record ExecutionContext(
@@ -43,7 +42,7 @@ public record ExecutionContext(
 ) implements Serializable {
 
     public ExecutionContext {
-        Objects.requireNonNull(aggregateId, "aggregateId (SSOT) cannot be null");
+        Objects.requireNonNull(aggregateId, "aggregateId cannot be null");
         Objects.requireNonNull(correlationId, "correlationId cannot be null");
         Objects.requireNonNull(signalId, "signalId cannot be null");
         Objects.requireNonNull(causationId, "causationId cannot be null");
@@ -51,10 +50,14 @@ public record ExecutionContext(
         if (!aggregateId.equals(signalId)) {
             throw new IllegalStateException("Invariant violation: aggregateId must equal signalId");
         }
+        if (!correlationId.equals(signalId)) {
+            throw new IllegalStateException("Invariant violation: correlationId must equal signalId");
+        }
     }
 
     /**
      * Инициализация потока из входящего сигнала.
+     * executionId НЕ генерируется на этом этапе (t=0).
      */
     public static ExecutionContext init(UUID signalId) {
         return new ExecutionContext(
@@ -62,8 +65,8 @@ public record ExecutionContext(
                 signalId, // correlationId
                 signalId, // signalId
                 null,     // orderId
-                null,     // executionId
-                signalId  // causationId (начальное событие)
+                null,     // executionId (NOT YET STARTED)
+                signalId  // causationId (начальное событие/сигнал)
         );
     }
 
@@ -77,20 +80,21 @@ public record ExecutionContext(
                 this.signalId,
                 Objects.requireNonNull(orderId),
                 this.executionId,
-                Objects.requireNonNull(eventId) // causationId = ID события создания ордера
+                Objects.requireNonNull(eventId)
         );
     }
 
     /**
      * Начало новой попытки исполнения (fill attempt).
+     * Генерирует НОВЫЙ executionId для каждой попытки.
      */
-    public ExecutionContext startExecutionAttempt(UUID executionId, UUID eventId) {
+    public ExecutionContext startExecutionAttempt(UUID eventId) {
         return new ExecutionContext(
                 this.aggregateId,
                 this.correlationId,
                 this.signalId,
                 this.orderId,
-                Objects.requireNonNull(executionId),
+                UUID.randomUUID(), // NEW executionId for attempt
                 Objects.requireNonNull(eventId)
         );
     }
@@ -106,6 +110,20 @@ public record ExecutionContext(
                 this.orderId,
                 this.executionId,
                 Objects.requireNonNull(eventId)
+        );
+    }
+
+    /**
+     * Восстановление контекста из персистентного состояния.
+     */
+    public static ExecutionContext restore(UUID aggregateId, UUID correlationId, UUID signalId, UUID orderId, UUID executionId, UUID causationId) {
+        return new ExecutionContext(
+                aggregateId,
+                correlationId,
+                signalId,
+                orderId,
+                executionId,
+                causationId
         );
     }
 }

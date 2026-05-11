@@ -53,4 +53,8 @@ public class SignalEvent extends DomainEvent {
     public UUID getSignalId() {
         return getContext().signalId();
     }
+
+    public UUID getAggregateId() {
+        return getContext().aggregateId();
+    }
 }

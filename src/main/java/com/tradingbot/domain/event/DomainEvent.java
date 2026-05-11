@@ -14,6 +14,7 @@ import java.util.UUID;
 @Getter
 public abstract class DomainEvent {
     private final UUID eventId;
+    private final UUID causationId;
     private final ExecutionContext context;
     private final Instant timestamp;
     private final int schemaVersion;
@@ -21,6 +22,7 @@ public abstract class DomainEvent {
     protected DomainEvent(ExecutionContext context, int schemaVersion) {
         this.eventId = UUID.randomUUID();
         this.context = context;
+        this.causationId = context.causationId();
         this.timestamp = Instant.now();
         this.schemaVersion = schemaVersion;
     }

@@ -1,5 +1,6 @@
 package com.tradingbot.infrastructure.persistence.adapter;
 
+import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.domain.execution.AlreadyClaimedException;
 import com.tradingbot.domain.execution.ExecutionClaimPort;
 import com.tradingbot.infrastructure.persistence.entity.ExecutionClaimEntity;
@@ -21,7 +22,8 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
 
     @Override
     @Transactional(REQUIRES_NEW)
-    public void claim(UUID signalId) {
+    public void claim(ExecutionContext context) {
+        UUID signalId = context.signalId();
         ExecutionClaimEntity entity = ExecutionClaimEntity.builder()
                 .signalId(signalId)
                 .status(ExecutionClaimEntity.STATUS_CLAIMED)
@@ -34,7 +36,6 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
             throw e;
         }
     }
-
     private boolean isSignalAlreadyClaimed(DataIntegrityViolationException e) {
         Throwable cause = e.getMostSpecificCause();
         if (cause == null || cause.getMessage() == null) {

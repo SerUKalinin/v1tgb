@@ -23,7 +23,7 @@ public class SignalExecutionFacade {
         ExecutionContext context = signal.getContext();
         ExecutionLogContext.load(context);
         try {
-            executionClaimPort.claim(context.signalId());
+            executionClaimPort.claim(context);
             log.info("[CLAIMED] context={}", context);
 
             log.info("[EXECUTION_STARTED] context={}", context);
@@ -34,5 +34,4 @@ public class SignalExecutionFacade {
         } finally {
             ExecutionLogContext.clear();
         }
-    }
-}
+    }}

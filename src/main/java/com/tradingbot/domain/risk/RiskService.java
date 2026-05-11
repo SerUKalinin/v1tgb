@@ -7,6 +7,7 @@ import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.exchange.*;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.outbox.OutboxService;
+import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.ExecutionLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,26 +51,27 @@ public class RiskService {
     // ==================== MAIN FLOW ====================
 
     public Optional<Order> evaluateAndReserve(SignalEvent signal) {
-        log.info("[TRACE_FLOW] ENTER RiskService.evaluateAndReserve for signal: {}", signal.getSignalId());
+        ExecutionContext context = signal.getContext();
+        log.info("[TRACE_FLOW] ENTER RiskService.evaluateAndReserve for context: {}", context);
 
         RiskState state = riskStatePort.get();
         log.info("[TRACE_FLOW] Current RiskState: halted={}, balance={}, reserved={}",
                 state.isHalted(), state.getBalance(), state.getReservedMargin());
 
         if (state.isHalted()) {
-            log.warn("[TRACE_FLOW] EXIT RiskService - REJECTED: System is HALTED");
+            log.warn("[TRACE_FLOW] EXIT RiskService - REJECTED: System is HALTED for context: {}", context);
             return Optional.empty();
         }
 
         // 1. Расчет объема
         BigDecimal rawQuantity = calculateQuantity(signal, state);
-        log.info("[TRACE_FLOW] Calculated raw quantity: {}", rawQuantity);
+        log.info("[TRACE_FLOW] Calculated raw quantity: {} for context: {}", rawQuantity, context);
 
         // 2. Нормализация под требования биржи
         NormalizedOrder normalized = normalizationService.normalize(
                 new FeasibilityRequest(signal.getSymbol(), rawQuantity, signal.getPrice())
         );
-        log.info("[TRACE_FLOW] Normalized order: qty={}, price={}", normalized.getQuantity(), normalized.getPrice());
+        log.info("[TRACE_FLOW] Normalized order: qty={}, price={} for context: {}", normalized.getQuantity(), normalized.getPrice(), context);
 
         // 3. Проверка возможности исполнения (Feasibility)
         FeasibilityResult feasibility = feasibilityPort.check(
@@ -79,10 +81,10 @@ public class RiskService {
                         normalized.getPrice()
                 )
         );
-        log.info("[TRACE_FLOW] Feasibility check: feasible={}, reason={}", feasibility.isFeasible(), feasibility.getReason());
+        log.info("[TRACE_FLOW] Feasibility check: feasible={}, reason={} for context: {}", feasibility.isFeasible(), feasibility.getReason(), context);
 
         if (!feasibility.isFeasible()) {
-            log.warn("[TRACE_FLOW] EXIT RiskService - REJECTED: Not feasible. Reason: {}", feasibility.getReason());
+            log.warn("[TRACE_FLOW] EXIT RiskService - REJECTED: Not feasible. Reason: {} for context: {}", feasibility.getReason(), context);
             return Optional.empty();
         }
 
@@ -91,10 +93,10 @@ public class RiskService {
         UUID orderId = UUID.randomUUID();
 
         RiskDecision decision = RiskPolicy.canReserve(state, orderId, requiredCapital);
-        log.info("[TRACE_FLOW] RiskPolicy decision: approved={}, reason={}", decision.isApproved(), decision.getReason());
+        log.info("[TRACE_FLOW] RiskPolicy decision: approved={}, reason={} for context: {}", decision.isApproved(), decision.getReason(), context);
 
         if (!decision.isApproved()) {
-            log.warn("[TRACE_FLOW] EXIT RiskService - REJECTED: Policy violation. Reason: {}", decision.getReason());
+            log.warn("[TRACE_FLOW] EXIT RiskService - REJECTED: Policy violation. Reason: {} for context: {}", decision.getReason(), context);
             return Optional.empty();
         }
 
@@ -108,13 +110,13 @@ public class RiskService {
 
         RiskState newState = reducer.reduce(state, event);
 
-        log.info("[TRACE_FLOW] Persisting risk state change...");
+        log.info("[TRACE_FLOW] Persisting risk state change for context: {}", context);
         riskStatePort.markEventProcessed(
                 eventId,
                 newState,
                 event
         );
-        log.info("[TRACE_FLOW] Risk state persisted");
+        log.info("[TRACE_FLOW] Risk state persisted for context: {}", context);
 
         logReservation(orderId, RiskReservationEventType.RESERVE, requiredCapital);
         // 6. Создание доменного объекта Order
@@ -129,7 +131,7 @@ public class RiskService {
                 signal.getStrategyId(),
                 signal.getSignalId()
         );
-        log.info("[TRACE_FLOW] EXIT RiskService.evaluateAndReserve - APPROVED: {}", orderId);
+        log.info("[TRACE_FLOW] EXIT RiskService.evaluateAndReserve - APPROVED for context: {}", context);
 
         return Optional.of(order);
     }
@@ -173,7 +175,8 @@ public class RiskService {
 
     // ==================== COMMANDS ====================
 
-    public RiskDecision reserve(UUID orderId, BigDecimal amount) {
+    public RiskDecision reserve(ExecutionContext context, BigDecimal amount) {
+        UUID orderId = context.orderId();
         RiskState state = riskStatePort.get();
         RiskDecision decision = RiskPolicy.canReserve(state, orderId, amount);
 
@@ -188,12 +191,14 @@ public class RiskService {
             RiskState newState = reducer.reduce(state, event);
             riskStatePort.markEventProcessed(eventId, newState, event);
             logReservation(orderId, RiskReservationEventType.RESERVE, amount);
+            log.info("[RISK] Capital reserved for context: {}", context);
         }
 
         return decision;
     }
 
-    public void release(UUID orderId, BigDecimal amount, String reason) {
+    public void release(ExecutionContext context, BigDecimal amount, String reason) {
+        UUID orderId = context.orderId();
         UUID eventId = UUID.randomUUID();
         RiskEvent.CapitalReleased event = new RiskEvent.CapitalReleased(
                 eventId.toString(),
@@ -206,9 +211,10 @@ public class RiskService {
         RiskState newState = reducer.reduce(state, event);
         riskStatePort.markEventProcessed(eventId, newState, event);
         logReservation(orderId, RiskReservationEventType.RELEASE, amount);
+        log.info("[RISK] Capital released for context: {}. Reason: {}", context, reason);
     }
-    // ==================== STATE MANAGEMENT ====================
 
+    // ==================== STATE MANAGEMENT ====================
     public void syncBalance(BigDecimal actualBalance) {
         RiskState state = riskStatePort.get();
         RiskState newState = state.toBuilder()

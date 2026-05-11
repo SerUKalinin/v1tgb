@@ -60,15 +60,14 @@ public class OrderExecutionHandler implements OutboxConsumer {
     @Override
     public void consume(OutboxEventEntity event) throws Exception {
         // Восстановление контекста из Outbox Event (SSOT)
-        ExecutionContext context = new ExecutionContext(
+        ExecutionContext context = ExecutionContext.restore(
                 event.getAggregateId(),
                 event.getCorrelationId(),
                 event.getSignalId(),
                 event.getOrderId(),
                 event.getExecutionId(),
-                event.getId() // causationId = ID текущего события
+                event.getEventId() // causationId = ID текущего события
         );
-
         ExecutionLogContext.load(context);
         try {
             // PHASE 1: CLAIM (TX1)
@@ -80,10 +79,8 @@ public class OrderExecutionHandler implements OutboxConsumer {
             Order order = orderOpt.get();
             
             // INVARIANT: Каждая попытка исполнения получает НОВЫЙ executionId и НОВЫЙ eventId в графе причинности
-            UUID executionAttemptId = UUID.randomUUID();
-            ExecutionContext execContext = context.startExecutionAttempt(executionAttemptId, event.getId());
-            ExecutionLogContext.load(execContext);
-            
+            ExecutionContext execContext = context.startExecutionAttempt(event.getEventId());
+            ExecutionLogContext.load(execContext);            
             String lockKey = "EXEC_ORDER_" + order.getId();
 
             executionLogger.log(ExecutionLogFactory.from(
@@ -97,7 +94,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
             // PHASE 2: EXTERNAL IO (NO TX)
             ExecutionResult result;
             try {
-                log.info("[EXECUTION-START] Placing order {} with context {}", order.getId(), execContext);
+                log.info("[EXECUTION-START] Placing order with context {}", execContext);
                 result = executionPort.placeOrder(order);
             } catch (Exception e) {
                 log.error("[EXECUTION-IO-ERROR] context {}. Will be recovered by reconciliation.", execContext, e);
@@ -137,7 +134,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
         // Consistency Root: aggregateId (Signal), но лочим по orderId
         UUID orderId = event.getOrderId();
         if (orderId == null) {
-            orderId = event.getAggregateId();
+            orderId = event.getSignalId();
         }
         
         Optional<Order> orderOpt = orderRepository.claimForExecution(orderId);
@@ -149,7 +146,6 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
         return orderOpt;
     }
-
     @Transactional
     public void commitExecution(OutboxEventEntity event, ExecutionContext context, Order order, ExecutionResult result, String lockKey) {
         ExecutionOwnershipValidator.validateExecutionOwnership(order, order.getExecutionId());
@@ -166,7 +162,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
             );
         } else if (result.getStatus() == ExecutionResult.Status.REJECTED) {
             order.markAsRejected(result.getErrorMessage());
-            riskEngine.release(order.getId());
+            riskEngine.release(context, order.getQuantity(), "Exchange rejection: " + result.getErrorMessage());
 
             executionLogger.log(ExecutionLogFactory.from(
                     order,
@@ -177,7 +173,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
             ));
         } else if (result.getStatus() == ExecutionResult.Status.TIMEOUT) {
             order.markAsUnknown();
-            log.warn("[EXECUTION-TIMEOUT] Order {} moved to UNKNOWN.", order.getId());
+            log.warn("[EXECUTION-TIMEOUT] Order moved to UNKNOWN. Context: {}", completionContext);
 
             executionLogger.log(ExecutionLogFactory.from(
                     order,
@@ -202,11 +198,11 @@ public class OrderExecutionHandler implements OutboxConsumer {
         idempotencyService.markAsProcessed(event.getId(), "OrderExecutionHandler");
         lockService.markExecuted(lockKey);
 
-        log.info("[EXECUTION-SUCCESS] Order {} committed with context {}", order.getId(), completionContext);
+        log.info("[EXECUTION-SUCCESS] Order committed with context {}", completionContext);
     }
 
     private void handleAlreadyProcessed(OutboxEventEntity event) {
-        orderRepository.findById(event.getAggregateId()).ifPresent(order -> {
+        orderRepository.findById(event.getSignalId()).ifPresent(order -> {
             if (transitionValidator.isProcessed(order.getStatus())) {
                 idempotencyService.markAsProcessed(
                         event.getId(),
@@ -214,5 +210,4 @@ public class OrderExecutionHandler implements OutboxConsumer {
                 );
             }
         });
-    }
-}
+    }}

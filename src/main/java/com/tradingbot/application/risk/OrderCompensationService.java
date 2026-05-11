@@ -1,5 +1,7 @@
 package com.tradingbot.application.risk;
 
+import com.tradingbot.application.risk.RiskEngine;
+import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.domain.model.Order;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,6 +14,7 @@ import java.math.BigDecimal;
  * Использует доменную модель Order для расчета неисполненных остатков.
  */
 @Slf4j
+@Service
 @RequiredArgsConstructor
 public class OrderCompensationService {
 
@@ -41,9 +44,16 @@ public class OrderCompensationService {
         log.info("[COMPENSATION] Частичный возврат капитала для ордера {}: {} (неисполненный остаток: {})",
                 order.getId(), releaseAmount, remainingQty);
 
-        riskEngine.release(order.getId(), releaseAmount, "Partial fill compensation");
+        ExecutionContext context = ExecutionContext.restore(
+                order.getSignalId(), // aggregateId
+                order.getSignalId(), // correlationId
+                order.getSignalId(), // signalId
+                order.getId(),
+                order.getExecutionId(),
+                order.getExecutionId() != null ? order.getExecutionId() : order.getId() // causationId
+        );
+        riskEngine.release(context, releaseAmount, "Partial fill compensation");
     }
-
     /**
      * Полный возврат капитала при отмене или ошибке исполнения ордера.
      * Формула: quantity * price
@@ -70,6 +80,13 @@ public class OrderCompensationService {
         log.info("[COMPENSATION] Полный возврат капитала для ордера {}: {} (Причина: {})",
                 order.getId(), releaseAmount, reason);
 
-        riskEngine.release(order.getId(), releaseAmount, reason);
-    }
-}
+        ExecutionContext context = ExecutionContext.restore(
+                order.getSignalId(), // aggregateId
+                order.getSignalId(), // correlationId
+                order.getSignalId(), // signalId
+                order.getId(),
+                order.getExecutionId(),
+                order.getExecutionId() != null ? order.getExecutionId() : order.getId() // causationId
+        );
+        riskEngine.release(context, releaseAmount, reason);
+    }}

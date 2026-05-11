@@ -53,13 +53,11 @@ public class OrderApplicationService {
         ExecutionContext orderContext = context.attachOrder(order.getId(), signal.getEventId());
         
         log.info("[TRACE_FLOW] [RISK_COMPLETED] context={}", orderContext);
-        log.info("[TRACE_FLOW] Order approved and capital reserved: {}", order.getId());
 
         OrderEntity entity = orderMapper.toEntity(order);
         entity.setCreatedAt(Instant.now());
         orderRepository.save(entity);
         log.info("[TRACE_FLOW] [ORDER_PERSISTED] context={}", orderContext);
-
         OrderEventPayload payload = OrderEventPayload.builder()
                 .orderId(order.getId())
                 .clientOrderId(order.getClientOrderId())

@@ -1,5 +1,6 @@
 package com.tradingbot.application.service.order;
 
+import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.application.service.risk.ReconciliationService;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
@@ -39,7 +40,15 @@ public class OrderWatchdogService {
                 try {
                     log.info("[WATCHDOG][RECOVERY] Reconciling order id={}, clientOrderId={}", 
                             order.getId(), order.getClientOrderId());
-                    reconciliationService.reconcile(order.getId());
+                    
+                    ExecutionContext context = ExecutionContext.restore(
+                        order.getSignalId(), // aggregateId
+                        order.getSignalId(), // correlationId
+                        order.getSignalId(), // signalId
+                        order.getId(),
+                        order.getExecutionId(),
+                        order.getExecutionId() != null ? order.getExecutionId() : order.getId() // causationId
+                    );                    reconciliationService.reconcile(context);
                 } catch (Exception e) {
                     log.error("[WATCHDOG][ERROR] Failed to recover order {}: {}", order.getId(), e.getMessage());
                 }

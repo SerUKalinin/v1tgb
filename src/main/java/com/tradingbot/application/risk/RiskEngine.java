@@ -4,6 +4,7 @@ import com.tradingbot.domain.risk.RiskDecision;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.domain.risk.RiskState;
+import com.tradingbot.tracing.ExecutionContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -24,19 +25,17 @@ public class RiskEngine {
         riskService.publish(event);
     }
 
-    public RiskDecision reserve(UUID orderId, BigDecimal amount) {
-        return riskService.reserve(orderId, amount);
+    public RiskDecision reserve(ExecutionContext context, BigDecimal amount) {
+        return riskService.reserve(context, amount);
     }
 
-    public void release(UUID orderId, BigDecimal amount, String reason) {
-        riskService.release(orderId, amount, reason);
+    public void release(ExecutionContext context, BigDecimal amount, String reason) {
+        riskService.release(context, amount, reason);
     }
 
-    public void release(UUID orderId) {
-        riskService.release(orderId, BigDecimal.ZERO, "COMPENSATION");
-    }
-
-    public void syncBalance(BigDecimal actualBalance) {
+    public void release(ExecutionContext context) {
+        riskService.release(context, BigDecimal.ZERO, "COMPENSATION");
+    }    public void syncBalance(BigDecimal actualBalance) {
         riskService.syncBalance(actualBalance);
     }
 
