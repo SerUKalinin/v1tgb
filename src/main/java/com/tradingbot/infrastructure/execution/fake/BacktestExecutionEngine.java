@@ -1,5 +1,6 @@
 package com.tradingbot.infrastructure.execution.fake;
 
+import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.application.service.execution.TradeService;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.execution.ExecutionEngine;
@@ -29,8 +30,14 @@ public class BacktestExecutionEngine implements ExecutionEngine {
         String externalOrderId = "fake-order-" + UUID.randomUUID().toString().substring(0, 8);
         String externalTradeId = "fake-trade-" + UUID.randomUUID().toString().substring(0, 8);
 
+        // Восстанавливаем контекст из ордера (в бэктесте aggregateId = signalId)
+        ExecutionContext context = ExecutionContext.init(order.getSignalId())
+                .attachOrder(order.getId(), UUID.randomUUID())
+                .startExecutionAttempt(UUID.randomUUID(), UUID.randomUUID());
+
         // Прямой вызов TradeService вместо публикации события
         tradeService.onOrderFilled(new OrderFilledEvent(
+                context,
                 order.getId(),
                 externalTradeId,
                 order.getSymbol(),
@@ -51,7 +58,6 @@ public class BacktestExecutionEngine implements ExecutionEngine {
                 order.getClientOrderId()
         );
     }
-
     @Override
     public ExecutionResult verifyOrder(String clientOrderId) {
         log.info("[FAKE-EXEC] Verifying order: {}", clientOrderId);

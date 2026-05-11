@@ -10,6 +10,7 @@ import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
+import com.tradingbot.tracing.ExecutionContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -70,8 +71,18 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
 
         // 5. Обновление позиции через PositionService (только если есть реальное исполнение)
         if (executedQty != null && executedQty.compareTo(BigDecimal.ZERO) > 0) {
+            ExecutionContext context = new ExecutionContext(
+                    event.getAggregateId(),
+                    event.getCorrelationId(),
+                    event.getSignalId(),
+                    event.getOrderId(),
+                    event.getExecutionId(),
+                    event.getId()
+            );
+            
             TradeCreatedEvent tradeEvent = new TradeCreatedEvent(
-                    event.getId(),
+                    context,
+                    UUID.randomUUID(),
                     orderId,
                     order.getSymbol(),
                     order.getStrategyId(),
@@ -83,7 +94,6 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
             );
             positionService.updatePosition(tradeEvent);
         }
-
         // 6. Сохранение ордера
         orderPort.save(order);
         

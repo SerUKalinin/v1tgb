@@ -1,8 +1,7 @@
 package com.tradingbot.interfaces.rest;
 
 import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.common.enums.SignalType;
-import org.springframework.context.ApplicationEventPublisher;
+import com.tradingbot.common.enums.SignalType;import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -30,5 +29,4 @@ public class TestSignalController {
         
         eventPublisher.publishEvent(testEvent);
         return "Тестовый сигнал отправлен в систему! Проверьте Telegram.";
-    }
-}
+    }}

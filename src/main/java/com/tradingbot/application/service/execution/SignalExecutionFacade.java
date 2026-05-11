@@ -1,5 +1,7 @@
 package com.tradingbot.application.service.execution;
 
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.ExecutionLogContext;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.execution.ExecutionClaimPort;
 import com.tradingbot.application.service.order.OrderApplicationService;
@@ -7,8 +9,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
-
-import java.util.UUID;
 
 @Slf4j
 @Component
@@ -20,14 +20,19 @@ public class SignalExecutionFacade {
 
     @Transactional
     public void execute(SignalEvent signal) {
-        UUID signalId = signal.getSignalId();
-        executionClaimPort.claim(signalId);        log.info("[CLAIMED] signalId={}", signalId);
-
-        log.info("[EXECUTION_STARTED] signalId={}", signalId);
+        ExecutionContext context = signal.getContext();
+        ExecutionLogContext.load(context);
         try {
-            orderApplicationService.createOrder(signal);
+            executionClaimPort.claim(context.signalId());
+            log.info("[CLAIMED] context={}", context);
+
+            log.info("[EXECUTION_STARTED] context={}", context);
+            orderApplicationService.createOrder(context, signal);
         } catch (Exception e) {
-            log.error("[EXECUTION_FAILED] signalId={} message={}", signalId, e.getMessage(), e);
+            log.error("[EXECUTION_FAILED] context={} message={}", context, e.getMessage(), e);
             throw e;
+        } finally {
+            ExecutionLogContext.clear();
         }
-    }}
+    }
+}

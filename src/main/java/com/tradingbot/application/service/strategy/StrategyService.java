@@ -44,7 +44,9 @@ public class StrategyService {
         if (!stateManager.isReady()) {
             return;
         }
-    }    private void generateTestSignal(NewClosedCandleEvent candle) {
+    }
+
+    private void generateTestSignal(NewClosedCandleEvent candle) {
         SignalEvent signal = SignalEvent.builder()
                 .symbol(candle.symbol())
                 .strategyId("SMA_CROSS_STUB")

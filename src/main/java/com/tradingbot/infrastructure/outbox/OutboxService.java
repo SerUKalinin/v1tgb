@@ -1,5 +1,6 @@
 package com.tradingbot.infrastructure.outbox;
 
+import com.tradingbot.tracing.ExecutionContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
@@ -19,26 +20,39 @@ public class OutboxService {
     private final ObjectMapper objectMapper;
 
     @Transactional
-    public void publishEvent(UUID aggregateId, String aggregateType, String eventType, Object payload) {
+    public void publishEvent(ExecutionContext context, String aggregateType, String eventType, Object payload) {
         try {
-            // Гарантированная блокировка и получение номера (FOR UPDATE внутри репозитория)
-            long nextSequence = outboxRepository.getNextSequenceNumber(aggregateId);
+            UUID eventId = UUID.randomUUID();
+            long nextSequence = outboxRepository.getNextSequenceNumber(context.aggregateId());
 
             OutboxEventEntity event = OutboxEventEntity.builder()
-                    .id(UUID.randomUUID())
-                    .aggregateId(aggregateId != null ? aggregateId : UUID.randomUUID())
+                    .id(eventId)
+                    .aggregateId(context.aggregateId())
                     .aggregateType(aggregateType)
                     .eventType(eventType)
                     .payload(objectMapper.writeValueAsString(payload))
                     .status(OutboxStatus.NEW)
                     .sequenceNumber(nextSequence)
                     .createdAt(Instant.now())
+                    .schemaVersion(1)
+                    .signalId(context.signalId())
+                    .orderId(context.orderId())
+                    .executionId(context.executionId())
+                    .causationId(context.causationId())
+                    .correlationId(context.correlationId())
                     .build();
 
             outboxRepository.save(event);
         } catch (Exception e) {
-            log.error("[OUTBOX-ERROR] Failed to publish event {} for aggregate {}", eventType, aggregateId, e);
+            log.error("[OUTBOX-ERROR] Failed to publish event {} for context {}", eventType, context, e);
             throw new RuntimeException("Outbox publication failed", e);
         }
+    }
+
+    @Deprecated
+    @Transactional
+    public void publishEvent(UUID aggregateId, String aggregateType, String eventType, Object payload) {
+        ExecutionContext context = ExecutionContext.init(aggregateId); 
+        publishEvent(context, aggregateType, eventType, payload);
     }
 }

@@ -1,58 +1,56 @@
 package com.tradingbot.domain.event;
 
 import com.tradingbot.common.enums.SignalType;
+import com.tradingbot.tracing.ExecutionContext;
 import lombok.Builder;
-import lombok.Data;
-import lombok.AllArgsConstructor;
-import lombok.NoArgsConstructor;
+import lombok.Getter;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
-@Data
-@Builder
-@AllArgsConstructor
-@NoArgsConstructor(force = true)
-public class SignalEvent {
-    @Builder.Default
-    private final UUID signalId = UUID.randomUUID();
-    private String symbol;
-    private SignalType type;
-    private BigDecimal price;
-    private BigDecimal quantity;
-    private BigDecimal stopLoss;
-    private BigDecimal takeProfit;
-    private Instant candleTime;
-    private String strategyId;
+/**
+ * <h1>SignalReceivedEvent</h1>
+ * 
+ * <p>Начальное событие в цепочке исполнения.
+ * Инициализирует ExecutionContext.
+ */
+@Getter
+public class SignalEvent extends DomainEvent {
+    private final String symbol;
+    private final SignalType type;
+    private final BigDecimal price;
+    private final BigDecimal quantity;
+    private final BigDecimal stopLoss;
+    private final BigDecimal takeProfit;
+    private final Instant candleTime;
+    private final String strategyId;
+
+    @Builder
+    public SignalEvent(String symbol,
+                               SignalType type, 
+                               BigDecimal price, 
+                               BigDecimal quantity, 
+                               BigDecimal stopLoss, 
+                               BigDecimal takeProfit, 
+                               Instant candleTime, 
+                               String strategyId) {
+        super(ExecutionContext.init(UUID.randomUUID()), 1);
+        this.symbol = symbol;
+        this.type = type;
+        this.price = price;
+        this.quantity = quantity;
+        this.stopLoss = stopLoss;
+        this.takeProfit = takeProfit;
+        this.candleTime = candleTime;
+        this.strategyId = strategyId;
+    }
+
+    @Override
+    public String getEventType() {
+        return "SIGNAL_RECEIVED";
+    }
 
     public UUID getSignalId() {
-        return signalId;
-    }
-    public SignalType getType() {
-        return type;
-    }
-
-    public BigDecimal getPrice() {
-        return price;
-    }
-
-    public BigDecimal getQuantity() {
-        return quantity;
-    }
-
-    public BigDecimal getStopLoss() {
-        return stopLoss;
-    }
-
-    public BigDecimal getTakeProfit() {
-        return takeProfit;
-    }
-
-    public Instant getCandleTime() {
-        return candleTime;
-    }
-
-    public String getStrategyId() {
-        return strategyId;
+        return getContext().signalId();
     }
 }

@@ -15,6 +15,7 @@ import com.tradingbot.infrastructure.persistence.mapper.TradeMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
+import com.tradingbot.tracing.ExecutionContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -44,8 +45,9 @@ public class TradingPipeline {
     public void onOrderFilled(OrderFilledEvent event) {
         log.info("[TRADE-SERVICE] Handling order fill for order: {}", event.getOrderId());
 
+        ExecutionContext context = event.getContext();
         // 1. Outbox: ORDER_FILLED (Фиксация факта исполнения)
-        saveOutbox(event.getOrderId(), "ORDER", "ORDER_FILLED", event);
+        saveOutbox(context, "ORDER", "ORDER_FILLED", event);
 
         if (tradeRepository.existsByExchangeTradeId(event.getExternalExecutionId())) {
             log.warn("[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.", event.getExternalExecutionId());
@@ -70,10 +72,11 @@ public class TradingPipeline {
 
         TradeEntity saved = tradeRepository.save(entity);
 
-        // 3. Outbox: TRADE_CREATED (Для асинхронных проекций, например PositionService)
-        saveOutbox(saved.getId(), "TRADE", "TRADE_CREATED", saved);
+        // 3. Outbox: TRADE_CREATED
+        ExecutionContext tradeContext = context.nextStep(UUID.randomUUID());
+        saveOutbox(tradeContext, "TRADE", "TRADE_CREATED", saved);
 
-        // 4. Обновление RiskEngine (внутренний Event Sourcing)
+        // 4. Обновление RiskEngine
         riskEngine.publish(new RiskEvent.TradeExecuted(
                 saved.getExchangeTradeId(),
                 saved.getSymbol(),
@@ -83,8 +86,9 @@ public class TradingPipeline {
                 saved.getExecutedAt()
         ));
 
-        // 5. Синхронное уведомление Equity (если требуется немедленный пересчет баланса)
+        // 5. Синхронное уведомление Equity
         TradeCreatedEvent tradeCreatedEvent = new TradeCreatedEvent(
+                tradeContext,
                 saved.getId(),
                 saved.getOrder().getId(),
                 saved.getSymbol(),
@@ -98,16 +102,21 @@ public class TradingPipeline {
         equityService.onTradeCreated(tradeCreatedEvent);
     }
 
-    private void saveOutbox(UUID aggregateId, String aggregateType, String eventType, Object payload) {
+    private void saveOutbox(ExecutionContext context, String aggregateType, String eventType, Object payload) {
         try {
             OutboxEventEntity outboxEvent = OutboxEventEntity.builder()
                     .id(UUID.randomUUID())
-                    .aggregateId(aggregateId)
+                    .aggregateId(context.aggregateId())
                     .aggregateType(aggregateType)
                     .eventType(eventType)
                     .payload(objectMapper.writeValueAsString(payload))
                     .status(OutboxStatus.NEW)
                     .createdAt(Instant.now())
+                    .signalId(context.signalId())
+                    .orderId(context.orderId())
+                    .executionId(context.executionId())
+                    .causationId(context.causationId())
+                    .correlationId(context.correlationId())
                     .build();
 
             outboxRepository.save(outboxEvent);
@@ -115,7 +124,6 @@ public class TradingPipeline {
             throw new IllegalStateException("Outbox serialization failed", e);
         }
     }
-
     public List<Trade> getTradeHistory(String symbol, String strategyId) {
         return tradeRepository.findBySymbolAndStrategyIdOrderByExecutedAtAsc(symbol, strategyId)
                 .stream()

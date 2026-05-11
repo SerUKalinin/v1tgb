@@ -22,4 +22,6 @@ public class OrderEventPayload {
     Instant timestamp;
     String strategyId;
     String signalId;
+    UUID causationId;
+    UUID correlationId;
 }

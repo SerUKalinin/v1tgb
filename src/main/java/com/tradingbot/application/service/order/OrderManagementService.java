@@ -25,6 +25,6 @@ public class OrderManagementService {
                 event.getType()
         );
 
-        orderApplicationService.onSignalReceived(event);
+        orderApplicationService.onSignalReceived(event.getContext(), event);
     }
 }

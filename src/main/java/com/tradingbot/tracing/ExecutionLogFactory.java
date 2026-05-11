@@ -10,10 +10,25 @@ public final class ExecutionLogFactory {
     }
 
     public static ExecutionLogRecord from(Order order,
+                                         ExecutionContext context,
                                          ExecutionEventType event,
                                          String state,
                                          String message) {
-        java.util.UUID executionId = resolveExecutionId(order);
+        return new ExecutionLogRecord(
+                context.executionId(),
+                context.orderId(),
+                context.signalId(),
+                event,
+                Optional.ofNullable(state).orElse(event.name()),
+                message
+        );
+    }
+
+    @Deprecated
+    public static ExecutionLogRecord from(Order order,
+                                         ExecutionEventType event,
+                                         String state,
+                                         String message) {        java.util.UUID executionId = resolveExecutionId(order);
         java.util.UUID orderId = order != null ? order.getId() : null;
         java.util.UUID signalId = order != null ? order.getSignalId() : null;
         return new ExecutionLogRecord(executionId, orderId, signalId, event, Optional.ofNullable(state).orElse(event.name()), message);

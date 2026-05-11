@@ -72,8 +72,24 @@ public class OutboxEventEntity {
     @Column(name = "attempt_count", nullable = false)
     private int attemptCount;
 
-    @PrePersist
-    protected void onCreate() {
+    @Builder.Default
+    @Column(name = "schema_version", nullable = false)
+    private int schemaVersion = 1;
+    @Column(name = "signal_id")
+    private UUID signalId;
+    @Column(name = "order_id")
+    private UUID orderId;
+
+    @Column(name = "execution_id")
+    private UUID executionId;
+
+    @Column(name = "causation_id")
+    private UUID causationId;
+
+    @Column(name = "correlation_id")
+    private UUID correlationId;
+
+    @PrePersist    protected void onCreate() {
         if (sequenceNumber == null) {
             throw new IllegalStateException("OutboxEvent must have sequenceNumber before persisting");
         }
