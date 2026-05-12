@@ -1,8 +1,9 @@
 package com.tradingbot.application.service.execution;
 
-import com.tradingbot.tracing.ExecutionContext;
-import com.tradingbot.application.service.risk.EquityService;
-import com.tradingbot.domain.event.OrderFilledEvent;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
+import com.tradingbot.application.service.risk.EquityService;import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Trade;
 import com.tradingbot.application.risk.RiskEngine;
@@ -38,10 +39,19 @@ public class TradeService {
     public void onOrderFilled(OrderFilledEvent event) {
         log.info("[TRADE-SERVICE] Handling order fill for order: {}", event.getOrderId());
 
-        ExecutionContext context = event.getContext();
+        IdentityContext identity = event.getIdentity();
+        ExecutionAttemptContext attempt = event.getAttempt();
+        BusinessContext business = event.getBusiness();
 
         // 1. Outbox: ORDER_FILLED
-        outboxService.publishEvent(context, "ORDER", "ORDER_FILLED", event);
+        outboxService.publishEvent(
+                identity,
+                attempt,
+                business,
+                "ORDER",
+                "ORDER_FILLED",
+                event
+        );
 
         if (tradeRepository.existsByExchangeTradeId(event.getExternalExecutionId())) {
             log.warn("[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.", event.getExternalExecutionId());
@@ -68,9 +78,15 @@ public class TradeService {
         TradeEntity saved = tradeRepository.save(entity);
 
         // 3. Outbox: TRADE_CREATED
-        ExecutionContext tradeContext = context.nextStep(UUID.randomUUID());
-        outboxService.publishEvent(tradeContext, "TRADE", "TRADE_CREATED", saved);
-
+        ExecutionAttemptContext tradeAttempt = attempt.nextStep(UUID.randomUUID());
+        outboxService.publishEvent(
+                identity,
+                tradeAttempt,
+                business,
+                "TRADE",
+                "TRADE_CREATED",
+                saved
+        );
         // 4. Уведомление RiskEngine
         riskEngine.publish(new RiskEvent.TradeExecuted(
                 saved.getExchangeTradeId(),
@@ -83,7 +99,9 @@ public class TradeService {
 
         // 5. Синхронное обновление проекций
         TradeCreatedEvent tradeCreatedEvent = new TradeCreatedEvent(
-                tradeContext,
+                identity,
+                tradeAttempt,
+                business,
                 saved.getId(),
                 saved.getOrder().getId(),
                 saved.getSymbol(),
@@ -96,8 +114,7 @@ public class TradeService {
         );
 
         equityService.onTradeCreated(tradeCreatedEvent);
-    }
-    public List<Trade> getTradeHistory(String symbol, String strategyId) {
+    }    public List<Trade> getTradeHistory(String symbol, String strategyId) {
         return tradeRepository.findBySymbolAndStrategyIdOrderByExecutedAtAsc(symbol, strategyId)
                 .stream()
                 .map(tradeMapper::toDomain)

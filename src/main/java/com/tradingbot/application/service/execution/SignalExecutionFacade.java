@@ -1,10 +1,9 @@
 package com.tradingbot.application.service.execution;
 
-import com.tradingbot.tracing.ExecutionContext;
-import com.tradingbot.tracing.ExecutionLogContext;
+import com.tradingbot.application.service.order.OrderApplicationService;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.execution.ExecutionClaimPort;
-import com.tradingbot.application.service.order.OrderApplicationService;
+import com.tradingbot.tracing.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -20,18 +19,30 @@ public class SignalExecutionFacade {
 
     @Transactional
     public void execute(SignalEvent signal) {
-        ExecutionContext context = signal.getContext();
-        ExecutionLogContext.load(context);
-        try {
-            executionClaimPort.claim(context);
-            log.info("[CLAIMED] context={}", context);
 
-            log.info("[EXECUTION_STARTED] context={}", context);
-            orderApplicationService.createOrder(context, signal);
+        IdentityContext identity = signal.getIdentity();
+        ExecutionAttemptContext attempt = signal.getAttempt();
+        BusinessContext business = signal.getBusiness();
+
+        ExecutionLogContext.load(identity, attempt, business);
+
+        try {
+            executionClaimPort.claim(identity, attempt, business);
+
+            log.info("[CLAIMED] signalId={}", identity.signalId());
+
+            orderApplicationService.createOrder(identity, attempt, business, signal);
+
+            log.info("[EXECUTION_STARTED] signalId={}", identity.signalId());
+
         } catch (Exception e) {
-            log.error("[EXECUTION_FAILED] context={} message={}", context, e.getMessage(), e);
+            log.error("[EXECUTION_FAILED] signalId={} msg={}",
+                    identity.signalId(),
+                    e.getMessage(),
+                    e);
             throw e;
         } finally {
             ExecutionLogContext.clear();
         }
-    }}
+    }
+}

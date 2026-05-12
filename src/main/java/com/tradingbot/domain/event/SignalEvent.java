@@ -1,21 +1,19 @@
 package com.tradingbot.domain.event;
 
 import com.tradingbot.common.enums.SignalType;
-import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.IdentityContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.BusinessContext;
 import lombok.Builder;
 import lombok.Getter;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
-/**
- * <h1>SignalReceivedEvent</h1>
- * 
- * <p>Начальное событие в цепочке исполнения.
- * Инициализирует ExecutionContext.
- */
 @Getter
 public class SignalEvent extends DomainEvent {
+
     private final String symbol;
     private final SignalType type;
     private final BigDecimal price;
@@ -25,16 +23,24 @@ public class SignalEvent extends DomainEvent {
     private final Instant candleTime;
     private final String strategyId;
 
-    @Builder
-    public SignalEvent(String symbol,
-                               SignalType type, 
-                               BigDecimal price, 
-                               BigDecimal quantity, 
-                               BigDecimal stopLoss, 
-                               BigDecimal takeProfit, 
-                               Instant candleTime, 
-                               String strategyId) {
-        super(ExecutionContext.init(UUID.randomUUID()), 1);
+    public SignalEvent(
+            UUID signalId,
+            String symbol,
+            SignalType type,
+            BigDecimal price,
+            BigDecimal quantity,
+            BigDecimal stopLoss,
+            BigDecimal takeProfit,
+            Instant candleTime,
+            String strategyId
+    ) {
+        super(
+                IdentityContext.of(signalId),
+                ExecutionAttemptContext.of(signalId),
+                BusinessContext.of(signalId.toString()),
+                1
+        );
+
         this.symbol = symbol;
         this.type = type;
         this.price = price;
@@ -51,10 +57,6 @@ public class SignalEvent extends DomainEvent {
     }
 
     public UUID getSignalId() {
-        return getContext().signalId();
-    }
-
-    public UUID getAggregateId() {
-        return getContext().aggregateId();
+        return getIdentity().signalId();
     }
 }

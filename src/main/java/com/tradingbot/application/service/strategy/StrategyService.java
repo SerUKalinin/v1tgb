@@ -47,17 +47,20 @@ public class StrategyService {
     }
 
     private void generateTestSignal(NewClosedCandleEvent candle) {
-        SignalEvent signal = SignalEvent.builder()
-                .symbol(candle.symbol())
-                .strategyId("SMA_CROSS_STUB")
-                .type(SignalType.BUY)
-                .price(candle.close())
-                .candleTime(candle.closeTime())
-                .build();
+        SignalEvent signal = new SignalEvent(
+                java.util.UUID.randomUUID(),
+                candle.symbol(),
+                SignalType.BUY,
+                candle.close(),
+                BigDecimal.ZERO, // quantity
+                BigDecimal.ZERO, // stopLoss
+                BigDecimal.ZERO, // takeProfit
+                candle.closeTime(),
+                "SMA_CROSS_STUB"
+        );
 
         log.info("[STRATEGY] Generated test signal: {} {} at {}", 
-                signal.getSymbol(), signal.getType(), signal.getPrice());
-        
+                signal.getSymbol(), signal.getType(), signal.getPrice());        
         eventPublisher.publishEvent(signal);
     }
 }

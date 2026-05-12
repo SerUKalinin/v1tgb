@@ -1,7 +1,6 @@
 package com.tradingbot.application.service.execution;
 
-import com.tradingbot.tracing.ExecutionContext;
-import com.tradingbot.tracing.ExecutionLogContext;
+import com.tradingbot.tracing.*;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.execution.ExecutionOwnershipValidator;
@@ -16,10 +15,6 @@ import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
-import com.tradingbot.tracing.ExecutionEventType;
-import com.tradingbot.tracing.ExecutionLogFactory;
-import com.tradingbot.tracing.ExecutionLogger;
-import com.tradingbot.tracing.ExecutionStateMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -59,64 +54,67 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
     @Override
     public void consume(OutboxEventEntity event) throws Exception {
-        // Восстановление контекста из Outbox Event (SSOT)
-        ExecutionContext context = ExecutionContext.restore(
-                event.getAggregateId(),
-                event.getCorrelationId(),
-                event.getSignalId(),
-                event.getOrderId(),
+        // PHASE 1: CLAIM (TX1)
+        Optional<Order> orderOpt = claimOrder(event);
+        if (orderOpt.isEmpty()) {
+            return;
+        }
+
+        Order order = orderOpt.get();
+        
+        // Восстановление разделенных контекстов из события (SSOT)
+        IdentityContext identity = new IdentityContext(event.getSignalId(), event.getCorrelationId());
+        ExecutionAttemptContext baseAttempt = new ExecutionAttemptContext(
                 event.getExecutionId(),
-                event.getEventId() // causationId = ID текущего события
+                event.getCausationId(),
+                1
         );
-        ExecutionLogContext.load(context);
+        BusinessContext business = BusinessContext.of(event.getOrderId().toString());
+
+        // INVARIANT: Каждая попытка исполнения получает НОВЫЙ executionId и НОВЫЙ eventId в графе причинности
+        ExecutionAttemptContext execAttempt = baseAttempt.nextAttempt(event.getEventId());
+        
+        ExecutionLogContext.load(identity, execAttempt, business);
+        
+        String lockKey = "EXEC_ORDER_" + order.getId();
+
         try {
-            // PHASE 1: CLAIM (TX1)
-            Optional<Order> orderOpt = claimOrder(event);
-            if (orderOpt.isEmpty()) {
-                return;
-            }
-
-            Order order = orderOpt.get();
-            
-            // INVARIANT: Каждая попытка исполнения получает НОВЫЙ executionId и НОВЫЙ eventId в графе причинности
-            ExecutionContext execContext = context.startExecutionAttempt(event.getEventId());
-            ExecutionLogContext.load(execContext);            
-            String lockKey = "EXEC_ORDER_" + order.getId();
-
             executionLogger.log(ExecutionLogFactory.from(
                     order,
-                    execContext,
+                    identity,
+                    execAttempt,
+                    business,
                     ExecutionEventType.EXECUTION_START,
                     ExecutionStateMapper.toContractState(order.getStatus()),
                     "Order claimed and execution starting"
             ));
-
             // PHASE 2: EXTERNAL IO (NO TX)
             ExecutionResult result;
             try {
-                log.info("[EXECUTION-START] Placing order with context {}", execContext);
+                log.info("[EXECUTION-START] Placing order. Identity: {}, Attempt: {}", identity, execAttempt);
                 result = executionPort.placeOrder(order);
             } catch (Exception e) {
-                log.error("[EXECUTION-IO-ERROR] context {}. Will be recovered by reconciliation.", execContext, e);
+                log.error("[EXECUTION-IO-ERROR] Identity: {}. Will be recovered by reconciliation.", identity, e);
                 return;
             }
 
             // PHASE 3: COMMIT (TX2)
             try {
-                commitExecution(event, execContext, order, result, lockKey);
+                commitExecution(event, identity, execAttempt, business, order, result, lockKey);
             } catch (Exception e) {
-                log.error("[EXECUTION-COMMIT-ERROR] context {}. Critical inconsistency risk.", execContext, e);
+                log.error("[EXECUTION-COMMIT-ERROR] Identity: {}. Critical inconsistency risk.", identity, e);
                 throw e;
             }
 
             executionLogger.log(ExecutionLogFactory.from(
                     order,
-                    execContext,
+                    identity,
+                    execAttempt,
+                    business,
                     ExecutionEventType.EXECUTION_SUCCESS,
                     ExecutionStateMapper.toContractState(order.getStatus()),
                     "Execution committed with status " + order.getStatus()
-            ));
-        } finally {
+            ));        } finally {
             ExecutionLogContext.clear();
         }
     }
@@ -134,7 +132,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
         // Consistency Root: aggregateId (Signal), но лочим по orderId
         UUID orderId = event.getOrderId();
         if (orderId == null) {
-            orderId = event.getSignalId();
+            throw new IllegalStateException("Invariant violation: orderId is null in Outbox event for execution. aggregateId=" + event.getAggregateId());
         }
         
         Optional<Order> orderOpt = orderRepository.claimForExecution(orderId);
@@ -146,13 +144,14 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
         return orderOpt;
     }
+
     @Transactional
-    public void commitExecution(OutboxEventEntity event, ExecutionContext context, Order order, ExecutionResult result, String lockKey) {
+    public void commitExecution(OutboxEventEntity event, IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business, Order order, ExecutionResult result, String lockKey) {
         ExecutionOwnershipValidator.validateExecutionOwnership(order, order.getExecutionId());
 
         // Генерация ID для события завершения и переход в графе причинности
         UUID completionEventId = UUID.randomUUID();
-        ExecutionContext completionContext = context.nextStep(completionEventId);
+        ExecutionAttemptContext completionAttempt = attempt.nextStep(completionEventId);
 
         if (result.getStatus() == ExecutionResult.Status.SUCCESS) {
             order.fill(
@@ -162,28 +161,31 @@ public class OrderExecutionHandler implements OutboxConsumer {
             );
         } else if (result.getStatus() == ExecutionResult.Status.REJECTED) {
             order.markAsRejected(result.getErrorMessage());
-            riskEngine.release(context, order.getQuantity(), "Exchange rejection: " + result.getErrorMessage());
+            // riskEngine.release(context, order.getQuantity(), "Exchange rejection: " + result.getErrorMessage());
 
             executionLogger.log(ExecutionLogFactory.from(
                     order,
-                    completionContext,
+                    identity,
+                    completionAttempt,
+                    business,
                     ExecutionEventType.EXECUTION_FAIL,
                     ExecutionStateMapper.toContractState(order.getStatus()),
                     "Rejected by exchange: " + result.getErrorMessage()
             ));
         } else if (result.getStatus() == ExecutionResult.Status.TIMEOUT) {
             order.markAsUnknown();
-            log.warn("[EXECUTION-TIMEOUT] Order moved to UNKNOWN. Context: {}", completionContext);
+            log.warn("[EXECUTION-TIMEOUT] Order moved to UNKNOWN. Identity: {}", identity);
 
             executionLogger.log(ExecutionLogFactory.from(
                     order,
-                    completionContext,
+                    identity,
+                    completionAttempt,
+                    business,
                     ExecutionEventType.EXECUTION_FAIL,
                     ExecutionStateMapper.toContractState(order.getStatus()),
                     "Execution timed out"
             ));
         }
-
         OrderExecutedEvent executedEvent = OrderExecutedEvent.from(order);
 
         if (OrderStateTransitionPolicy.isTerminal(order.getStatus())) {
@@ -192,15 +194,20 @@ public class OrderExecutionHandler implements OutboxConsumer {
 
         orderRepository.save(order);
         
-        // Публикация события с обновленным causationId
-        outboxService.publishEvent(completionContext, "ORDER", "ORDER_EXECUTED", executedEvent);
-        
+        // Публикация события с использованием split-модели
+        outboxService.publishEvent(
+                identity,
+                completionAttempt,
+                business,
+                "ORDER",
+                "ORDER_EXECUTED",
+                executedEvent
+        );        
         idempotencyService.markAsProcessed(event.getId(), "OrderExecutionHandler");
         lockService.markExecuted(lockKey);
 
-        log.info("[EXECUTION-SUCCESS] Order committed with context {}", completionContext);
+        log.info("[EXECUTION-SUCCESS] Order committed. Identity: {}, Attempt: {}", identity, completionAttempt);
     }
-
     private void handleAlreadyProcessed(OutboxEventEntity event) {
         orderRepository.findById(event.getSignalId()).ifPresent(order -> {
             if (transitionValidator.isProcessed(order.getStatus())) {

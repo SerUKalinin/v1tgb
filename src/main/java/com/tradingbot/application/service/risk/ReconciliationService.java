@@ -31,6 +31,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 
 import jakarta.persistence.OptimisticLockException;
 
@@ -163,29 +164,29 @@ public class ReconciliationService {
         List<Order> stuckOrders = orderRepository.findStuckOrdersInStatuses(reconcilableStatuses, threshold);
 
         for (Order order : stuckOrders) {
-            ExecutionContext context = ExecutionContext.restore(
-                order.getSignalId(), // aggregateId
-                order.getSignalId(), // correlationId
-                order.getSignalId(), // signalId
-                order.getId(),
+            IdentityContext identity = new IdentityContext(order.getSignalId(), order.getSignalId());
+            ExecutionAttemptContext attempt = new ExecutionAttemptContext(
                 order.getExecutionId(),
-                order.getExecutionId() != null ? order.getExecutionId() : order.getId() // causationId
+                order.getExecutionId() != null ? order.getExecutionId() : order.getId(),
+                1
             );
-            syncOrderWithExchange(order, context);
+            BusinessContext business = BusinessContext.of(order.getId().toString());
+            
+            syncOrderWithExchange(order, identity, attempt, business);
         }    }
     @Transactional
-    public void reconcile(ExecutionContext context) {
-        orderRepository.findById(context.orderId()).ifPresent(order -> syncOrderWithExchange(order, context));
+    public void reconcile(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business) {
+        orderRepository.findById(UUID.fromString(business.orderId())).ifPresent(order -> syncOrderWithExchange(order, identity, attempt, business));
     }
 
     @Transactional
-    public void syncOrderWithExchange(Order targetOrder, ExecutionContext context) {
+    public void syncOrderWithExchange(Order targetOrder, IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business) {
         try {
             // 1. Атомарный захват ордера для реконсиляции (Ownership Gating)
             Optional<Order> orderOpt = orderRepository.claimForReconciliation(targetOrder.getId());
 
             if (orderOpt.isEmpty()) {
-                log.debug("[RECON-SKIP] Order {} is currently executing or terminal. Context: {}", targetOrder.getId(), context);
+                log.debug("[RECON-SKIP] Order {} is currently executing or terminal. Identity: {}", targetOrder.getId(), identity);
                 return;
             }
 
@@ -193,59 +194,36 @@ public class ReconciliationService {
 
             executionLogger.log(ExecutionLogFactory.from(
                     order,
-                    context,
+                    identity,
+                    attempt,
+                    business,
                     ExecutionEventType.RECON_START,
                     ExecutionStateMapper.toContractState(order.getStatus()),
                     "Reconciling order " + order.getId()
             ));
 
-            log.info("[RECON] Syncing order {} (status: {}). Context: {}", order.getId(), order.getStatus(), context);
+            log.info("[RECON] Syncing order {} (status: {}). Identity: {}", order.getId(), order.getStatus(), identity);
             ExecutionResult exchangeState = exchangeQueryService.getOrderStatus(order.getClientOrderId());
 
             boolean stateChanged = false;
             if (exchangeState.getStatus() == ExecutionResult.Status.SUCCESS) {
                 order.fill(exchangeState.getExchangeOrderId(), exchangeState.getExecutedQty(), exchangeState.getExecutedPrice());
-                log.info("[RECON-SUCCESS] Order {} synchronized to FILLED. Context: {}", order.getId(), context);
+                log.info("[RECON-SUCCESS] Order {} synchronized to FILLED. Identity: {}", order.getId(), identity);
                 stateChanged = true;
             } else if (exchangeState.getStatus() == ExecutionResult.Status.REJECTED) {
                 order.markAsRejected(exchangeState.getErrorMessage());
-                if (context != null) {
-                    riskEngine.release(context, order.getQuantity(), "Reconciliation rejection");
-                } else {
-                    // Восстанавливаем контекст из ордера для корректного логирования и идентификации
-                    ExecutionContext recoveredContext = ExecutionContext.restore(
-                            order.getSignalId(), // aggregateId
-                            order.getSignalId(), // correlationId
-                            order.getSignalId(), // signalId
-                            order.getId(),
-                            order.getExecutionId(),
-                            order.getExecutionId() != null ? order.getExecutionId() : order.getId() // causationId
-                    );
-                    riskEngine.release(recoveredContext, order.getQuantity(), "Reconciliation rejection (recovered)");
-                }                log.warn("[RECON-SUCCESS] Order {} synchronized to REJECTED. Context: {}", order.getId(), context);
+                riskEngine.release(identity, attempt, business, order.getQuantity(), "Reconciliation rejection");
+                log.warn("[RECON-SUCCESS] Order {} synchronized to REJECTED. Identity: {}", order.getId(), identity);
                 stateChanged = true;
             } else {
                 Instant graceThreshold = Instant.now().minus(RECONCILIATION_GRACE_PERIOD);
                 if (order.getExecutionStartedAt() != null && order.getExecutionStartedAt().isBefore(graceThreshold)) {
-                    log.warn("[RECON-PROPOSAL] Order {} not found after grace period. Syncing to REJECTED. Context: {}", order.getId(), context);
+                    log.warn("[RECON-PROPOSAL] Order {} not found after grace period. Syncing to REJECTED. Identity: {}", order.getId(), identity);
                     order.markAsRejected("Not found on exchange after grace period");
-                    if (context != null) {
-                        riskEngine.release(context, order.getQuantity(), "Reconciliation not found");
-                    } else {
-                        ExecutionContext recoveredContext = ExecutionContext.restore(
-                                order.getSignalId(), // aggregateId
-                                order.getSignalId(), // correlationId
-                                order.getSignalId(), // signalId
-                                order.getId(),
-                                order.getExecutionId(),
-                                order.getExecutionId() != null ? order.getExecutionId() : order.getId() // causationId
-                        );
-                        riskEngine.release(recoveredContext, order.getQuantity(), "Reconciliation not found (recovered)");
-                    }                    stateChanged = true;
+                    riskEngine.release(identity, attempt, business, order.getQuantity(), "Reconciliation not found");
+                    stateChanged = true;
                 }
-            }
-
-            if (stateChanged) {
+            }            if (stateChanged) {
                 // 2. Очистка owner при переходе в терминальное состояние (Compliance)
                 if (OrderStateTransitionPolicy.isTerminal(order.getStatus())) {
                     order.clearExecutionOwner();

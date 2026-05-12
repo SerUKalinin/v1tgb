@@ -1,18 +1,13 @@
 package com.tradingbot.application.service.order;
 
-import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.domain.event.OrderEventPayload;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
-import com.tradingbot.tracing.ExecutionEventType;
-import com.tradingbot.tracing.ExecutionLogFactory;
-import com.tradingbot.tracing.ExecutionLogger;
-import com.tradingbot.tracing.ExecutionStateMapper;
+import com.tradingbot.tracing.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -25,6 +20,7 @@ import java.util.Optional;
 @Service
 @RequiredArgsConstructor
 public class OrderApplicationService {
+
     private final OrderRepository orderRepository;
     private final OrderMapper orderMapper;
     private final RiskService riskService;
@@ -32,57 +28,66 @@ public class OrderApplicationService {
     private final ExecutionLogger executionLogger;
 
     @Transactional
-    public void onSignalReceived(ExecutionContext context, SignalEvent signal) {
-        createOrder(context, signal);
+    public void onSignalReceived(SignalEvent signal) {
+        createOrder(signal.getIdentity(), signal.getAttempt(), signal.getBusiness(), signal);
     }
 
     @Transactional
-    public void createOrder(ExecutionContext context, SignalEvent signal) {
-        log.info("[TRACE_FLOW] ENTER OrderApplicationService.createOrder context: {}", context);
-        log.info("[TRACE_FLOW] [RISK_STARTED] context={}", context);
+    public void createOrder(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business, SignalEvent signal) {
+
+        log.info("[TRACE_FLOW] ENTER createOrder signalId={}", identity.signalId());
 
         Optional<Order> orderOpt = riskService.evaluateAndReserve(signal);
-
         if (orderOpt.isEmpty()) {
-            log.warn("[TRACE_FLOW] EXIT - ORDER_REJECTED: Risk check failed for context {}", context);
+            log.warn("[TRACE_FLOW] ORDER_REJECTED signalId={}", identity.signalId());
             return;
         }
 
         Order order = orderOpt.get();
-        // causationId теперь ссылается на eventId входящего сигнала
-        ExecutionContext orderContext = context.attachOrder(order.getId(), signal.getEventId());
-        
-        log.info("[TRACE_FLOW] [RISK_COMPLETED] context={}", orderContext);
 
+        // 🔒 защита от коррапта идентичности
+        if (order.getId().equals(identity.signalId())) {
+            throw new IllegalStateException(
+                    "Security violation: orderId must not equal signalId"
+            );
+        }
+
+        // 📌 создаём бизнес-контекст ордера (новая SSOT ветка)
+        BusinessContext orderBusiness =
+                ExecutionPipeline.createBusiness(
+                        attempt,
+                        order.getId().toString(),
+                        java.util.Map.of()
+                );
+
+        // 💾 persist
         OrderEntity entity = orderMapper.toEntity(order);
         entity.setCreatedAt(Instant.now());
         orderRepository.save(entity);
-        log.info("[TRACE_FLOW] [ORDER_PERSISTED] context={}", orderContext);
-        OrderEventPayload payload = OrderEventPayload.builder()
-                .orderId(order.getId())
-                .clientOrderId(order.getClientOrderId())
-                .symbol(order.getSymbol())
-                .quantity(order.getQuantity())
-                .price(order.getPrice())
-                .status(order.getStatus().name())
-                .timestamp(Instant.now())
-                .strategyId(order.getStrategyId())
-                .signalId(orderContext.signalId().toString())
-                .causationId(orderContext.causationId())
-                .correlationId(orderContext.correlationId())
-                .build();
-        
-        outboxService.publishEvent(orderContext, "ORDER", "ORDER_CREATED", payload);
-        log.info("[TRACE_FLOW] Outbox event published with context");
 
-        executionLogger.log(ExecutionLogFactory.from(
-                order,
-                orderContext,
-                ExecutionEventType.ORDER_CREATED,
-                ExecutionStateMapper.toContractState(order.getStatus()),
-                "Order created from signal " + signal.getSymbol()
-        ));
+        // 📤 outbox event
+        outboxService.publishEvent(
+                identity,
+                attempt,
+                orderBusiness,
+                "ORDER",
+                "ORDER_CREATED",
+                order
+        );
 
-        log.info("[TRACE_FLOW] EXIT - ORDER_CREATED: context {}", orderContext);
+        // 📊 execution trace log
+        executionLogger.log(
+                ExecutionLogFactory.from(
+                        order,
+                        identity,
+                        attempt,
+                        orderBusiness,
+                        ExecutionEventType.ORDER_CREATED,
+                        ExecutionStateMapper.toContractState(order.getStatus()),
+                        "Order created from signal " + signal.getSymbol()
+                )
+        );
+
+        log.info("[TRACE_FLOW] EXIT ORDER_CREATED signalId={}", identity.signalId());
     }
 }

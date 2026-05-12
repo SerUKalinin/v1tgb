@@ -10,9 +10,10 @@ import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
-import com.tradingbot.tracing.ExecutionContext;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
+import lombok.RequiredArgsConstructor;import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -71,15 +72,18 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
 
         // 5. Обновление позиции через PositionService (только если есть реальное исполнение)
         if (executedQty != null && executedQty.compareTo(BigDecimal.ZERO) > 0) {
-            ExecutionContext context = ExecutionContext.restore(
-                    event.getAggregateId(),
-                    event.getCorrelationId(),
-                    event.getSignalId(),
-                    event.getOrderId(),
+            IdentityContext identity = new IdentityContext(event.getSignalId(), event.getCorrelationId());
+            ExecutionAttemptContext attempt = new ExecutionAttemptContext(
                     event.getExecutionId(),
-                    event.getEventId()
-            );            
-            TradeCreatedEvent tradeEvent = new TradeCreatedEvent(                    context,
+                    event.getEventId(),
+                    1
+            );
+            BusinessContext business = BusinessContext.of(event.getOrderId().toString());
+
+            TradeCreatedEvent tradeEvent = new TradeCreatedEvent(
+                    identity,
+                    attempt,
+                    business,
                     UUID.randomUUID(),
                     orderId,
                     order.getSymbol(),
@@ -91,8 +95,7 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
                     null  // takeProfit
             );
             positionService.updatePosition(tradeEvent);
-        }
-        // 6. Сохранение ордера
+        }        // 6. Сохранение ордера
         orderPort.save(order);
         
         // 7. Пометка события как обработанного

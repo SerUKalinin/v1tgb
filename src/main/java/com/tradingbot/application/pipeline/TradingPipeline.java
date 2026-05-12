@@ -15,9 +15,10 @@ import com.tradingbot.infrastructure.persistence.mapper.TradeMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
-import com.tradingbot.tracing.ExecutionContext;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
+import lombok.RequiredArgsConstructor;import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,9 +46,12 @@ public class TradingPipeline {
     public void onOrderFilled(OrderFilledEvent event) {
         log.info("[TRADE-SERVICE] Handling order fill for order: {}", event.getOrderId());
 
-        ExecutionContext context = event.getContext();
+        IdentityContext identity = event.getIdentity();
+        ExecutionAttemptContext attempt = event.getAttempt();
+        BusinessContext business = event.getBusiness();
+
         // 1. Outbox: ORDER_FILLED (Фиксация факта исполнения)
-        saveOutbox(context, "ORDER", "ORDER_FILLED", event);
+        saveOutbox(identity, attempt, business, "ORDER", "ORDER_FILLED", event);
 
         if (tradeRepository.existsByExchangeTradeId(event.getExternalExecutionId())) {
             log.warn("[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.", event.getExternalExecutionId());
@@ -73,8 +77,8 @@ public class TradingPipeline {
         TradeEntity saved = tradeRepository.save(entity);
 
         // 3. Outbox: TRADE_CREATED
-        ExecutionContext tradeContext = context.nextStep(UUID.randomUUID());
-        saveOutbox(tradeContext, "TRADE", "TRADE_CREATED", saved);
+        ExecutionAttemptContext tradeAttempt = attempt.nextStep(UUID.randomUUID());
+        saveOutbox(identity, tradeAttempt, business, "TRADE", "TRADE_CREATED", saved);
 
         // 4. Обновление RiskEngine
         riskEngine.publish(new RiskEvent.TradeExecuted(
@@ -88,7 +92,9 @@ public class TradingPipeline {
 
         // 5. Синхронное уведомление Equity
         TradeCreatedEvent tradeCreatedEvent = new TradeCreatedEvent(
-                tradeContext,
+                identity,
+                tradeAttempt,
+                business,
                 saved.getId(),
                 saved.getOrder().getId(),
                 saved.getSymbol(),
@@ -102,29 +108,28 @@ public class TradingPipeline {
         equityService.onTradeCreated(tradeCreatedEvent);
     }
 
-    private void saveOutbox(ExecutionContext context, String aggregateType, String eventType, Object payload) {
+    private void saveOutbox(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business, String aggregateType, String eventType, Object payload) {
         try {
             OutboxEventEntity outboxEvent = OutboxEventEntity.builder()
                     .id(UUID.randomUUID())
-                    .aggregateId(context.aggregateId())
+                    .aggregateId(identity.aggregateId())
                     .aggregateType(aggregateType)
                     .eventType(eventType)
                     .payload(objectMapper.writeValueAsString(payload))
                     .status(OutboxStatus.NEW)
                     .createdAt(Instant.now())
-                    .signalId(context.signalId())
-                    .orderId(context.orderId())
-                    .executionId(context.executionId())
-                    .causationId(context.causationId())
-                    .correlationId(context.correlationId())
+                    .signalId(identity.signalId())
+                    .orderId(business.orderId() != null && !"UNKNOWN".equals(business.orderId()) ? UUID.fromString(business.orderId()) : null)
+                    .executionId(attempt.executionId())
+                    .causationId(attempt.causationId())
+                    .correlationId(identity.correlationId())
                     .build();
 
             outboxRepository.save(outboxEvent);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Outbox serialization failed", e);
         }
-    }
-    public List<Trade> getTradeHistory(String symbol, String strategyId) {
+    }    public List<Trade> getTradeHistory(String symbol, String strategyId) {
         return tradeRepository.findBySymbolAndStrategyIdOrderByExecutedAtAsc(symbol, strategyId)
                 .stream()
                 .map(tradeMapper::toDomain)

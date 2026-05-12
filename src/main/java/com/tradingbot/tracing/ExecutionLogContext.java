@@ -4,7 +4,7 @@ import org.slf4j.MDC;
 import java.util.UUID;
 
 /**
- * Утилита для управления MDC (Mapped Diagnostic Context) на основе ExecutionContext.
+ * Утилита для управления MDC (Mapped Diagnostic Context) на основе разделенной модели контекста.
  * Обеспечивает сквозное структурированное логирование всех идентификаторов.
  */
 public final class ExecutionLogContext {
@@ -19,16 +19,25 @@ public final class ExecutionLogContext {
     private ExecutionLogContext() {}
 
     /**
-     * Заполняет MDC данными из контекста.
+     * Заполняет MDC данными из разделенных контекстов.
      */
-    public static void load(ExecutionContext context) {
-        if (context == null) return;
-        put(AGGREGATE_ID, context.aggregateId());
-        put(CORRELATION_ID, context.correlationId());
-        put(SIGNAL_ID, context.signalId());
-        put(ORDER_ID, context.orderId());
-        put(EXECUTION_ID, context.executionId());
-        put(CAUSATION_ID, context.causationId());
+    public static void load(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business) {
+        if (identity != null) {
+            put(AGGREGATE_ID, identity.aggregateId());
+            put(CORRELATION_ID, identity.correlationId());
+            put(SIGNAL_ID, identity.signalId());
+        }
+        if (attempt != null) {
+            put(EXECUTION_ID, attempt.executionId());
+            put(CAUSATION_ID, attempt.causationId());
+        }
+        if (business != null && business.orderId() != null && !"UNKNOWN".equals(business.orderId())) {
+            try {
+                MDC.put(ORDER_ID, business.orderId());
+            } catch (Exception e) {
+                MDC.remove(ORDER_ID);
+            }
+        }
     }
 
     /**

@@ -99,7 +99,19 @@ public class OutboxEventEntity {
             throw new IllegalStateException("OutboxEvent must have sequenceNumber before persisting");
         }
         if (eventId == null) {
-            throw new IllegalStateException("Invariant violation: eventId cannot be null in OutboxEvent");
+            throw new IllegalStateException("STRICT CAUSALITY VIOLATION: eventId is mandatory for all outbox events");
+        }
+        if (executionId == null) {
+            throw new IllegalStateException("STRICT IDENTITY VIOLATION: executionId cannot be null in Outbox. aggregateId=" + aggregateId);
+        }
+        if (orderId == null) {
+            throw new IllegalStateException("STRICT IDENTITY VIOLATION: orderId cannot be null in Outbox. aggregateId=" + aggregateId);
+        }
+        if (causationId == null) {
+            throw new IllegalStateException("STRICT CAUSALITY VIOLATION: causationId cannot be null. aggregateId=" + aggregateId);
+        }
+        if (!aggregateId.equals(signalId)) {
+            throw new IllegalStateException("STRICT IDENTITY VIOLATION: aggregateId must equal signalId. aggregateId=" + aggregateId + ", signalId=" + signalId);
         }
         if (status == null) status = OutboxStatus.NEW;
         if (createdAt == null) createdAt = Instant.now();

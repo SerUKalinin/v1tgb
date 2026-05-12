@@ -19,14 +19,17 @@ public class TestSignalController {
 
     @GetMapping("/test-signal")
     public String sendTestSignal() {
-        SignalEvent testEvent = SignalEvent.builder()
-                .symbol("BTCUSDT")
-                .type(SignalType.BUY)
-                .price(new BigDecimal("65000.00"))
-                .strategyId("test-strategy")
-                .candleTime(Instant.now())
-                .build();
+        SignalEvent testEvent = new SignalEvent(
+                java.util.UUID.randomUUID(),
+                "BTCUSDT",
+                SignalType.BUY,
+                new BigDecimal("65000.00"),
+                BigDecimal.ZERO, // quantity
+                BigDecimal.ZERO, // stopLoss
+                BigDecimal.ZERO, // takeProfit
+                Instant.now(),
+                "test-strategy"
+        );
         
-        eventPublisher.publishEvent(testEvent);
-        return "Тестовый сигнал отправлен в систему! Проверьте Telegram.";
+        eventPublisher.publishEvent(testEvent);        return "Тестовый сигнал отправлен в систему! Проверьте Telegram.";
     }}

@@ -1,6 +1,8 @@
 package com.tradingbot.infrastructure.persistence.adapter;
 
-import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
 import com.tradingbot.domain.execution.AlreadyClaimedException;
 import com.tradingbot.domain.execution.ExecutionClaimPort;
 import com.tradingbot.infrastructure.persistence.entity.ExecutionClaimEntity;
@@ -12,6 +14,7 @@ import org.springframework.stereotype.Component;
 
 import static jakarta.transaction.Transactional.TxType.REQUIRES_NEW;
 
+import java.time.Instant;
 import java.util.UUID;
 
 @Component
@@ -22,21 +25,26 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
 
     @Override
     @Transactional(REQUIRES_NEW)
-    public void claim(ExecutionContext context) {
-        UUID signalId = context.signalId();
+    public void claim(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business) {
+        UUID signalId = identity.signalId();
+        UUID executionId = attempt.executionId();
+
         ExecutionClaimEntity entity = ExecutionClaimEntity.builder()
                 .signalId(signalId)
+                .executionId(executionId)
                 .status(ExecutionClaimEntity.STATUS_CLAIMED)
-                .build();        try {
+                .claimedAt(Instant.now())
+                .build();
+
+        try {
             repository.saveAndFlush(entity);
         } catch (DataIntegrityViolationException e) {
             if (isSignalAlreadyClaimed(e)) {
-                throw new AlreadyClaimedException("Signal " + signalId + " already claimed", e);
+                throw new AlreadyClaimedException("Signal " + signalId + " already claimed by another execution", e);
             }
             throw e;
         }
-    }
-    private boolean isSignalAlreadyClaimed(DataIntegrityViolationException e) {
+    }    private boolean isSignalAlreadyClaimed(DataIntegrityViolationException e) {
         Throwable cause = e.getMostSpecificCause();
         if (cause == null || cause.getMessage() == null) {
             return false;

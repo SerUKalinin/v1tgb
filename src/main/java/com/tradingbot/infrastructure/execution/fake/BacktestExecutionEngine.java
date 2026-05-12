@@ -1,11 +1,12 @@
 package com.tradingbot.infrastructure.execution.fake;
 
-import com.tradingbot.tracing.ExecutionContext;
-import com.tradingbot.application.service.execution.TradeService;
-import com.tradingbot.domain.event.OrderFilledEvent;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.application.service.execution.TradeService;import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
+import com.tradingbot.tracing.IdentityContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
@@ -30,20 +31,23 @@ public class BacktestExecutionEngine implements ExecutionEngine {
         String externalOrderId = "fake-order-" + UUID.randomUUID().toString().substring(0, 8);
         String externalTradeId = "fake-trade-" + UUID.randomUUID().toString().substring(0, 8);
 
-        // Восстанавливаем контекст из ордера (в бэктесте aggregateId = signalId)
-        ExecutionContext context = ExecutionContext.init(order.getSignalId())
-                .attachOrder(order.getId(), UUID.randomUUID())
-                .startExecutionAttempt(UUID.randomUUID());
+        // Восстанавливаем контекст через split model flow
+        IdentityContext identity = new IdentityContext(order.getSignalId(), order.getSignalId());
+        ExecutionAttemptContext attempt = ExecutionAttemptContext.firstAttempt(order.getSignalId())
+                .nextAttempt(UUID.randomUUID());
+        BusinessContext business = BusinessContext.of(order.getId().toString());
+
         // Прямой вызов TradeService вместо публикации события
         tradeService.onOrderFilled(new OrderFilledEvent(
-                context,
+                identity,
+                attempt,
+                business,
                 order.getId(),
                 externalTradeId,
                 order.getSymbol(),
                 order.getQuantity(),
                 order.getPrice()
         ));
-
         return ExecutionResult.success(
                 order.getId(),
                 externalOrderId,

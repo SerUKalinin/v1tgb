@@ -30,15 +30,18 @@ public class SignalGenerator {
         SignalType type = random.nextBoolean() ? SignalType.BUY : SignalType.SELL;
         BigDecimal price = BigDecimal.valueOf(30000 + random.nextDouble() * 1000);
 
-        SignalEvent event = SignalEvent.builder()
-                .symbol(symbol)
-                .type(type)
-                .price(price)
-                .strategyId("DEBUG-STRATEGY")
-                .candleTime(Instant.now())
-                .build();
+        SignalEvent event = new SignalEvent(
+                java.util.UUID.randomUUID(),
+                symbol,
+                type,
+                price,
+                BigDecimal.ZERO, // quantity
+                BigDecimal.ZERO, // stopLoss
+                BigDecimal.ZERO, // takeProfit
+                Instant.now(),
+                "DEBUG-STRATEGY"
+        );
 
-        log.info("[DEBUG] Generating fake signal: {} {} at {}", type, symbol, price);
-        eventPublisher.publishEvent(event);
+        log.info("[DEBUG] Generating fake signal: {} {} at {}", type, symbol, price);        eventPublisher.publishEvent(event);
     }
 }

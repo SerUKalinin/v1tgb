@@ -1,8 +1,9 @@
 package com.tradingbot.application.service.order;
 
-import com.tradingbot.tracing.ExecutionContext;
-import com.tradingbot.application.service.risk.ReconciliationService;
-import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
+import com.tradingbot.application.service.risk.ReconciliationService;import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import lombok.RequiredArgsConstructor;
@@ -41,15 +42,15 @@ public class OrderWatchdogService {
                     log.info("[WATCHDOG][RECOVERY] Reconciling order id={}, clientOrderId={}", 
                             order.getId(), order.getClientOrderId());
                     
-                    ExecutionContext context = ExecutionContext.restore(
-                        order.getSignalId(), // aggregateId
-                        order.getSignalId(), // correlationId
-                        order.getSignalId(), // signalId
-                        order.getId(),
+                    IdentityContext identity = new IdentityContext(order.getSignalId(), order.getSignalId());
+                    ExecutionAttemptContext attempt = new ExecutionAttemptContext(
                         order.getExecutionId(),
-                        order.getExecutionId() != null ? order.getExecutionId() : order.getId() // causationId
-                    );                    reconciliationService.reconcile(context);
-                } catch (Exception e) {
+                        order.getExecutionId() != null ? order.getExecutionId() : order.getId(),
+                        1
+                    );
+                    BusinessContext business = BusinessContext.of(order.getId().toString());
+                    
+                    reconciliationService.reconcile(identity, attempt, business);                } catch (Exception e) {
                     log.error("[WATCHDOG][ERROR] Failed to recover order {}: {}", order.getId(), e.getMessage());
                 }
             }

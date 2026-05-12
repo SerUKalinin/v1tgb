@@ -1,13 +1,14 @@
 package com.tradingbot.domain.execution;
 
-import java.util.UUID;
-
-/**
- * Порт, позволяющий атомарно зарегистрировать попытку обработки сигнала.
- */
-import com.tradingbot.tracing.ExecutionContext;
-import java.util.UUID;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
 
 public interface ExecutionClaimPort {
-    void claim(ExecutionContext context);
+
+    void claim(
+            IdentityContext identity,
+            ExecutionAttemptContext attempt,
+            BusinessContext business
+    );
 }

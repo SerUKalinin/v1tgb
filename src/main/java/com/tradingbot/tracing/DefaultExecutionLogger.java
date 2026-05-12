@@ -11,15 +11,20 @@ public class DefaultExecutionLogger implements ExecutionLogger {
 
     @Override
     public void log(ExecutionLogRecord record) {
-        if (record == null) {
+        if (record.executionId() == null || record.signalId() == null) {
+            log.error("[LOGGING-RULE-VIOLATION] Attempted to log partial identity: {}", record);
             return;
         }
-        log.info("[EXECUTION] executionId={} orderId={} signalId={} event={} state={} message={}",
-                record.executionId(),
-                record.orderId(),
+        
+        log.info("[EXECUTION-TRACE] signalId={} correlationId={} executionId={} causationId={} orderId={} event={} state={} message={}",
                 record.signalId(),
-                record.event(),
+                record.correlationId(),
+                record.executionId(),
+                record.causationId(),
+                record.orderId(),
+                record.eventType(),
                 record.state(),
-                record.message());
+                record.message()
+        );
     }
 }
