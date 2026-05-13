@@ -36,10 +36,9 @@ public class RiskEngine {
         riskService.release(context, amount, reason);
     }
 
-    public Optional<Order> evaluateAndReserve(ExecutionContext context, com.tradingbot.domain.event.SignalEvent signal) {
-        return riskService.evaluateAndReserve(context, signal);
+    public Optional<Order> evaluateSignal(ExecutionContext context, com.tradingbot.domain.event.SignalEvent signal) {
+        return riskService.evaluateSignal(context, signal);
     }
-
     public void release(ExecutionContext context) {
         riskService.release(context, BigDecimal.ZERO, "COMPENSATION");
     }    public void syncBalance(BigDecimal actualBalance) {

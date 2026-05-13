@@ -49,12 +49,13 @@ public class RiskService {
 
     // ==================== MAIN FLOW ====================
 
-    public Optional<Order> evaluateAndReserve(ExecutionContext context, SignalEvent signal) {
+    public Optional<Order> evaluateSignal(ExecutionContext context, SignalEvent signal) {
         IdentityContext identity = context.identity();
-        log.info("[TRACE_FLOW] ENTER RiskService.evaluateAndReserve for identity: {}", identity);        RiskState state = riskStatePort.get();
+        log.info("[TRACE_FLOW] ENTER RiskService.evaluateSignal for identity: {}", identity);
         log.info("[TRACE_FLOW] Current RiskState: halted={}, balance={}, reserved={}",
-                state.isHalted(), state.getBalance(), state.getReservedMargin());
+                riskStatePort.get().isHalted(), riskStatePort.get().getBalance(), riskStatePort.get().getReservedMargin());
 
+        RiskState state = riskStatePort.get();
         if (state.isHalted()) {
             log.warn("[TRACE_FLOW] EXIT RiskService - REJECTED: System is HALTED for identity: {}", identity);
             return Optional.empty();
@@ -89,7 +90,8 @@ public class RiskService {
         BigDecimal requiredCapital = normalized.getQuantity().multiply(normalized.getPrice());
         UUID orderId = IdentityFactory.deriveOrder(signal.getSignalId());
 
-        RiskDecision decision = RiskPolicy.canReserve(state, orderId, requiredCapital);        log.info("[TRACE_FLOW] RiskPolicy decision: approved={}, reason={} for identity: {}", decision.isApproved(), decision.getReason(), identity);
+        RiskDecision decision = RiskPolicy.canReserve(state, orderId, requiredCapital);
+        log.info("[TRACE_FLOW] RiskPolicy decision: approved={}, reason={} for identity: {}", decision.isApproved(), decision.getReason(), identity);
 
         if (!decision.isApproved()) {
             log.warn("[TRACE_FLOW] EXIT RiskService - REJECTED: Policy violation. Reason: {} for identity: {}", decision.getReason(), identity);
@@ -98,7 +100,8 @@ public class RiskService {
 
         // 5. Резервирование капитала
         UUID eventId = IdentityFactory.deriveEventId(orderId, "capital-reserved");
-        RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(                eventId.toString(),
+        RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(
+                eventId.toString(),
                 orderId,
                 requiredCapital
         );
@@ -126,11 +129,10 @@ public class RiskService {
                 signal.getStrategyId(),
                 signal.getSignalId()
         );
-        log.info("[TRACE_FLOW] EXIT RiskService.evaluateAndReserve - APPROVED for identity: {}", identity);
+        log.info("[TRACE_FLOW] EXIT RiskService.evaluateSignal - APPROVED for identity: {}", identity);
 
         return Optional.of(order);
     }
-
     // ==================== EVENTS ====================
 
     public void publish(RiskEvent event) {

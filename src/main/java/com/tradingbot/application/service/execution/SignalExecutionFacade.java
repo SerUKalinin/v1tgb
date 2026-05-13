@@ -42,8 +42,8 @@ public class SignalExecutionFacade {
 
             // 4. Создание ордера и запуск бизнес-цепочки
             orderApplicationService.handleSignal(signal);
-            log.info("[ORDER_CREATED] signalId={}", signal.getSignalId());        } catch (Exception e) {
-            log.error("[SIGNAL_PROCESSING_FAILED] signalId={} msg={}",
+            log.info("[ORDER_CREATED] signalId={}", signal.getSignalId());
+        } catch (Exception e) {            log.error("[SIGNAL_PROCESSING_FAILED] signalId={} msg={}",
                     signal.getSignalId(),
                     e.getMessage(),
                     e);

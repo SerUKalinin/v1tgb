@@ -13,13 +13,8 @@ import java.math.BigDecimal;
 @Component
 public class OrderMapper {
 
-    /**
-     * Преобразует сущность БД в доменную модель.
-     */
     public Order toDomain(OrderEntity entity) {
-        if (entity == null) {
-            return null;
-        }
+        if (entity == null) return null;
 
         return Order.reconstruct(
                 entity.getId(),
@@ -36,67 +31,53 @@ public class OrderMapper {
                 entity.getCreatedAt(),
                 entity.getUpdatedAt(),
                 entity.getExecutionId(),
-                entity.getExecutionStartedAt(),                entity.getExchangeOrderId(),
+                entity.getExecutionStartedAt(),
+                entity.getExchangeOrderId(),
                 entity.getExecutedQuantity(),
                 entity.getAveragePrice(),
                 entity.getRejectionReason(),
-                entity.getExecutionAttempts() // Добавлено восстановление попыток
+                entity.getExecutionAttempts()
         );
     }
 
-    /**
-     * Создает новую сущность на основе доменной модели.
-     */
     public OrderEntity toEntity(Order order) {
         if (order == null) return null;
 
-        OrderEntity entity = new OrderEntity();
-        updateEntity(order, entity);
-
-        // Поля, которые задаются только при создании
-        entity.setId(order.getId());
-        entity.setClientOrderId(order.getClientOrderId());
-        entity.setStrategyId(order.getStrategyId());
-        entity.setSignalId(order.getSignalId());
-
-        return entity;
+        return OrderEntity.builder()
+                .id(order.getId())
+                .clientOrderId(order.getClientOrderId())
+                .symbol(order.getSymbol())
+                .side(order.getSide())
+                .type(order.getType())
+                .quantity(order.getQuantity())
+                .price(order.getPrice())
+                .strategyId(order.getStrategyId())
+                .signalId(order.getSignalId())
+                .status(order.getStatus())
+                .version(order.getVersion())
+                .createdAt(order.getCreatedAt())
+                .updatedAt(order.getUpdatedAt())
+                .executionId(order.getExecutionId())
+                .executionStartedAt(order.getExecutionStartedAt())
+                .executionAttempts(order.getExecutionAttempts())
+                .exchangeOrderId(order.getExchangeOrderId())
+                .executedQuantity(order.getExecutedQuantity() != null ? order.getExecutedQuantity() : BigDecimal.ZERO)
+                .averagePrice(order.getAveragePrice() != null ? order.getAveragePrice() : BigDecimal.ZERO)
+                .rejectionReason(order.getRejectionReason())
+                .build();
     }
 
-    /**
-     * Обновляет существующую сущность данными из доменной модели.
-     */
     public void updateEntity(Order order, OrderEntity entity) {
         if (order == null || entity == null) return;
 
-        // Strict validation
-        if (order.getSymbol() == null) throw new IllegalStateException("Order symbol is null for order: " + order.getId());
-        if (order.getSide() == null) throw new IllegalStateException("Order side is null for order: " + order.getId());
-        if (order.getType() == null) throw new IllegalStateException("Order type is null for order: " + order.getId());
-
-        // Состояние и версия
+        // Обновляем только mutable бизнес-поля
         entity.setStatus(order.getStatus());
-        entity.setVersion(order.getVersion());
-        entity.setCreatedAt(order.getCreatedAt());
         entity.setUpdatedAt(order.getUpdatedAt());
-
-        // Параметры ордера
-        entity.setSymbol(order.getSymbol());
-        entity.setSide(order.getSide());
-        entity.setType(order.getType());
-        entity.setQuantity(order.getQuantity());
-        entity.setPrice(order.getPrice());
-
-        // Данные исполнения
-        entity.setExecutionId(order.getExecutionId());
-        entity.setExecutionStartedAt(order.getExecutionStartedAt());
-        entity.setExecutionAttempts(order.getExecutionAttempts()); // Синхронизация попыток
         entity.setExchangeOrderId(order.getExchangeOrderId());
-
-        // Финансовые показатели (с защитой от null)
-        entity.setExecutedQuantity(order.getExecutedQuantity() != null ?
-                order.getExecutedQuantity() : BigDecimal.ZERO);
-        entity.setAveragePrice(order.getAveragePrice() != null ?
-                order.getAveragePrice() : BigDecimal.ZERO);
-
+        entity.setExecutionStartedAt(order.getExecutionStartedAt());
+        entity.setExecutionAttempts(order.getExecutionAttempts());
+        entity.setExecutedQuantity(order.getExecutedQuantity() != null ? order.getExecutedQuantity() : BigDecimal.ZERO);
+        entity.setAveragePrice(order.getAveragePrice() != null ? order.getAveragePrice() : BigDecimal.ZERO);
         entity.setRejectionReason(order.getRejectionReason());
-    }}
+    }
+}

@@ -1,5 +1,6 @@
 package com.tradingbot.application.service.order;
 
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.risk.RiskService;
@@ -23,24 +24,26 @@ public class OrderApplicationService {
 
     private final OrderRepository orderRepository;
     private final OrderMapper orderMapper;
-    private final RiskService riskService;
+    private final RiskEngine riskEngine;
     private final OutboxService outboxService;
     private final ExecutionLogger executionLogger;
 
     @Transactional
     public void handleSignal(SignalEvent signal) {
         ExecutionContext context = signal.getExecutionContext();
-        log.info("[TRACE_FLOW] ENTER ORDER_CREATED signalId={}", context.identity().signalId());        // 1. Проверка рисков и создание модели ордера
-        Optional<Order> orderOpt = riskService.evaluateAndReserve(context, signal);
+        log.info("[TRACE_FLOW] ENTER ORDER_CREATED signalId={}", context.signalId());
 
-        if (orderOpt.isEmpty()) {            log.warn("Order creation rejected by RiskService for signalId={}", context.identity().signalId());
+        // 1. Проверка рисков и создание модели ордера через RiskEngine
+        Optional<Order> orderOpt = riskEngine.evaluateSignal(context, signal);
+        if (orderOpt.isEmpty()) {
+            log.warn("Order creation rejected by RiskService for signalId={}", context.signalId());
             return;
         }
 
         Order order = orderOpt.get();
 
         // 2. Защита от коррапта идентичности (инвариант: orderId != signalId)
-        if (order.getId().toString().equals(context.identity().signalId())) {
+        if (order.getId().toString().equals(context.signalId().toString())) {
             throw new IllegalStateException("Security violation: orderId must not equal signalId");
         }
 
@@ -52,12 +55,16 @@ public class OrderApplicationService {
         entity.setCreatedAt(Instant.now());
         orderRepository.save(entity);
 
-        // 5. Публикация события в Outbox
+        // 5. Публикация события в Outbox с использованием строго типизированного DTO
         outboxService.publishEvent(
                 orderContext,
                 "ORDER",
                 "ORDER_CREATED",
-                order
+                new OrderCreatedEvent(
+                        orderContext.signalId(),
+                        order.getId(),
+                        orderContext.attempt().executionId()
+                )
         );
 
         // 6. Логирование трассировки исполнения

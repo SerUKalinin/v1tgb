@@ -1,8 +1,9 @@
 package com.tradingbot.application.service.execution;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.application.risk.RiskEngine;
-import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.application.service.order.OrderCreatedEvent;import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.event.OrderExecutedEvent;
 import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.execution.ExecutionClaimPort;
@@ -46,29 +47,30 @@ public class OrderExecutionHandler implements OutboxConsumer {
     private final TransitionValidator transitionValidator;
     private final ExecutionLogger executionLogger;
     private final ExecutionClaimPort executionClaimPort;
+    private final ObjectMapper objectMapper;
 
-    @Override
-    public boolean supports(String eventType) {
+    @Override    public boolean supports(String eventType) {
         return "ORDER_CREATED".equals(eventType);
     }
 
     @Override
     public void consume(OutboxEventEntity event) throws Exception {
+        // Десериализация в строго типизированный record
+        OrderCreatedEvent payload = objectMapper.readValue(event.getPayload(), OrderCreatedEvent.class);
+
         // Восстановление базового контекста из события
         ExecutionContext baseContext = ExecutionContext.from(event);
 
-        // INVARIANT: Каждая попытка получает детерминированный executionId = deriveExecution(orderId, attempt)
-        ExecutionContext context = baseContext.withNextAttempt();
+        // TRANSPORT RETRY: Сохраняем тот же executionId для идемпотентности при повторах из Outbox
+        ExecutionContext context = baseContext.withTransportRetry();
         ExecutionLogContext.load(context);
-
         try {
             // PHASE 1: CLAIM (TX1 - REQUIRES_NEW)
             // Проверяем и фиксируем право на выполнение данной попытки (executionId)
-            Optional<Order> orderOpt = claimOrder(event, context);
+            Optional<Order> orderOpt = claimOrder(event, context, payload);
             if (orderOpt.isEmpty()) {
                 return;
             }
-
             Order order = orderOpt.get();
             String lockKey = "EXEC_ORDER_" + order.getId();
 
@@ -113,33 +115,36 @@ public class OrderExecutionHandler implements OutboxConsumer {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
-    public Optional<Order> claimOrder(OutboxEventEntity event, ExecutionContext context) {
+    public Optional<Order> claimOrder(OutboxEventEntity event, ExecutionContext context, OrderCreatedEvent payload) {
         if (stateManager != null && !stateManager.isReady()) {
             throw new IllegalStateException("System not ready for execution");
         }
 
         UUID executionId = context.attempt().executionId();
-        UUID orderId = event.getOrderId();
+        UUID orderId = payload.orderId();
+        UUID signalId = payload.signalId();
 
         if (orderId == null) {
-            throw new IllegalStateException("Invariant violation: orderId is null in Outbox event");
+            throw new IllegalStateException("Invariant violation: orderId is null in OrderCreatedEvent");
         }
 
+        if (signalId == null) {
+            throw new IllegalStateException("Invariant violation: signalId is null in OrderCreatedEvent. SignalId is required for execution claim.");
+        }
         // Техническая идемпотентность: проверка по executionId (eventId-based запрещена)
         if (executionClaimPort.existsByExecutionId(executionId)) {
             log.info("[EXECUTION-SKIP] executionId {} already claimed. Skipping IO.", executionId);
             return Optional.empty();
         }
 
-        log.info("[EXECUTION-CLAIM] executionId={} orderId={} signalId={}",
-                executionId, orderId, event.getSignalId());
+        log.info("[EXECUTION-CLAIM-START] Attempting to claim execution. executionId={}, signalId={}, orderId={}",
+                executionId, signalId, orderId);
 
-        // Фиксируем клейм перед вызовом биржи
-        executionClaimPort.claimExecution(executionId);
+        // Фиксируем клейм перед вызовом биржи. signalId обязателен.
+        executionClaimPort.claimExecution(executionId, signalId);
 
         // Блокируем ордер в БД
         Optional<Order> orderOpt = orderRepository.claimForExecution(orderId);
-
         if (orderOpt.isEmpty()) {
             handleAlreadyProcessed(event);
             return Optional.empty();

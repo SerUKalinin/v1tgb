@@ -9,7 +9,6 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
 import java.util.UUID;
 
 import static org.springframework.transaction.annotation.Propagation.REQUIRES_NEW;
@@ -34,11 +33,8 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
             return;
         }
 
-        ExecutionClaimEntity entity = ExecutionClaimEntity.builder()
-                .signalId(signalId)
-                .status(ExecutionClaimEntity.STATUS_CLAIMED)
-                .claimedAt(Instant.now())
-                .build();
+        // При клейме сигнала используем его же как executionId для обеспечения обязательности полей
+        ExecutionClaimEntity entity = ExecutionClaimEntity.create(signalId, signalId);
 
         try {
             repository.saveAndFlush(entity);
@@ -52,19 +48,14 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
 
     @Override
     @Transactional(propagation = REQUIRES_NEW)
-    public void claimExecution(UUID executionId) {        // 1. Быстрая проверка перед попыткой записи
+    public void claimExecution(UUID executionId, UUID signalId) {
         if (existsByExecutionId(executionId)) {
             return;
         }
 
-        ExecutionClaimEntity entity = ExecutionClaimEntity.builder()
-                .executionId(executionId)
-                .status(ExecutionClaimEntity.STATUS_CLAIMED)
-                .claimedAt(Instant.now())
-                .build();
+        ExecutionClaimEntity entity = ExecutionClaimEntity.create(executionId, signalId);
 
         try {
-            // 2. Атомарная запись с проверкой уникальности на уровне БД
             repository.saveAndFlush(entity);
         } catch (DataIntegrityViolationException e) {
             if (isExecutionAlreadyClaimed(e)) {
@@ -96,9 +87,7 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
                 || (message.contains("unique") && message.contains("signal_id"));
     }
 
-    /**
-     * Проверка исключения на нарушение уникальности индекса execution_id.
-     */    private boolean isExecutionAlreadyClaimed(DataIntegrityViolationException e) {
+    private boolean isExecutionAlreadyClaimed(DataIntegrityViolationException e) {
         Throwable cause = e.getMostSpecificCause();
         if (cause == null || cause.getMessage() == null) {
             return false;

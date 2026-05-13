@@ -32,17 +32,13 @@ public class DefaultRiskManager implements RiskManager {
 
     @Override
     public Optional<Order> evaluateAndReserve(ExecutionContext context, SignalEvent signal) {
-        return riskEngine.evaluateAndReserve(context, signal);
+        return riskEngine.evaluateSignal(context, signal);
     }
 
     @Override
     public Optional<Order> approveSignal(SignalEvent signal) {
-        // Создаем контекст "на лету" из stateless события для совместимости
-        ExecutionContext context = ExecutionContext.of(signal.getSignalId());
-        return riskEngine.evaluateAndReserve(context, signal);
-    }
-
-    @Override
+        return riskEngine.evaluateSignal(signal.getExecutionContext(), signal);
+    }    @Override
     public RiskDecision check(Order order) {
         RiskState currentState = riskService.getState();
         if (currentState.isHalted()) {

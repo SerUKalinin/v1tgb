@@ -21,14 +21,16 @@ import java.util.UUID;
         }
 )@Getter
 @Setter
+@Builder(toBuilder = true)
 @NoArgsConstructor(access = AccessLevel.PUBLIC)
 @AllArgsConstructor(access = AccessLevel.PACKAGE)
-public class OrderEntity {
-    @Id    private UUID id;
+public class OrderEntity {    @Id
+    @Setter(AccessLevel.NONE)
+    private UUID id;
 
     @Column(name = "client_order_id", nullable = false, unique = true, updatable = false)
+    @Setter(AccessLevel.NONE)
     private String clientOrderId;
-
     @Column(name = "exchange_order_id")
     private String exchangeOrderId;
 
@@ -62,14 +64,16 @@ public class OrderEntity {
     private BigDecimal averagePrice;
 
     @Column(name = "strategy_id", nullable = false)
+    @Setter(AccessLevel.NONE)
     private String strategyId;
 
     @Column(name = "signal_id", nullable = false, updatable = false)
+    @Setter(AccessLevel.NONE)
     private UUID signalId;
 
     @Column(name = "execution_id")
+    @Setter(AccessLevel.NONE)
     private UUID executionId;
-
     @Column(name = "execution_started_at")
     private Instant executionStartedAt;
 

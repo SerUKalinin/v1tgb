@@ -24,5 +24,6 @@ public class Trade {
     BigDecimal quantity;
     BigDecimal feeAmount;
     String feeAsset;
+    BigDecimal realizedPnl;
     Instant executedAt;
 }

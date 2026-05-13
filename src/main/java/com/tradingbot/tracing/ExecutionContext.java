@@ -25,22 +25,24 @@ public record ExecutionContext(
         return new ExecutionContext(identity, attempt, business);
     }
 
-    public ExecutionContext withNextAttempt() {
-        return new ExecutionContext(identity, attempt.nextAttempt(identity.aggregateId()), business);
+    public ExecutionContext withTransportRetry() {
+        return new ExecutionContext(identity, attempt.withTransportRetry(), business);
     }
 
-    public ExecutionContext withNextStep(UUID eventId) {        return new ExecutionContext(identity, attempt.nextStep(eventId), business);
+    public ExecutionContext nextBusinessAttempt() {
+        return new ExecutionContext(identity, attempt.nextBusinessAttempt(), business);
     }
-
+    public ExecutionContext withNextStep(UUID eventId) {
+        return new ExecutionContext(identity, attempt.nextStep(eventId), business);
+    }
+    @Deprecated(since = "Use context from SignalEvent or Outbox recovery")
     public static ExecutionContext of(UUID signalId) {
         return new ExecutionContext(
                 IdentityContext.of(signalId),
                 ExecutionAttemptContext.of(signalId),
-                BusinessContext.of(signalId.toString())
+                BusinessContext.empty()
         );
-    }
-
-    public ExecutionContext withBusiness(BusinessContext business) {
+    }    public ExecutionContext withBusiness(BusinessContext business) {
         return new ExecutionContext(identity, attempt, business);
     }
 
@@ -62,15 +64,27 @@ public record ExecutionContext(
 
     /**
      * Восстановление контекста из события Outbox.
+     * STRICT RESTORE: Использует только явные поля идентичности из сущности.
+     * Fallback на aggregateId запрещен, так как он предназначен для роутинга.
      */
     public static ExecutionContext from(com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity event) {
+        Objects.requireNonNull(event.getSignalId(), "STRICT RESTORE FAILURE: signalId is missing in OutboxEvent");
+        Objects.requireNonNull(event.getExecutionId(), "STRICT RESTORE FAILURE: executionId is missing in OutboxEvent");
+        Objects.requireNonNull(event.getCausationId(), "STRICT RESTORE FAILURE: causationId is missing in OutboxEvent");
+
         return new ExecutionContext(
-                new IdentityContext(event.getSignalId(), event.getCorrelationId() != null ? event.getCorrelationId() : event.getSignalId()),
-                new ExecutionAttemptContext(event.getExecutionId(), event.getCausationId(), event.getAttemptCount()),
+                new IdentityContext(
+                        event.getSignalId(),
+                        event.getCorrelationId() != null ? event.getCorrelationId() : event.getSignalId()
+                ),
+                new ExecutionAttemptContext(
+                        event.getExecutionId(),
+                        event.getCausationId(),
+                        event.getAttemptCount()
+                ),
                 BusinessContext.of(event.getOrderId() != null ? event.getOrderId().toString() : "UNKNOWN")
         );
     }
-
     /**
      * Создание контекста на основе доменного объекта Order.
      */
