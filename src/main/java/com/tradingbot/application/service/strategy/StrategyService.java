@@ -6,6 +6,7 @@ import com.tradingbot.application.service.order.OrderApplicationService;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.tracing.IdentityFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -13,6 +14,11 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Сервис для управления торговыми стратегиями.
@@ -22,6 +28,9 @@ import java.math.BigDecimal;
 @Service
 @RequiredArgsConstructor
 public class StrategyService {
+
+    private static final Duration TEST_SIGNAL_COOLDOWN = Duration.ofMinutes(15);
+    private final Map<String, Instant> lastSignalTimes = new ConcurrentHashMap<>();
 
     private final MarketDataService marketDataService;
     private final OrderApplicationService orderApplicationService;
@@ -47,8 +56,19 @@ public class StrategyService {
     }
 
     private void generateTestSignal(NewClosedCandleEvent candle) {
+        Instant now = Instant.now();
+        Instant lastSignal = lastSignalTimes.get(candle.symbol());
+
+        if (lastSignal != null && Duration.between(lastSignal, now).compareTo(TEST_SIGNAL_COOLDOWN) < 0) {
+            log.debug("[STRATEGY] Throttling test signal for {}. Last signal was at {}", candle.symbol(), lastSignal);
+            return;
+        }
+
+        lastSignalTimes.put(candle.symbol(), now);
+
+        UUID signalId = IdentityFactory.derive(UUID.nameUUIDFromBytes(candle.symbol().getBytes()), "test-signal-" + candle.closeTime());
         SignalEvent signal = new SignalEvent(
-                java.util.UUID.randomUUID(),
+                signalId,
                 candle.symbol(),
                 SignalType.BUY,
                 candle.close(),

@@ -17,6 +17,10 @@ public record BusinessContext(
         params = params != null ? Map.copyOf(params) : Collections.emptyMap();
     }
 
+    public static BusinessContext empty() {
+        return new BusinessContext("NONE", Collections.emptyMap());
+    }
+
     public static BusinessContext of(String orderId) {
         return new BusinessContext(orderId, Collections.emptyMap());
     }

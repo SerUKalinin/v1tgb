@@ -1,0 +1,77 @@
+package com.tradingbot.application;
+
+import com.tradingbot.BaseIntegrationTest;
+import com.tradingbot.application.pipeline.TradingPipeline;
+import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
+import com.tradingbot.infrastructure.persistence.repository.ExecutionClaimRepository;
+import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
+import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class FullExecutionPipelineIntegrationTest extends BaseIntegrationTest {
+
+    @Autowired
+    private TradingPipeline tradingPipeline;
+
+    @Autowired
+    private OrderRepository orderRepository;
+
+    @Autowired
+    private ExecutionClaimRepository claimRepository;
+
+    @Autowired
+    private OutboxEventRepository outboxRepository;
+
+    @Test
+    void testFullPipelineIdempotencyAndDeterminism() throws Exception {
+        UUID signalId = UUID.randomUUID();
+        SignalEvent signal = new SignalEvent(
+                signalId,
+                "BTCUSDT",
+                com.tradingbot.common.enums.OrderSide.BUY,
+                new BigDecimal("50000"),
+                BigDecimal.ONE,
+                "STRAT-1"
+        );
+
+        // 1. ПЕРВЫЙ ПРОХОД: Signal -> Order -> Claim -> Execute -> Commit -> Outbox
+        tradingPipeline.processSignal(signal);
+
+        OrderEntity order1 = orderRepository.findBySignalId(signalId)
+                .orElseThrow(() -> new AssertionError("Order should be created"));
+        
+        UUID executionId1 = order1.getExecutionId();
+        assertNotNull(executionId1, "ExecutionId must be assigned");
+        assertEquals(OrderStatus.FILLED, order1.getStatus());
+        assertTrue(claimRepository.existsBySignalId(signalId), "Execution claim must exist");
+        
+        long outboxCount1 = outboxRepository.count();
+        assertTrue(outboxCount1 > 0, "Outbox should contain events");
+
+        // 2. ПОВТОРНЫЙ ПРОХОД: Тот же сигнал (Idempotency Check)
+        tradingPipeline.processSignal(signal);
+
+        // Проверка: дубликатов нет
+        assertEquals(1, orderRepository.countBySignalId(signalId), "Should not create duplicate OrderEntity");
+        assertEquals(1, claimRepository.countBySignalId(signalId), "Should not create duplicate ExecutionClaim");
+        assertEquals(outboxCount1, outboxRepository.count(), "Should not create duplicate Outbox events");
+
+        // 3. ПРОВЕРКА ДЕТЕРМИНИЗМА: executionId должен совпадать при повторной генерации контекста
+        // (Проверяется косвенно через отсутствие дублей в Outbox, так как ID события = executionId)
+        
+        // 4. ПРОВЕРКА SSOT: CorrelationId и CausationId в Outbox
+        outboxRepository.findAll().forEach(event -> {
+            assertNotNull(event.getCorrelationId(), "CorrelationId must be present");
+            assertNotNull(event.getCausationId(), "CausationId must be present");
+            assertEquals(signalId, event.getSignalId(), "SignalId must be preserved in Outbox");
+        });
+    }
+}

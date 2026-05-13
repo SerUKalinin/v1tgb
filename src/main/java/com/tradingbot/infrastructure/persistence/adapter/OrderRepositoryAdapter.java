@@ -8,12 +8,12 @@ import com.tradingbot.domain.policy.TransitionValidator;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
+import com.tradingbot.tracing.ExecutionContext;
 import jakarta.persistence.OptimisticLockException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -43,17 +43,18 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
             }
 
             Order order = orderMapper.toDomain(entity);
-            order.markExecuting();
-
-            entity.setExecutionId(entity.getExecutionId() != null ? entity.getExecutionId() : UUID.randomUUID());
+            
+            // Восстанавливаем контекст через SSOT factory
+            ExecutionContext context = ExecutionContext.of(order);
+            
+            order.markExecuting(context);
             entity.setExecutionStartedAt(Instant.now());
             entity.setExecutionAttempts(entity.getExecutionAttempts() + 1);
             entity.setUpdatedAt(Instant.now());
             
-            order.assignExecutionOwner(entity.getExecutionId());
+            order.assignExecutionOwner(context);
             orderMapper.updateEntity(order, entity);
             orderRepository.saveAndFlush(entity);
-
             return Optional.of(order);
         });
     }

@@ -1,12 +1,10 @@
 package com.tradingbot.infrastructure.execution.fake;
 
-import com.tradingbot.tracing.BusinessContext;
-import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.*;
 import com.tradingbot.application.service.execution.TradeService;import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
-import com.tradingbot.tracing.IdentityContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
@@ -28,27 +26,21 @@ public class BacktestExecutionEngine implements ExecutionEngine {
         log.info("[FAKE-EXEC] Executing order: {} {} {} @ {}",
                 order.getSide(), order.getQuantity(), order.getSymbol(), order.getPrice());
 
-        String externalOrderId = "fake-order-" + UUID.randomUUID().toString().substring(0, 8);
-        String externalTradeId = "fake-trade-" + UUID.randomUUID().toString().substring(0, 8);
+        String externalOrderId = "fake-order-" + IdentityFactory.deriveEventId(order.getSignalId(), "external-order").toString().substring(0, 8);
+        String externalTradeId = "fake-trade-" + IdentityFactory.deriveEventId(order.getSignalId(), "external-trade").toString().substring(0, 8);
 
         // Восстанавливаем контекст через split model flow
-        IdentityContext identity = new IdentityContext(order.getSignalId(), order.getSignalId());
-        ExecutionAttemptContext attempt = ExecutionAttemptContext.firstAttempt(order.getSignalId())
-                .nextAttempt(UUID.randomUUID());
-        BusinessContext business = BusinessContext.of(order.getId().toString());
-
+        ExecutionContext context = ExecutionContext.of(order).withNextAttempt();
         // Прямой вызов TradeService вместо публикации события
-        tradeService.onOrderFilled(new OrderFilledEvent(
-                identity,
-                attempt,
-                business,
+        tradeService.onOrderFilled(new OrderFilledEvent(                context.identity(),
+                context.attempt(),
+                context.business(),
                 order.getId(),
                 externalTradeId,
                 order.getSymbol(),
                 order.getQuantity(),
                 order.getPrice()
-        ));
-        return ExecutionResult.success(
+        ));        return ExecutionResult.success(
                 order.getId(),
                 externalOrderId,
                 externalTradeId,

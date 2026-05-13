@@ -66,6 +66,7 @@ public class OrderEntity {
 
     @Column(name = "signal_id", nullable = false, updatable = false)
     private UUID signalId;
+
     @Column(name = "execution_id")
     private UUID executionId;
 
@@ -75,8 +76,10 @@ public class OrderEntity {
     @Column(name = "execution_attempts")
     private int executionAttempts;
 
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(name = "rejection_reason")
+    private String rejectionReason;
+
+    @Enumerated(EnumType.STRING)    @Column(nullable = false)
     private OrderStatus status;
 
     @Column(name = "created_at", nullable = false, updatable = false)

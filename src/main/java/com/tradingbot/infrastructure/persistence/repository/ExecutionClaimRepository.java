@@ -9,5 +9,6 @@ import java.util.UUID;
 
 @Repository
 public interface ExecutionClaimRepository extends JpaRepository<ExecutionClaimEntity, UUID> {
-    Optional<ExecutionClaimEntity> findBySignalId(UUID signalId);
+    boolean existsBySignalId(UUID signalId);
+    boolean existsByExecutionId(UUID executionId);
 }

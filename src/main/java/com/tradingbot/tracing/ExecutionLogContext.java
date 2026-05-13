@@ -19,9 +19,15 @@ public final class ExecutionLogContext {
     private ExecutionLogContext() {}
 
     /**
-     * Заполняет MDC данными из разделенных контекстов.
+     * Заполняет MDC данными из единого контекста исполнения.
      */
-    public static void load(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business) {
+    public static void load(ExecutionContext context) {
+        if (context == null) return;
+        
+        IdentityContext identity = context.identity();
+        ExecutionAttemptContext attempt = context.attempt();
+        BusinessContext business = context.business();
+
         if (identity != null) {
             put(AGGREGATE_ID, identity.aggregateId());
             put(CORRELATION_ID, identity.correlationId());
@@ -32,14 +38,9 @@ public final class ExecutionLogContext {
             put(CAUSATION_ID, attempt.causationId());
         }
         if (business != null && business.orderId() != null && !"UNKNOWN".equals(business.orderId())) {
-            try {
-                MDC.put(ORDER_ID, business.orderId());
-            } catch (Exception e) {
-                MDC.remove(ORDER_ID);
-            }
+            MDC.put(ORDER_ID, business.orderId());
         }
     }
-
     /**
      * Очищает MDC от идентификаторов выполнения.
      */

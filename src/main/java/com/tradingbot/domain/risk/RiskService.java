@@ -7,10 +7,7 @@ import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.exchange.*;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.outbox.OutboxService;
-import com.tradingbot.tracing.BusinessContext;
-import com.tradingbot.tracing.ExecutionAttemptContext;
-import com.tradingbot.tracing.ExecutionLogger;
-import com.tradingbot.tracing.IdentityContext;
+import com.tradingbot.tracing.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,11 +49,9 @@ public class RiskService {
 
     // ==================== MAIN FLOW ====================
 
-    public Optional<Order> evaluateAndReserve(SignalEvent signal) {
-        IdentityContext identity = signal.getIdentity();
-        log.info("[TRACE_FLOW] ENTER RiskService.evaluateAndReserve for identity: {}", identity);
-
-        RiskState state = riskStatePort.get();
+    public Optional<Order> evaluateAndReserve(ExecutionContext context, SignalEvent signal) {
+        IdentityContext identity = context.identity();
+        log.info("[TRACE_FLOW] ENTER RiskService.evaluateAndReserve for identity: {}", identity);        RiskState state = riskStatePort.get();
         log.info("[TRACE_FLOW] Current RiskState: halted={}, balance={}, reserved={}",
                 state.isHalted(), state.getBalance(), state.getReservedMargin());
 
@@ -92,10 +87,9 @@ public class RiskService {
 
         // 4. Проверка лимитов капитала (Risk Policy)
         BigDecimal requiredCapital = normalized.getQuantity().multiply(normalized.getPrice());
-        UUID orderId = UUID.randomUUID();
+        UUID orderId = IdentityFactory.deriveOrder(signal.getSignalId());
 
-        RiskDecision decision = RiskPolicy.canReserve(state, orderId, requiredCapital);
-        log.info("[TRACE_FLOW] RiskPolicy decision: approved={}, reason={} for identity: {}", decision.isApproved(), decision.getReason(), identity);
+        RiskDecision decision = RiskPolicy.canReserve(state, orderId, requiredCapital);        log.info("[TRACE_FLOW] RiskPolicy decision: approved={}, reason={} for identity: {}", decision.isApproved(), decision.getReason(), identity);
 
         if (!decision.isApproved()) {
             log.warn("[TRACE_FLOW] EXIT RiskService - REJECTED: Policy violation. Reason: {} for identity: {}", decision.getReason(), identity);
@@ -103,9 +97,8 @@ public class RiskService {
         }
 
         // 5. Резервирование капитала
-        UUID eventId = UUID.randomUUID();
-        RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(
-                eventId.toString(),
+        UUID eventId = IdentityFactory.deriveEventId(orderId, "capital-reserved");
+        RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(                eventId.toString(),
                 orderId,
                 requiredCapital
         );
@@ -177,15 +170,14 @@ public class RiskService {
 
     // ==================== COMMANDS ====================
 
-    public RiskDecision reserve(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business, BigDecimal amount) {
-        UUID orderId = UUID.fromString(business.orderId());
+    public RiskDecision reserve(ExecutionContext context, BigDecimal amount) {
+        UUID orderId = UUID.fromString(context.business().orderId());
         RiskState state = riskStatePort.get();
         RiskDecision decision = RiskPolicy.canReserve(state, orderId, amount);
 
         if (decision.isApproved()) {
-            UUID eventId = UUID.randomUUID();
-            RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(
-                    eventId.toString(),
+            UUID eventId = IdentityFactory.deriveEventId(orderId, "capital-reserved-" + context.attempt().attemptNumber());
+            RiskEvent.CapitalReserved event = new RiskEvent.CapitalReserved(                    eventId.toString(),
                     orderId,
                     amount
             );
@@ -199,11 +191,10 @@ public class RiskService {
         return decision;
     }
 
-    public void release(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business, BigDecimal amount, String reason) {
-        UUID orderId = UUID.fromString(business.orderId());
-        UUID eventId = UUID.randomUUID();
-        RiskEvent.CapitalReleased event = new RiskEvent.CapitalReleased(
-                eventId.toString(),
+    public void release(ExecutionContext context, BigDecimal amount, String reason) {
+        UUID orderId = UUID.fromString(context.business().orderId());
+        UUID eventId = IdentityFactory.deriveEventId(orderId, "capital-released-" + context.attempt().attemptNumber());
+        RiskEvent.CapitalReleased event = new RiskEvent.CapitalReleased(                eventId.toString(),
                 orderId,
                 amount,
                 reason
@@ -215,17 +206,7 @@ public class RiskService {
         logReservation(orderId, RiskReservationEventType.RELEASE, amount);
         log.info("[RISK] Capital released for order: {}. Reason: {}", orderId, reason);
     }
-    // ==================== STATE MANAGEMENT ====================
-    public void syncBalance(BigDecimal actualBalance) {
-        RiskState state = riskStatePort.get();
-        RiskState newState = state.toBuilder()
-                .balance(MoneyMath.scale(actualBalance))
-                .totalEquity(MoneyMath.add(actualBalance, state.getReservedMargin()))
-                .build();
 
-        riskStatePort.save(newState);
-        log.info("[RISK] Balance synced: {}", actualBalance);
-    }
 
     public void emergencyStop(String reason) {
         RiskState state = riskStatePort.get();
@@ -251,10 +232,18 @@ public class RiskService {
         riskStatePort.save(state);
     }
 
+    public void syncBalance(BigDecimal actualBalance) {
+        RiskState state = riskStatePort.get();
+        RiskState newState = state.toBuilder()
+                .balance(actualBalance)
+                .build();
+        riskStatePort.save(newState);
+        log.info("[RISK] Balance synchronized to: {}", actualBalance);
+    }
+
     public RiskState getState() {
         return riskStatePort.get();
     }
-
     // ==================== INTERNAL ====================
 
     private void logReservation(UUID orderId, RiskReservationEventType type, BigDecimal amount) {

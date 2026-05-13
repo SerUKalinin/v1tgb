@@ -2,6 +2,7 @@ package com.tradingbot.infrastructure.debug;
 
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.tracing.IdentityFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -11,6 +12,7 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Random;
+import java.util.UUID;
 
 /**
  * Генератор тестовых сигналов для проверки работы Product Layer и Telegram.
@@ -30,8 +32,9 @@ public class SignalGenerator {
         SignalType type = random.nextBoolean() ? SignalType.BUY : SignalType.SELL;
         BigDecimal price = BigDecimal.valueOf(30000 + random.nextDouble() * 1000);
 
+        UUID signalId = IdentityFactory.derive(UUID.nameUUIDFromBytes("debug-generator".getBytes()), "signal-" + System.nanoTime());
         SignalEvent event = new SignalEvent(
-                java.util.UUID.randomUUID(),
+                signalId,
                 symbol,
                 type,
                 price,

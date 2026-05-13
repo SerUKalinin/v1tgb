@@ -10,10 +10,9 @@ import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
-import com.tradingbot.tracing.BusinessContext;
-import com.tradingbot.tracing.ExecutionAttemptContext;
-import com.tradingbot.tracing.IdentityContext;
-import lombok.RequiredArgsConstructor;import lombok.extern.slf4j.Slf4j;
+import com.tradingbot.tracing.*;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -52,7 +51,7 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
         OrderExecutedEvent payload = objectMapper.readValue(event.getPayload(), OrderExecutedEvent.class);
         UUID orderId = payload.getOrderId();
 
-        log.info("[ORDER-EXECUTED-HANDLER] Processing execution for order {}. Status: {}, Qty: {}, Price: {}", 
+        log.info("[ORDER-EXECUTED-HANDLER] Processing execution for order {}. Status: {}, Qty: {}, Price: {}",
                 orderId, payload.getStatus(), payload.getQuantity(), payload.getPrice());
 
         // 3. Поиск ордера через порт (агрегат)
@@ -64,29 +63,24 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
         BigDecimal executionPrice = payload.getPrice();
         OrderStatus targetStatus = payload.getStatus();
 
-        if (targetStatus == OrderStatus.FILLED) {
-            order.fill(null, executedQty, executionPrice);
-        } else if (targetStatus == OrderStatus.PARTIALLY_FILLED) {
-            order.applyPartialFill(executedQty, executionPrice);
-        }
+        ExecutionContext context = ExecutionContext.from(event);
 
-        // 5. Обновление позиции через PositionService (только если есть реальное исполнение)
+        if (targetStatus == OrderStatus.FILLED) {
+            order.fill(context, executedQty, executionPrice);
+        } else if (targetStatus == OrderStatus.PARTIALLY_FILLED) {
+            order.applyPartialFill(context, executedQty, executionPrice);
+        } else if (targetStatus == OrderStatus.REJECTED) {
+            order.markAsRejected(context, payload.getRejectionReason() != null ? payload.getRejectionReason() : "Unknown rejection");
+        }        // 5. Обновление позиции через PositionService (только если есть реальное исполнение)
         if (executedQty != null && executedQty.compareTo(BigDecimal.ZERO) > 0) {
-            IdentityContext identity = new IdentityContext(event.getSignalId(), event.getCorrelationId());
-            ExecutionAttemptContext attempt = new ExecutionAttemptContext(
-                    event.getExecutionId(),
-                    event.getEventId(),
-                    1
-            );
-            BusinessContext business = BusinessContext.of(event.getOrderId().toString());
+            ExecutionContext tradeEventContext = context.withNextStep(IdentityFactory.deriveEventId(context.attempt().executionId(), "trade-created"));
 
             TradeCreatedEvent tradeEvent = new TradeCreatedEvent(
-                    identity,
-                    attempt,
-                    business,
-                    UUID.randomUUID(),
-                    orderId,
-                    order.getSymbol(),
+                    tradeEventContext.identity(),
+                    tradeEventContext.attempt(),
+                    tradeEventContext.business(),
+                    IdentityFactory.deriveEventId(tradeEventContext.attempt().executionId(), "trade-created"),
+                    orderId,                    order.getSymbol(),
                     order.getStrategyId(),
                     executedQty,
                     executionPrice,
@@ -95,10 +89,6 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
                     null  // takeProfit
             );
             positionService.updatePosition(tradeEvent);
-        }        // 6. Сохранение ордера
-        orderPort.save(order);
-        
-        // 7. Пометка события как обработанного
-        idempotencyService.markAsProcessed(event.getId(), "OrderExecutedEventHandler");
+        }
     }
 }

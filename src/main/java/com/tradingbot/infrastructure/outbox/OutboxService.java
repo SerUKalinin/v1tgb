@@ -1,9 +1,9 @@
 package com.tradingbot.infrastructure.outbox;
 
+import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.BusinessContext;
 import com.tradingbot.tracing.ExecutionAttemptContext;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
+import com.fasterxml.jackson.databind.ObjectMapper;import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.tracing.IdentityContext;
 import lombok.RequiredArgsConstructor;
@@ -22,23 +22,24 @@ public class OutboxService {
     private final ObjectMapper objectMapper;
 
     @Transactional
-    public void publishEvent(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business, String aggregateType, String eventType, Object payload) {
+    public void publishEvent(ExecutionContext context, String aggregateType, String eventType, Object payload) {
         try {
-            // STRICT IDENTITY + CAUSALITY CHECK
-            if (attempt.executionId() == null) {
-                throw new IllegalStateException("OUTBOX WRITE RULE VIOLATION: executionId is null. Event: " + eventType);
-            }
-            if (attempt.causationId() == null) {
-                throw new IllegalStateException("STRICT CAUSALITY VIOLATION: causationId is null. Event: " + eventType);
+            // Outbox = прямое отражение ExecutionContext
+            // eventId берется напрямую из attempt.executionId() (SSOT)
+            UUID eventId = context.attempt().executionId();
+
+            // Проверка на дубликат перед вставкой (идемпотентность по executionId)
+            if (outboxRepository.existsById(eventId)) {
+                log.info("[OUTBOX-SKIP] Event with executionId {} already exists. Skipping.", eventId);
+                return;
             }
 
-            UUID eventId = UUID.randomUUID();
-            long nextSequence = outboxRepository.getNextSequenceNumber(identity.aggregateId());
+            long nextSequence = outboxRepository.getNextSequenceNumber(context.aggregateId());
 
             OutboxEventEntity event = OutboxEventEntity.builder()
                     .id(eventId)
-                    .eventId(eventId) // PRIMARY LOGICAL IDENTITY
-                    .aggregateId(identity.aggregateId())
+                    .eventId(eventId)
+                    .aggregateId(context.aggregateId())
                     .aggregateType(aggregateType)
                     .eventType(eventType)
                     .payload(objectMapper.writeValueAsString(payload))
@@ -46,17 +47,15 @@ public class OutboxService {
                     .sequenceNumber(nextSequence)
                     .createdAt(Instant.now())
                     .schemaVersion(1)
-                    .signalId(identity.signalId())
-                    .orderId(UUID.fromString(business.orderId()))
-                    .executionId(attempt.executionId())
-                    .causationId(attempt.causationId()) // MUST reference previous eventId
-                    .correlationId(identity.correlationId())
+                    .signalId(context.signalId())
+                    .orderId(UUID.fromString(context.business().orderId()))
+                    .executionId(context.attempt().executionId())
+                    .causationId(context.attempt().causationId())
+                    .correlationId(context.identity().correlationId())
                     .build();
-
             outboxRepository.save(event);
         } catch (Exception e) {
-            log.error("[OUTBOX-STRICT-ERROR] Identity: {}, Attempt: {}, Event: {}", identity, attempt, eventType, e);
+            log.error("[OUTBOX-STRICT-ERROR] Context: {}, Event: {}", context, eventType, e);
             throw new RuntimeException("Outbox publication failed due to identity/causality violation", e);
         }
-    }
-}
+    }}

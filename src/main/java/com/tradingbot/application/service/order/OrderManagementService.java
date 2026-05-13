@@ -21,6 +21,5 @@ public class OrderManagementService {
 
         log.info("[OMS] routing {} {}", event.getSymbol(), event.getType());
 
-        orderApplicationService.onSignalReceived(event);
-    }
-}
+        orderApplicationService.handleSignal(event);
+    }}

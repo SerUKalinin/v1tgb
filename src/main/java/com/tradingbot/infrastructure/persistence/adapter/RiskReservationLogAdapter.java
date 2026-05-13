@@ -5,6 +5,7 @@ import com.tradingbot.domain.risk.RiskReservationLog;
 import com.tradingbot.domain.risk.RiskReservationLogPort;
 import com.tradingbot.infrastructure.persistence.entity.RiskReservationLogEntity;
 import com.tradingbot.infrastructure.persistence.repository.RiskReservationLogRepository;
+import com.tradingbot.tracing.IdentityFactory;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -20,7 +21,7 @@ public class RiskReservationLogAdapter implements RiskReservationLogPort {
     @Override
     public void append(RiskReservationLog log) {
         RiskReservationLogEntity entity = RiskReservationLogEntity.builder()
-                .id(UUID.randomUUID())
+                .id(IdentityFactory.deriveEventId(log.orderId(), "risk-log-" + log.eventType()))
                 .orderId(log.orderId())
                 .clientOrderId(log.clientOrderId())
                 .eventType(log.eventType().name())
@@ -28,5 +29,4 @@ public class RiskReservationLogAdapter implements RiskReservationLogPort {
                 .createdAt(Instant.now())
                 .build();
         repository.save(entity);
-    }
-}
+    }}

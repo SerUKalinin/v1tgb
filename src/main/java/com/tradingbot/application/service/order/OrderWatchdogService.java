@@ -1,9 +1,13 @@
 package com.tradingbot.application.service.order;
 
+import com.tradingbot.domain.model.Order;
+import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
+import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.BusinessContext;
 import com.tradingbot.tracing.ExecutionAttemptContext;
 import com.tradingbot.tracing.IdentityContext;
-import com.tradingbot.application.service.risk.ReconciliationService;import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.application.service.risk.ReconciliationService;
+import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import lombok.RequiredArgsConstructor;
@@ -21,6 +25,7 @@ import java.util.List;
 public class OrderWatchdogService {
 
     private final OrderRepository orderRepository;
+    private final OrderMapper orderMapper;
     private final ReconciliationService reconciliationService;
 
     private static final Duration STUCK_THRESHOLD = Duration.ofMinutes(2);
@@ -37,21 +42,17 @@ public class OrderWatchdogService {
         if (!stuckOrders.isEmpty()) {
             log.warn("[WATCHDOG] Found {} stuck orders in EXECUTING state. Initiating reconciliation...", stuckOrders.size());
 
-            for (OrderEntity order : stuckOrders) {
+            for (OrderEntity orderEntity : stuckOrders) {
                 try {
                     log.info("[WATCHDOG][RECOVERY] Reconciling order id={}, clientOrderId={}", 
-                            order.getId(), order.getClientOrderId());
+                            orderEntity.getId(), orderEntity.getClientOrderId());
                     
-                    IdentityContext identity = new IdentityContext(order.getSignalId(), order.getSignalId());
-                    ExecutionAttemptContext attempt = new ExecutionAttemptContext(
-                        order.getExecutionId(),
-                        order.getExecutionId() != null ? order.getExecutionId() : order.getId(),
-                        1
-                    );
-                    BusinessContext business = BusinessContext.of(order.getId().toString());
+                    Order domainOrder = orderMapper.toDomain(orderEntity);
+                    ExecutionContext context = ExecutionContext.of(domainOrder);
                     
-                    reconciliationService.reconcile(identity, attempt, business);                } catch (Exception e) {
-                    log.error("[WATCHDOG][ERROR] Failed to recover order {}: {}", order.getId(), e.getMessage());
+                    reconciliationService.reconcile(context);
+                } catch (Exception e) {
+                    log.error("[WATCHDOG][ERROR] Failed to recover order {}: {}", orderEntity.getId(), e.getMessage());
                 }
             }
         }

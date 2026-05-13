@@ -4,7 +4,8 @@ import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.tracing.IdentityContext;
 import com.tradingbot.tracing.ExecutionAttemptContext;
 import com.tradingbot.tracing.BusinessContext;
-import lombok.Builder;
+import com.tradingbot.tracing.IdentityFactory;
+import com.tradingbot.tracing.ExecutionContext;
 import lombok.Getter;
 
 import java.math.BigDecimal;
@@ -23,6 +24,8 @@ public class SignalEvent extends DomainEvent {
     private final Instant candleTime;
     private final String strategyId;
 
+    private final ExecutionContext executionContext;
+
     public SignalEvent(
             UUID signalId,
             String symbol,
@@ -36,11 +39,12 @@ public class SignalEvent extends DomainEvent {
     ) {
         super(
                 IdentityContext.of(signalId),
-                ExecutionAttemptContext.of(signalId),
-                BusinessContext.of(signalId.toString()),
+                ExecutionAttemptContext.of(IdentityFactory.deriveExecution(signalId, 0)),
+                BusinessContext.empty(),
                 1
         );
 
+        this.executionContext = new ExecutionContext(getIdentity(), getAttempt(), getBusiness());
         this.symbol = symbol;
         this.type = type;
         this.price = price;
@@ -49,6 +53,11 @@ public class SignalEvent extends DomainEvent {
         this.takeProfit = takeProfit;
         this.candleTime = candleTime;
         this.strategyId = strategyId;
+
+        // Strict invariant check
+        if (getIdentity().signalId().equals(getAttempt().executionId())) {
+            throw new IllegalStateException("Identity corruption: executionId must not equal signalId");
+        }
     }
 
     @Override

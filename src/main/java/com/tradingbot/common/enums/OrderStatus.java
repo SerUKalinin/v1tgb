@@ -15,5 +15,6 @@ public enum OrderStatus {
     CANCELED,          // Отменен пользователем или биржей
     REJECTED,          // Отклонен риск-менеджментом или биржей
     UNKNOWN,           // Результат обмена неизвестен (timeout / ambiguous)
+    RECOVERING,        // В процессе восстановления состояния (reconciliation)
     ERROR              // Критическая ошибка при обработке
 }

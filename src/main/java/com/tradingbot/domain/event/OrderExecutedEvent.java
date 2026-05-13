@@ -2,9 +2,9 @@ package com.tradingbot.domain.event;
 
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.model.Order;
-import com.tradingbot.tracing.BusinessContext;
-import com.tradingbot.tracing.ExecutionAttemptContext;
-import com.tradingbot.tracing.IdentityContext;
+import com.tradingbot.tracing.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Value;
 
 import java.math.BigDecimal;
@@ -17,45 +17,33 @@ import java.util.UUID;
  * Строго соответствует SYSTEM_CONTRACT.md.
  */
 @Value
+@Builder
+@AllArgsConstructor
 public class OrderExecutedEvent {
     IdentityContext identity;
     ExecutionAttemptContext attempt;
     BusinessContext business;
-    UUID eventId;
     UUID orderId;
-    UUID signalId;
-    UUID executionId;
     String symbol;
     BigDecimal quantity;
     BigDecimal price;
     OrderStatus status;
+    String rejectionReason;
     Instant timestamp;
-    String strategyId;
 
     public static OrderExecutedEvent from(Order order) {
-        Objects.requireNonNull(order);
-        Objects.requireNonNull(order.getId());
-        Objects.requireNonNull(order.getSignalId());
-        Objects.requireNonNull(order.getExecutionId());
-
-        IdentityContext identity = new IdentityContext(order.getSignalId(), order.getSignalId());
-        ExecutionAttemptContext attempt = new ExecutionAttemptContext(order.getExecutionId(), order.getExecutionId(), 1);
-        BusinessContext business = BusinessContext.of(order.getId().toString());
-
+        ExecutionContext context = ExecutionContext.of(order);
         return new OrderExecutedEvent(
-                identity,
-                attempt,
-                business,
-                UUID.randomUUID(),
+                context.identity(),
+                context.attempt(),
+                context.business(),
                 order.getId(),
-                order.getSignalId(),
-                order.getExecutionId(),
                 order.getSymbol(),
                 order.getQuantity(),
-                order.getPrice(),
+                order.getAveragePrice(),
                 order.getStatus(),
-                Instant.now(),
-                order.getStrategyId()
+                order.getRejectionReason(),
+                Instant.now()
         );
     }
 }

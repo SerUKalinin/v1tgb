@@ -8,7 +8,9 @@ import java.math.BigDecimal;
 
 /**
  * Маппер для преобразования между JPA сущностью OrderEntity и доменной моделью Order.
- */@Component
+ * Обеспечивает синхронизацию данных исполнения и счетчиков попыток.
+ */
+@Component
 public class OrderMapper {
 
     /**
@@ -31,52 +33,70 @@ public class OrderMapper {
                 entity.getSignalId(),
                 entity.getStatus(),
                 entity.getVersion() != null ? entity.getVersion() : 0L,
+                entity.getCreatedAt(),
+                entity.getUpdatedAt(),
                 entity.getExecutionId(),
-                entity.getExecutionStartedAt(),
-                entity.getExchangeOrderId(),
+                entity.getExecutionStartedAt(),                entity.getExchangeOrderId(),
                 entity.getExecutedQuantity(),
                 entity.getAveragePrice(),
-                null
+                entity.getRejectionReason(),
+                entity.getExecutionAttempts() // Добавлено восстановление попыток
         );
     }
 
+    /**
+     * Создает новую сущность на основе доменной модели.
+     */
     public OrderEntity toEntity(Order order) {
         if (order == null) return null;
+
         OrderEntity entity = new OrderEntity();
+        updateEntity(order, entity);
+
+        // Поля, которые задаются только при создании
         entity.setId(order.getId());
         entity.setClientOrderId(order.getClientOrderId());
-        entity.setExchangeOrderId(order.getExchangeOrderId());
-        entity.setSymbol(order.getSymbol());
-        entity.setSide(order.getSide());
-        entity.setType(order.getType());
-        entity.setStatus(order.getStatus());
-        entity.setQuantity(order.getQuantity());
-        entity.setPrice(order.getPrice());
-        entity.setExecutedQuantity(order.getExecutedQuantity() != null ? order.getExecutedQuantity() : BigDecimal.ZERO);
-        entity.setAveragePrice(order.getAveragePrice() != null ? order.getAveragePrice() : BigDecimal.ZERO);
         entity.setStrategyId(order.getStrategyId());
         entity.setSignalId(order.getSignalId());
-        entity.setExecutionId(order.getExecutionId());
-        entity.setVersion(order.getVersion());
+
         return entity;
     }
 
+    /**
+     * Обновляет существующую сущность данными из доменной модели.
+     */
     public void updateEntity(Order order, OrderEntity entity) {
         if (order == null || entity == null) return;
+
+        // Strict validation
+        if (order.getSymbol() == null) throw new IllegalStateException("Order symbol is null for order: " + order.getId());
+        if (order.getSide() == null) throw new IllegalStateException("Order side is null for order: " + order.getId());
+        if (order.getType() == null) throw new IllegalStateException("Order type is null for order: " + order.getId());
+
+        // Состояние и версия
         entity.setStatus(order.getStatus());
-        entity.setExchangeOrderId(order.getExchangeOrderId());
-        entity.setExecutionId(order.getExecutionId());
+        entity.setVersion(order.getVersion());
+        entity.setCreatedAt(order.getCreatedAt());
+        entity.setUpdatedAt(order.getUpdatedAt());
+
+        // Параметры ордера
         entity.setSymbol(order.getSymbol());
         entity.setSide(order.getSide());
         entity.setType(order.getType());
-
         entity.setQuantity(order.getQuantity());
         entity.setPrice(order.getPrice());
 
-        entity.setExecutedQuantity(order.getExecutedQuantity());
-        entity.setAveragePrice(order.getAveragePrice());
+        // Данные исполнения
+        entity.setExecutionId(order.getExecutionId());
+        entity.setExecutionStartedAt(order.getExecutionStartedAt());
+        entity.setExecutionAttempts(order.getExecutionAttempts()); // Синхронизация попыток
+        entity.setExchangeOrderId(order.getExchangeOrderId());
 
-        entity.setStrategyId(order.getStrategyId());
-        entity.setSignalId(order.getSignalId());
-        entity.setVersion(order.getVersion());
+        // Финансовые показатели (с защитой от null)
+        entity.setExecutedQuantity(order.getExecutedQuantity() != null ?
+                order.getExecutedQuantity() : BigDecimal.ZERO);
+        entity.setAveragePrice(order.getAveragePrice() != null ?
+                order.getAveragePrice() : BigDecimal.ZERO);
+
+        entity.setRejectionReason(order.getRejectionReason());
     }}

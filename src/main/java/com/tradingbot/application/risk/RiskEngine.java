@@ -1,15 +1,18 @@
 package com.tradingbot.application.risk;
 
+import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.risk.RiskDecision;
 import com.tradingbot.domain.risk.RiskEvent;
-import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.domain.risk.RiskState;
-import com.tradingbot.tracing.BusinessContext;
-import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.ExecutionLogContext;
 import com.tradingbot.tracing.IdentityContext;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Component;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.domain.risk.RiskService;
+import lombok.RequiredArgsConstructor;import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -26,18 +29,21 @@ public class RiskEngine {
         riskService.publish(event);
     }
 
-    public RiskDecision reserve(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business, BigDecimal amount) {
-        return riskService.reserve(identity, attempt, business, amount);
+    public RiskDecision reserve(ExecutionContext context, BigDecimal amount) {
+        return riskService.reserve(context, amount);
+    }
+    public void release(ExecutionContext context, BigDecimal amount, String reason) {
+        riskService.release(context, amount, reason);
     }
 
-    public void release(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business, BigDecimal amount, String reason) {
-        riskService.release(identity, attempt, business, amount, reason);
+    public Optional<Order> evaluateAndReserve(ExecutionContext context, com.tradingbot.domain.event.SignalEvent signal) {
+        return riskService.evaluateAndReserve(context, signal);
     }
 
-    public void release(IdentityContext identity, ExecutionAttemptContext attempt, BusinessContext business) {
-        riskService.release(identity, attempt, business, BigDecimal.ZERO, "COMPENSATION");
-    }
-    public void syncBalance(BigDecimal actualBalance) {        riskService.syncBalance(actualBalance);
+    public void release(ExecutionContext context) {
+        riskService.release(context, BigDecimal.ZERO, "COMPENSATION");
+    }    public void syncBalance(BigDecimal actualBalance) {
+        riskService.syncBalance(actualBalance);
     }
 
     public void emergencyStop(String reason) {

@@ -84,40 +84,19 @@ public class OutboxEventEntity {
     @Column(name = "execution_id")
     private UUID executionId;
 
-    @Column(name = "causation_id", nullable = false)
+    @Column(name = "causation_id")
     private UUID causationId;
 
-    @Column(name = "correlation_id", nullable = false)
+    @Column(name = "correlation_id")
     private UUID correlationId;
 
     @Column(name = "event_id", nullable = false, unique = true)
     private UUID eventId;
-
-    @PrePersist
-    protected void onCreate() {
-        if (sequenceNumber == null) {
-            throw new IllegalStateException("OutboxEvent must have sequenceNumber before persisting");
-        }
-        if (eventId == null) {
-            throw new IllegalStateException("STRICT CAUSALITY VIOLATION: eventId is mandatory for all outbox events");
-        }
-        if (executionId == null) {
-            throw new IllegalStateException("STRICT IDENTITY VIOLATION: executionId cannot be null in Outbox. aggregateId=" + aggregateId);
-        }
-        if (orderId == null) {
-            throw new IllegalStateException("STRICT IDENTITY VIOLATION: orderId cannot be null in Outbox. aggregateId=" + aggregateId);
-        }
-        if (causationId == null) {
-            throw new IllegalStateException("STRICT CAUSALITY VIOLATION: causationId cannot be null. aggregateId=" + aggregateId);
-        }
-        if (!aggregateId.equals(signalId)) {
-            throw new IllegalStateException("STRICT IDENTITY VIOLATION: aggregateId must equal signalId. aggregateId=" + aggregateId + ", signalId=" + signalId);
-        }
+    @PrePersist    protected void onCreate() {
         if (status == null) status = OutboxStatus.NEW;
         if (createdAt == null) createdAt = Instant.now();
         if (updatedAt == null) updatedAt = createdAt;
-    }
-    @PreUpdate
+    }    @PreUpdate
     protected void onUpdate() {
         updatedAt = Instant.now();
     }

@@ -8,6 +8,7 @@ import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.mapper.PositionMapper;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
+import com.tradingbot.tracing.IdentityFactory;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -96,7 +97,7 @@ public class PositionService {
 
     private PositionEntity createNewPositionEntity(TradeCreatedEvent event) {
         return PositionEntity.builder()
-                .id(UUID.randomUUID())
+                .id(IdentityFactory.derive(UUID.fromString(event.getBusiness().orderId()), "position"))
                 .symbol(event.getSymbol())
                 .strategyId(event.getStrategyId())
                 .quantity(BigDecimal.ZERO)

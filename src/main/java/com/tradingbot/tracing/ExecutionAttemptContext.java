@@ -21,18 +21,26 @@ public record ExecutionAttemptContext(
         return new ExecutionAttemptContext(signalId, signalId, 1);
     }
 
-    public static ExecutionAttemptContext recover(UUID signalId) {
-        return new ExecutionAttemptContext(signalId, signalId, 1);
+    public static ExecutionAttemptContext forOrder(UUID orderId, int attemptNumber) {
+        UUID executionId = IdentityFactory.deriveExecution(orderId, attemptNumber);
+        return new ExecutionAttemptContext(executionId, orderId, attemptNumber);
+    }
+
+    public static ExecutionAttemptContext recover(UUID signalId) {        return new ExecutionAttemptContext(signalId, signalId, 1);
     }
 
     public static ExecutionAttemptContext firstAttempt(UUID causationId) {
-        return new ExecutionAttemptContext(UUID.randomUUID(), causationId, 1);
+        UUID executionId = IdentityFactory.derive(causationId, "execution-1");
+        return new ExecutionAttemptContext(executionId, causationId, 1);
     }
-    public ExecutionAttemptContext nextAttempt(UUID newCausationId) {
-        return new ExecutionAttemptContext(UUID.randomUUID(), newCausationId, this.attemptNumber + 1);
+
+    public ExecutionAttemptContext nextAttempt(UUID aggregateId) {
+        int nextNumber = this.attemptNumber + 1;
+        UUID executionId = IdentityFactory.deriveExecution(aggregateId, nextNumber);
+        return new ExecutionAttemptContext(executionId, aggregateId, nextNumber);
     }
-    
-    public ExecutionAttemptContext nextStep(UUID newCausationId) {
-        return new ExecutionAttemptContext(this.executionId, newCausationId, this.attemptNumber);
+    public ExecutionAttemptContext nextStep(UUID stepCausationId) {
+        UUID stepExecutionId = IdentityFactory.derive(stepCausationId, "step-" + (this.attemptNumber));
+        return new ExecutionAttemptContext(stepExecutionId, stepCausationId, this.attemptNumber);
     }
 }

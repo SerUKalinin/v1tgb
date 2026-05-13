@@ -10,24 +10,32 @@ public final class ExecutionLogFactory {
     }
 
     public static ExecutionLogRecord from(Order order,
+                                         ExecutionContext context,
+                                         ExecutionEventType event,
+                                         String state,
+                                         String message) {
+        return new ExecutionLogRecord(
+                context.attempt().executionId(),
+                context.business().orderId() != null && !"UNKNOWN".equals(context.business().orderId()) ? java.util.UUID.fromString(context.business().orderId()) : null,
+                context.identity().signalId(),
+                context.identity().correlationId(),
+                context.attempt().causationId(),
+                event,
+                Optional.ofNullable(state).orElse(event.name()),
+                message
+        );
+    }
+
+    @Deprecated
+    public static ExecutionLogRecord from(Order order,
                                          IdentityContext identity,
                                          ExecutionAttemptContext attempt,
                                          BusinessContext business,
                                          ExecutionEventType event,
                                          String state,
                                          String message) {
-        return new ExecutionLogRecord(
-                attempt.executionId(),
-                business.orderId() != null && !"UNKNOWN".equals(business.orderId()) ? java.util.UUID.fromString(business.orderId()) : null,
-                identity.signalId(),
-                identity.correlationId(),
-                attempt.causationId(),
-                event,
-                Optional.ofNullable(state).orElse(event.name()),
-                message
-        );
-    }
-    @Deprecated
+        return from(order, ExecutionContext.of(identity, attempt, business), event, state, message);
+    }    @Deprecated
     public static ExecutionLogRecord from(Order order,
                                          ExecutionEventType event,
                                          String state,

@@ -19,10 +19,10 @@ public class ExecutionResult {
     public enum Status {
         SUCCESS,
         REJECTED,
+        CANCELED,
         FAILED_IO,
         TIMEOUT
     }
-
     UUID orderId;
     String clientOrderId;
     String exchangeOrderId;
@@ -93,6 +93,13 @@ public class ExecutionResult {
                 .build();
     }
 
+    public static ExecutionResult canceled(UUID orderId) {
+        return ExecutionResult.builder()
+                .orderId(orderId)
+                .status(Status.CANCELED)
+                .errorMessage("CANCELED")
+                .build();
+    }
     @Deprecated
     public static ExecutionResult failure(UUID orderId, String errorMessage) {
         return failedIo(orderId, errorMessage);
