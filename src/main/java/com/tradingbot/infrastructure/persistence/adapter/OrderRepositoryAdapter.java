@@ -11,6 +11,7 @@ import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.tracing.ExecutionContext;
 import jakarta.persistence.OptimisticLockException;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +24,7 @@ import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class OrderRepositoryAdapter implements OrderRepositoryPort {
 
     private final OrderRepository orderRepository;
@@ -43,13 +45,16 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
             }
 
             Order order = orderMapper.toDomain(entity);
+            UUID incomingExecutionId = context.attempt().executionId();
+            UUID existingExecutionId = order.getExecutionId();
+            if (existingExecutionId != null && !existingExecutionId.equals(incomingExecutionId)) {
+                log.warn("Execution id mismatch for order {}: existing={}, incoming={}",
+                        orderId, existingExecutionId, incomingExecutionId);
+            }
 
-            order.markExecuting(context);
-            entity.setExecutionStartedAt(Instant.now());
-            entity.setUpdatedAt(Instant.now());
-            
-            order.assignExecutionOwner(context.attempt().executionId());
+            order.assignExecutionOwner(incomingExecutionId);
             orderMapper.updateEntity(order, entity);
+            entity.setUpdatedAt(Instant.now());
             orderRepository.saveAndFlush(entity);
             return Optional.of(order);
         });
