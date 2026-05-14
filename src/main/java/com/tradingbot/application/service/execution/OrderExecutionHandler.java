@@ -177,7 +177,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
         }
 
         if (OrderStateTransitionPolicy.isTerminal(order.getStatus())) {
-            order.clearExecutionOwner(completionContext);
+            order.clearExecutionOwner();
         }
 
         orderRepository.save(order);

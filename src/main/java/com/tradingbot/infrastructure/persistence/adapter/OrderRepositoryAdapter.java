@@ -48,7 +48,7 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
             entity.setExecutionStartedAt(Instant.now());
             entity.setUpdatedAt(Instant.now());
             
-            order.assignExecutionOwner(context);
+            order.assignExecutionOwner(context.attempt().executionId());
             orderMapper.updateEntity(order, entity);
             orderRepository.saveAndFlush(entity);
             return Optional.of(order);

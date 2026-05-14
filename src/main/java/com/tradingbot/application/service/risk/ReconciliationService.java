@@ -229,9 +229,9 @@ public class ReconciliationService {
                 }
             }
 
-            if (stateChanged) {
+                if (stateChanged) {
                 if (OrderStateTransitionPolicy.isTerminal(order.getStatus())) {
-                    order.clearExecutionOwner(context);
+                    order.clearExecutionOwner();
                 }
                 orderRepository.save(order);
             }

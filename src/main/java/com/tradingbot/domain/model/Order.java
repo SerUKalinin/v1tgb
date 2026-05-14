@@ -148,9 +148,9 @@ public class Order {
         return executionId;
     }
 
-    public void assignExecutionOwner(ExecutionContext context) {
-        UUID executionId = context.attempt().executionId();
-        if (this.executionId != null && !this.executionId.equals(executionId)) {
+    public void assignExecutionOwner(UUID executionId) {
+        Objects.requireNonNull(executionId, "executionId is required");
+        if (this.executionId != null && !this.executionId.equals(executionId) && !OrderStateTransitionPolicy.isTerminal(this.status)) {
             throw new IllegalStateException(String.format("Order %s already claimed by %s", this.id, this.executionId));
         }
         this.executionId = executionId;
@@ -158,7 +158,10 @@ public class Order {
         this.executionAttempts++;
     }
 
-    public void clearExecutionOwner(ExecutionContext context) {
+    public void clearExecutionOwner() {
+        if (!OrderStateTransitionPolicy.isTerminal(this.status)) {
+            throw new IllegalStateException(String.format("Order %s is not terminal (%s) - cannot clear execution owner", this.id, this.status));
+        }
         this.executionId = null;
     }
 
