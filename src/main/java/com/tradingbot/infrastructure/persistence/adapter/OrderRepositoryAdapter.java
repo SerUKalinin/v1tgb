@@ -31,7 +31,7 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
 
     @Override
     @Transactional(propagation = Propagation.REQUIRED)
-    public Optional<Order> claimForExecutionInCurrentTransaction(UUID orderId) {
+    public Optional<Order> claimForExecutionInCurrentTransaction(UUID orderId, ExecutionContext context) {
         return orderRepository.findByIdForUpdate(orderId).flatMap(entity -> {
             if (transitionValidator.isTerminal(entity.getStatus())) {
                 return Optional.empty();
@@ -43,13 +43,9 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
             }
 
             Order order = orderMapper.toDomain(entity);
-            
-            // Восстанавливаем контекст через SSOT factory
-            ExecutionContext context = ExecutionContext.of(order);
-            
+
             order.markExecuting(context);
             entity.setExecutionStartedAt(Instant.now());
-            entity.setExecutionAttempts(entity.getExecutionAttempts() + 1);
             entity.setUpdatedAt(Instant.now());
             
             order.assignExecutionOwner(context);
@@ -61,8 +57,8 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
 
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public Optional<Order> claimForExecution(UUID orderId) {
-        return claimForExecutionInCurrentTransaction(orderId);
+    public Optional<Order> claimForExecution(UUID orderId, ExecutionContext context) {
+        return claimForExecutionInCurrentTransaction(orderId, context);
     }
 
     @Override

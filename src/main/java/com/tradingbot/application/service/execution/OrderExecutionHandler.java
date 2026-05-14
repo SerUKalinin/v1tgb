@@ -144,7 +144,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
         executionClaimPort.claimExecution(executionId, signalId);
 
         // Блокируем ордер в БД
-        Optional<Order> orderOpt = orderRepository.claimForExecution(orderId);
+        Optional<Order> orderOpt = orderRepository.claimForExecution(orderId, context);
         if (orderOpt.isEmpty()) {
             handleAlreadyProcessed(event);
             return Optional.empty();
