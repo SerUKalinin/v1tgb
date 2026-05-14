@@ -89,10 +89,14 @@ public record ExecutionContext(
      * Создание контекста на основе доменного объекта Order.
      */
     public static ExecutionContext of(Order order) {
+        UUID executionId = order.getExecutionId();
+        if (executionId == null) {
+            throw new IllegalStateException("Order must already have executionId assigned");
+        }
         int attempt = order.getExecutionAttempts() > 0 ? order.getExecutionAttempts() : 1;
         return new ExecutionContext(
                 new IdentityContext(order.getSignalId(), order.getSignalId()),
-                ExecutionAttemptContext.forOrder(order.getId(), attempt),
+                ExecutionAttemptContext.forOrder(order.getId(), executionId, attempt),
                 BusinessContext.of(order.getId().toString())
         );
     }}

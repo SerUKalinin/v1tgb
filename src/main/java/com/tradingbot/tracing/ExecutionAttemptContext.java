@@ -27,14 +27,16 @@ public record ExecutionAttemptContext(
         return firstAttempt(causationId);
     }
 
-    public static ExecutionAttemptContext forOrder(UUID orderId, int attemptNumber) {
-        UUID executionId = IdentityFactory.deriveExecution(orderId, attemptNumber);
+    public static ExecutionAttemptContext forOrder(UUID orderId, UUID executionId, int attemptNumber) {
+        Objects.requireNonNull(executionId, "executionId cannot be null when recovering from order");
         return new ExecutionAttemptContext(executionId, orderId, attemptNumber);
     }
 
     public static ExecutionAttemptContext recover(UUID causationId, UUID executionId, int attempt) {
         return new ExecutionAttemptContext(executionId, causationId, attempt);
-    }    public static ExecutionAttemptContext firstAttempt(UUID causationId) {
+    }
+
+    public static ExecutionAttemptContext firstAttempt(UUID causationId) {
         UUID executionId = IdentityFactory.derive(causationId, "execution-1");
         return new ExecutionAttemptContext(executionId, causationId, 1);
     }
@@ -59,6 +61,7 @@ public record ExecutionAttemptContext(
         UUID nextExecutionId = IdentityFactory.deriveExecution(this.causationId, nextNumber);
         return new ExecutionAttemptContext(nextExecutionId, this.causationId, nextNumber);
     }
+
     public ExecutionAttemptContext nextStep(UUID stepCausationId) {
         UUID stepExecutionId = IdentityFactory.derive(stepCausationId, "step-" + (this.attemptNumber));
         return new ExecutionAttemptContext(stepExecutionId, stepCausationId, this.attemptNumber);
