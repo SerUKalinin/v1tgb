@@ -1,8 +1,6 @@
 package com.tradingbot.infrastructure.persistence.adapter;
 
-import com.tradingbot.domain.model.Order;
-import com.tradingbot.domain.model.OrderPort;
-import com.tradingbot.domain.model.OrderSnapshot;
+import com.tradingbot.domain.model.Order;import com.tradingbot.domain.model.OrderPort;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
@@ -45,18 +43,16 @@ public class JpaOrderAdapter implements OrderPort {
     @Override
     @Transactional
     public Order save(Order order) {
-        OrderSnapshot snapshot = order.toSnapshot();
-
         // 1. Пытаемся найти существующую сущность в БД (Managed Entity)
         OrderEntity entity = orderRepository.findById(order.getId())
                 .map(existing -> {
-                    // 2. Если нашли — обновляем её поля из снимка (без смены ID)
-                    orderMapper.updateEntityFromSnapshot(snapshot, existing);
+                    // 2. Если нашли — обновляем её поля напрямую из домена
+                    orderMapper.updateEntity(order, existing);
                     return existing;
                 })
                 .orElseGet(() -> {
                     // 3. Если не нашли — создаем новую
-                    return orderMapper.toEntity(snapshot);
+                    return orderMapper.toEntity(order);
                 });
 
         // 4. Сохраняем (для managed entity это вызовет dirty checking, для новой — persist)
@@ -65,7 +61,6 @@ public class JpaOrderAdapter implements OrderPort {
         // 5. Возвращаем доменную модель
         return orderMapper.toDomain(saved);
     }
-
     /**
      * Возвращает OrderEntity напрямую.
      * Используется в StateTransitionExecutor для работы с Hibernate Managed Entity.

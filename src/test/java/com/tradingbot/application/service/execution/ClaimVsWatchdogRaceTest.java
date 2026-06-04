@@ -4,56 +4,51 @@ import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
-import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.infrastructure.execution.ExecutionLockService;
 import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxService;
-import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
-import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
-import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 
-import java.math.BigDecimal;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 class ClaimVsWatchdogRaceTest {
 
     private OrderExecutionHandler handler;
     private ExecutionPort executionPort;
-    private OrderRepository orderRepository;
+    private OrderRepositoryPort orderRepository;
     private ExecutionLockService lockService;
-    private IdempotencyService idempotencyService;
     private TransitionValidator transitionValidator;
 
     @BeforeEach
     void setUp() {
         executionPort = mock(ExecutionPort.class);
-        orderRepository = mock(OrderRepository.class);
+        orderRepository = mock(OrderRepositoryPort.class);
         lockService = mock(ExecutionLockService.class);
-        idempotencyService = mock(IdempotencyService.class);
         transitionValidator = mock(TransitionValidator.class);
+
         SystemStateManager stateManager = mock(SystemStateManager.class);
         when(stateManager.isReady()).thenReturn(true);
 
         handler = new OrderExecutionHandler(
                 executionPort,
                 orderRepository,
-                new OrderMapper(),
                 stateManager,
-                idempotencyService,
+                mock(IdempotencyService.class),
                 lockService,
                 mock(RiskEngine.class),
                 mock(OutboxService.class),
-                mock(StateTransitionExecutor.class),
                 transitionValidator
         );
     }
@@ -66,11 +61,11 @@ class ClaimVsWatchdogRaceTest {
         UUID eventId = UUID.randomUUID();
         String clientOrderId = "CL-" + orderId;
 
-        OrderEntity entity = new OrderEntity();
-        entity.setId(orderId);
-        entity.setClientOrderId(clientOrderId);
-        entity.setStatus(OrderStatus.EXECUTING); // Node A уже перевела в EXECUTING
-        entity.setExecutionId(UUID.randomUUID());
+        Order order = Order.builder()
+                .id(orderId)
+                .clientOrderId(clientOrderId)
+                .status(OrderStatus.EXECUTING)
+                .build();
 
         OutboxEventEntity event = OutboxEventEntity.builder()
                 .id(eventId)
@@ -78,8 +73,8 @@ class ClaimVsWatchdogRaceTest {
                 .build();
 
         // 1. Watchdog (Node B) находит ордер
-        when(orderRepository.findByIdForUpdate(orderId)).thenReturn(Optional.of(entity));
-        
+        when(orderRepository.claimForExecution(orderId)).thenReturn(Optional.of(order));
+
         // 2. Валидатор считает ордер "зависшим" (stale)
         when(transitionValidator.isTerminal(any())).thenReturn(false);
         when(transitionValidator.isStale(eq(OrderStatus.EXECUTING), any())).thenReturn(true);
@@ -87,9 +82,9 @@ class ClaimVsWatchdogRaceTest {
         // 3. LockService говорит, что кто-то уже выполняет (isNewExecution = false)
         String lockKey = "EXEC_ORDER_" + orderId;
         when(lockService.getLockState(lockKey)).thenReturn("PENDING");
-        when(lockService.tryEnterExecuting(lockKey)).thenReturn(false); 
+        when(lockService.tryEnterExecuting(lockKey)).thenReturn(false);
 
-        // 4. Биржа подтверждает, что ордер исполнен (или просто существует)
+        // 4. Биржа подтверждает, что ордер существует/исполнен
         when(executionPort.getOrderStatus(clientOrderId)).thenReturn(
                 ExecutionResult.builder().status(ExecutionResult.Status.SUCCESS).build()
         );
@@ -98,10 +93,10 @@ class ClaimVsWatchdogRaceTest {
         handler.consume(event);
 
         // Then
-        // CRITICAL: Node B (watchdog) НЕ должен вызывать placeOrder
+        // CRITICAL: Node B (watchdog) НЕ должен вызывать placeOrder, так как Node A уже заняла лок
         verify(executionPort, never()).placeOrder(any());
-        
-        // Node B должен вызвать getOrderStatus для восстановления состояния
+
+        // Node B должен вызвать getOrderStatus для синхронизации состояния с биржей
         verify(executionPort, times(1)).getOrderStatus(clientOrderId);
     }
 }

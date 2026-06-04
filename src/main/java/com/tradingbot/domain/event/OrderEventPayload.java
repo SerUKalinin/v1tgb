@@ -21,4 +21,7 @@ public class OrderEventPayload {
     String status;
     Instant timestamp;
     String strategyId;
+    String signalId;
+    UUID causationId;
+    UUID correlationId;
 }

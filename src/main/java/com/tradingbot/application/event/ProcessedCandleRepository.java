@@ -7,6 +7,7 @@ import java.time.Instant;
  */
 public interface ProcessedCandleRepository {
 
+
     /**
      * Отмечает свечу как обработанную.
      *

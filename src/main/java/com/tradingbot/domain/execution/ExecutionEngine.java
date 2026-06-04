@@ -1,7 +1,7 @@
 package com.tradingbot.domain.execution;
 
 import com.tradingbot.domain.model.ExecutionResult;
-import com.tradingbot.domain.risk.ApprovedOrder;
+import com.tradingbot.domain.model.Order;
 
 /**
  * Интерфейс движка исполнения ордеров.
@@ -11,10 +11,10 @@ public interface ExecutionEngine {
 
     /**
      * Исполнить одобренный ордер.
-     * @param approvedOrder Данные ордера
+     * @param order Данные ордера
      * @return Результат исполнения
      */
-    ExecutionResult execute(ApprovedOrder approvedOrder);
+    ExecutionResult execute(Order order);
 
     /**
      * Проверить статус ордера.

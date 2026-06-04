@@ -1,6 +1,7 @@
 package com.tradingbot.domain.risk;
 
 import com.tradingbot.BaseIntegrationTest;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

@@ -1,8 +1,8 @@
 package com.tradingbot.infrastructure.persistence.repository;
 
 import com.tradingbot.domain.risk.RiskEvent;
-import com.tradingbot.domain.risk.RiskRepository;
 import com.tradingbot.domain.risk.RiskState;
+import com.tradingbot.domain.risk.RiskStatePort;
 import com.tradingbot.infrastructure.persistence.entity.RiskEventEntity;
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import com.tradingbot.infrastructure.persistence.mapper.RiskStateMapper;
@@ -15,10 +15,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.UUID;
 
-@Repository
 @RequiredArgsConstructor
 @Slf4j
-public class JpaRiskRepository implements RiskRepository {
+public class JpaRiskRepository implements RiskStatePort {
     private final RiskStateRepository riskStateRepository;
     private final RiskEventRepository eventRepository;
     private final RiskStateMapper riskStateMapper;

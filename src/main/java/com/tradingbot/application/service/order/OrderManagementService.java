@@ -19,12 +19,7 @@ public class OrderManagementService {
             return;
         }
 
-        log.info(
-                "[OMS] routing signal {} {}",
-                event.getSymbol(),
-                event.getType()
-        );
+        log.info("[OMS] routing {} {}", event.getSymbol(), event.getType());
 
-        orderApplicationService.onSignalReceived(event);
-    }
-}
+        orderApplicationService.handleSignal(event);
+    }}

@@ -1,130 +1,162 @@
 package com.tradingbot.application.service.risk;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.application.bootstrap.SystemStateManager;
+import com.tradingbot.application.risk.RiskEngine;
+import com.tradingbot.application.service.risk.RiskReconciler;
+import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.domain.risk.RiskState;
+import com.tradingbot.domain.risk.RiskStateCorruptionException;
 import com.tradingbot.domain.risk.RiskStateReducer;
-import com.tradingbot.infrastructure.persistence.entity.RiskEventEntity;
-import com.tradingbot.infrastructure.persistence.entity.RiskReservationLogEntity;
-import com.tradingbot.infrastructure.persistence.entity.RiskSnapshotEntity;
-import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
-import com.tradingbot.infrastructure.persistence.repository.RiskEventRepository;
-import com.tradingbot.infrastructure.persistence.repository.RiskReservationLogRepository;
-import com.tradingbot.infrastructure.persistence.repository.RiskSnapshotRepository;
+import com.tradingbot.infrastructure.persistence.entity.*;
+import com.tradingbot.infrastructure.persistence.repository.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Recovers RiskState from database on startup using snapshots and event log.
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class RiskStateRecoveryService {
+
     private final RiskEventRepository eventRepository;
     private final RiskSnapshotRepository snapshotRepository;
-    private final RiskReservationLogRepository riskReservationLogRepository;
+    private final RiskReservationLogRepository reservationLogRepository;
     private final RiskEngine riskEngine;
     private final RiskStateReducer reducer;
     private final ObjectMapper objectMapper;
+    private final RiskReconciler riskReconciler;
+    private final ExchangeOrderQueryService exchangeQueryService;
+    private final SystemStateManager stateManager;
 
     private static final String AGGREGATE_ID = RiskStateEntity.SINGLETON_ID;
+    private static final String CAPITAL_ASSET = "USDT";
+
+    // HARD SINGLE EXECUTION GUARANTEE
+    private final AtomicBoolean recovered = new AtomicBoolean(false);
 
     public boolean recover() {
+
+        // 🔒 NON-REENTRANT GUARANTEE
+        if (!recovered.compareAndSet(false, true)) {
+            throw new IllegalStateException("[RISK-RECOVERY] already executed - non reentrant violation");
+        }
+
+        // 🔒 STATE MACHINE CONTRACT ENFORCEMENT
+        if (stateManager.getState() != SystemStateManager.SystemState.RISK_RECOVERING) {
+            throw new IllegalStateException(
+                    "[RISK-RECOVERY] invalid state: " + stateManager.getState()
+            );
+        }
+
         return recoverState();
     }
 
-    @Deprecated
-    @EventListener(ApplicationReadyEvent.class)
-    public boolean recoverState() {
-        // IMPORTANT:
-        // replay uses sequence_id as deterministic order of intent
-        // NOT guaranteed to match DB commit order
-        log.info("[RISK-RECOVERY] Starting deterministic risk state recovery (Variant A)...");
-        // 1. Load latest snapshot (Source of Truth for Balance/Equity)
-        var snapshotOpt = snapshotRepository.findFirstByAggregateIdOrderByLastVersionDesc(AGGREGATE_ID);
+    private boolean recoverState() {
+
+        log.info("[RISK-RECOVERY] START");
+
+        // 1. SNAPSHOT
+        var snapshotOpt =
+                snapshotRepository.findFirstByAggregateIdOrderByLastVersionDesc(AGGREGATE_ID);
+
         RiskState state = snapshotOpt
                 .map(this::deserializeSnapshot)
                 .orElse(RiskState.empty());
 
-        log.info("[RISK-RECOVERY] Loaded snapshot at version {}", state.getVersion());
+        log.info("[RISK-RECOVERY] snapshot version={}", state.getVersion());
 
-        // 2. Replay tail events (Source of Truth for PnL/Halt state)
-        List<RiskEventEntity> tailEvents = eventRepository
-                .findByAggregateIdAndVersionGreaterThanOrderByVersionAsc(AGGREGATE_ID, state.getVersion());
+        // 2. EVENT REPLAY
+        List<RiskEventEntity> events =
+                eventRepository.findByAggregateIdAndVersionGreaterThanOrderByVersionAsc(
+                        AGGREGATE_ID,
+                        state.getVersion()
+                );
 
-        log.info("[RISK-RECOVERY] Replaying {} tail events...", tailEvents.size());
-
-        for (RiskEventEntity entity : tailEvents) {
+        for (RiskEventEntity entity : events) {
             RiskEvent event = deserializeEvent(entity);
             state = reducer.reduce(state, event, true);
         }
 
-        // 3. Rebuild activeReservations from risk_reservation_log (Source of Truth for Reservations)
-        // sequence_id guarantees deterministic ordering across distributed writes
-        Map<UUID, BigDecimal> rebuiltReservations = new HashMap<>();
-        List<RiskReservationLogEntity> logs = riskReservationLogRepository.findAllByOrderBySequenceIdAsc();
-        
-        for (RiskReservationLogEntity logEntry : logs) {            if ("RESERVE".equals(logEntry.getEventType())) {
-                rebuiltReservations.put(logEntry.getOrderId(), logEntry.getAmount());
-            } else if ("RELEASE".equals(logEntry.getEventType())) {
-                rebuiltReservations.remove(logEntry.getOrderId());
+        // 3. RESERVATION REBUILD (SOURCE OF TRUTH)
+        Map<UUID, BigDecimal> reservations = new HashMap<>();
+
+        List<RiskReservationLogEntity> logs =
+                reservationLogRepository.findAllByOrderBySequenceIdAsc();
+
+        for (RiskReservationLogEntity l : logs) {
+            if ("RESERVE".equals(l.getEventType())) {
+                reservations.put(l.getOrderId(), l.getAmount());
+            } else if ("RELEASE".equals(l.getEventType())) {
+                reservations.remove(l.getOrderId());
             }
         }
-        
-        // Merge: Overwrite reservations from log, keep balance/pnl from snapshot+events
+
         state = state.toBuilder()
-                .activeReservations(Map.copyOf(rebuiltReservations))
+                .activeReservations(Map.copyOf(reservations))
                 .build();
-        
-        log.info("[RISK-RECOVERY] RiskState rebuilt from reservation log: {} active reservations, total reserved: {}", 
-                rebuiltReservations.size(), state.getReserved());
-        // 4. Final validation
-        try {
-            state.validateInvariants();
-        } catch (IllegalStateException e) {
-            log.warn("[RISK-RECOVERY] Recovered state has invariant violations: {}. " +
-                    "System will reconcile balance on bootstrap.", e.getMessage());
-        }
 
-        // 5. Initialize RiskEngine
+        log.info("[RISK-RECOVERY] reservations={}, reserved={}",
+                reservations.size(), state.getReserved());
+
+        state = reconcileWithExchange(state);
+
+        log.info("[RISK-RECOVERY] reconciled balance={}, totalEquity={}",
+                state.getAvailableBalance(),
+                state.getTotalEquity());
+
+        // 5. ENGINE INIT
         riskEngine.initialize(state);
-        log.info("[RISK-RECOVERY] Recovery complete. Final version: {}, Halted: {}, Daily PnL: {}", 
-                state.getVersion(), state.isHalted(), state.getDailyPnl());
 
-        return snapshotOpt.isEmpty() && tailEvents.isEmpty();
+        log.info("[RISK-RECOVERY] COMPLETE version={}, halted={}, pnl={}",
+                state.getVersion(),
+                state.isHalted(),
+                state.getDailyPnl()
+        );
+
+        return snapshotOpt.isEmpty() && events.isEmpty();
     }
+
     private RiskState deserializeSnapshot(RiskSnapshotEntity entity) {
         try {
             return objectMapper.readValue(entity.getStateJson(), RiskState.class);
         } catch (Exception e) {
-            log.error("Failed to deserialize snapshot", e);
-            return RiskState.empty();
+            throw new RuntimeException("snapshot deserialization failed", e);
         }
     }
 
     private RiskEvent deserializeEvent(RiskEventEntity entity) {
         try {
-            Class<? extends RiskEvent> eventClass = switch (entity.getEventType()) {
+            Class<? extends RiskEvent> type = switch (entity.getEventType()) {
                 case "TradeExecuted" -> RiskEvent.TradeExecuted.class;
                 case "PriceUpdated" -> RiskEvent.PriceUpdated.class;
                 case "TradingHalted" -> RiskEvent.TradingHalted.class;
                 case "CapitalReserved" -> RiskEvent.CapitalReserved.class;
                 case "CapitalReleased" -> RiskEvent.CapitalReleased.class;
-                default -> throw new IllegalArgumentException("Unknown event type: " + entity.getEventType());
-            };            return objectMapper.readValue(entity.getPayload(), eventClass);
+                default -> throw new IllegalArgumentException("unknown event: " + entity.getEventType());
+            };
+
+            return objectMapper.readValue(entity.getPayload(), type);
+
         } catch (Exception e) {
-            throw new RuntimeException("Failed to deserialize event", e);
+            throw new RuntimeException("event deserialization failed", e);
+        }
+    }
+
+    private RiskState reconcileWithExchange(RiskState state) {
+        BigDecimal exchangeBalance = exchangeQueryService.getAvailableBalance(CAPITAL_ASSET);
+        try {
+            return riskReconciler.reconcile(state, exchangeBalance);
+        } catch (RiskStateCorruptionException e) {
+            log.error("[RISK-RECOVERY] reconciliation failed: {}", e.getMessage());
+            stateManager.updateState(SystemStateManager.SystemState.HALTED);
+            riskEngine.emergencyStop("Reconciliation failure: " + e.getMessage());
+            throw e;
         }
     }
 }

@@ -6,6 +6,7 @@ import com.tradingbot.domain.model.Position;
 import com.tradingbot.infrastructure.persistence.entity.EquitySnapshotEntity;
 import com.tradingbot.infrastructure.persistence.repository.EquitySnapshotRepository;
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
+import com.tradingbot.tracing.ExecutionContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -29,14 +30,18 @@ public class EquityService {
     private static final BigDecimal INITIAL_BALANCE = new BigDecimal("10000");
 
     @Transactional
-    public void onTradeCreated(TradeCreatedEvent event) {        log.info("[EQUITY] Updating balance for strategy {} after trade {}", event.getStrategyId(), event.getTradeId());
-        
+    public void onTradeCreated(TradeCreatedEvent event) {
+        ExecutionContext context = ExecutionContext.of(
+                event.getIdentity(),
+                event.getAttempt(),
+                event.getBusiness()
+        );
+        log.info("[EQUITY] Updating balance for strategy {} after trade {}", event.getStrategyId(), event.getTradeId());        
         strategyBalances.putIfAbsent(event.getStrategyId(), INITIAL_BALANCE);
         
         // В Stage 2 для простоты делаем snapshot при каждой сделке
         createSnapshot(event.getStrategyId(), event.getSymbol(), event.getPrice());
     }
-
     public void createSnapshot(String strategyId, String symbol, BigDecimal currentPrice) {
         BigDecimal balance = strategyBalances.getOrDefault(strategyId, INITIAL_BALANCE);
         

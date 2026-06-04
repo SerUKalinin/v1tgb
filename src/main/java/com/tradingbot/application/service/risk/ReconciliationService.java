@@ -1,54 +1,57 @@
 package com.tradingbot.application.service.risk;
 
-import com.tradingbot.application.service.system.AdminNotificationService;
-import com.tradingbot.application.service.execution.PositionRebuildService;
-import com.tradingbot.application.service.execution.StateTransitionExecutor;
 import com.tradingbot.application.bootstrap.SystemStateManager;
+import com.tradingbot.application.event.SystemEvents;
+import com.tradingbot.application.risk.RiskEngine;
+import com.tradingbot.application.service.execution.PositionRebuildService;
+import com.tradingbot.application.service.system.AdminNotificationService;
 import com.tradingbot.common.enums.OrderStatus;
-import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.model.OrderRepositoryPort;
+import com.tradingbot.domain.policy.OrderStateTransitionPolicy;
 import com.tradingbot.domain.policy.TransitionValidator;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
-import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
-import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
-import com.tradingbot.domain.execution.ExchangeOrderQueryService;
-import com.tradingbot.domain.risk.RiskEngine;
-import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
+import com.tradingbot.tracing.*;
+import jakarta.persistence.OptimisticLockException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.context.event.EventListener;
-import com.tradingbot.application.event.SystemEvents;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.math.RoundingMode;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 
 /**
- * Reconciliation Engine.
- * Ответственен за обнаружение и исправление расхождений между слоями системы
- * и внешними биржами.
+ * <h1>ReconciliationService</h1>
+ *
+ * <p>Ответственен за обнаружение и исправление расхождений между слоями системы
+ * и внешними биржами. Реализует recovery semantics для зависших ордеров.
  */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class ReconciliationService {
-    private final OrderRepository orderRepository;
-    private final OrderMapper orderMapper;
+    private final OrderRepositoryPort orderRepository;
     private final OutboxEventRepository outboxRepository;
     private final ExchangeOrderQueryService exchangeQueryService;
     private final RiskEngine riskEngine;
     private final AdminNotificationService notifications;
     private final PositionRebuildService positionRebuildService;
     private final SystemStateManager stateManager;
-    private final StateTransitionExecutor transitionExecutor;
     private final TransitionValidator transitionValidator;
+    private final ExecutionLogger executionLogger;
 
     private static final Duration STALE_THRESHOLD = Duration.ofMinutes(2);
     private static final Duration DRIFT_DETECTION_WINDOW = Duration.ofSeconds(45);
@@ -80,9 +83,6 @@ public class ReconciliationService {
         reconcileBalances(force);
     }
 
-    /**
-     * 1. Сверка балансов (Account Balance Reconciliation).
-     */
     public void reconcileBalances(boolean force) {
         try {
             BigDecimal exchangeBalance = exchangeQueryService.getAvailableBalance("USDT");
@@ -133,9 +133,6 @@ public class ReconciliationService {
         }
     }
 
-    /**
-     * 2. Обнаружение зависших Outbox событий.
-     */
     @Scheduled(fixedDelay = 30000)
     @Transactional
     public void reconcileOutbox() {
@@ -152,71 +149,96 @@ public class ReconciliationService {
         }
     }
 
-    /**
-     * 3. Обнаружение ордеров, которые зависли в PENDING_EXECUTION или EXECUTING.
-     */
-    @Scheduled(fixedDelay = 300000) // Раз в 5 минут
+    @Scheduled(fixedDelay = 300000) // Раз в пять минут
     public void reconcilePendingOrders() {
         Instant threshold = Instant.now().minus(STALE_THRESHOLD);
-        java.util.Set<OrderStatus> reconcilableStatuses = transitionValidator.getReconcilableStatuses();
+        Set<OrderStatus> reconcilableStatuses = transitionValidator.getReconcilableStatuses();
 
-        List<OrderEntity> stuckOrders = orderRepository.findStuckOrdersInStatuses(reconcilableStatuses, threshold);
+        List<Order> stuckOrders = orderRepository.findStuckOrdersInStatuses(reconcilableStatuses, threshold);
 
-        for (OrderEntity order : stuckOrders) {
-            syncOrderWithExchange(order);
+        for (Order order : stuckOrders) {
+            ExecutionContext context = ExecutionContext.of(order);
+            syncOrderWithExchange(order, context);
         }
     }
 
     @Transactional
-    public void reconcile(java.util.UUID orderId) {
-        orderRepository.findById(orderId).ifPresent(this::syncOrderWithExchange);
+    public void reconcile(ExecutionContext context) {
+        orderRepository.findById(UUID.fromString(context.business().orderId()))
+                .ifPresent(order -> syncOrderWithExchange(order, context));
     }
 
     @Transactional
-    public void syncOrderWithExchange(OrderEntity orderEntity) {
+    public void syncOrderWithExchange(Order targetOrder, ExecutionContext context) {
         try {
-            Order order = orderMapper.toDomain(orderEntity);
+            // 1. Атомарный захват ордера для реконсиляции
+            Optional<Order> orderOpt = orderRepository.claimForReconciliation(targetOrder.getId());
 
-            if (transitionValidator.isTerminal(order.getStatus())) {
+            if (orderOpt.isEmpty()) {
+                log.debug("[RECON-SKIP] Order {} is currently executing or terminal.", targetOrder.getId());
                 return;
             }
 
-            log.info("[RECON] Syncing order {} (status: {})", order.getId(), order.getStatus());
+            Order order = orderOpt.get();
+
+            // Recovery Semantics: UNKNOWN -> RECOVERING
+            if (order.getStatus() == OrderStatus.UNKNOWN) {
+                order.markRecovering(context);
+                orderRepository.save(order);
+            }
+
+            executionLogger.log(ExecutionLogFactory.from(
+                    order,
+                    context,
+                    ExecutionEventType.RECON_START,
+                    ExecutionStateMapper.toContractState(order.getStatus()),
+                    "Reconciling order " + order.getId()
+            ));
+
+            log.info("[RECON] Syncing order {} (status: {}).", order.getId(), order.getStatus());
             ExecutionResult exchangeState = exchangeQueryService.getOrderStatus(order.getClientOrderId());
 
+            boolean stateChanged = false;
             if (exchangeState.getStatus() == ExecutionResult.Status.SUCCESS) {
-                transitionExecutor.execute(order, orderEntity, OrderStatus.FILLED, () ->
-                        order.fill(exchangeState.getExchangeOrderId(), exchangeState.getExecutedQty(), exchangeState.getExecutedPrice())
-                );
-                log.info("[RECON-SUCCESS] Order {} synchronized to FILLED", order.getId());
+                // RECOVERING -> FILLED
+                order.fill(context, exchangeState.getExchangeOrderId(), exchangeState.getExecutedQty(), exchangeState.getExecutedPrice());
+                log.info("[RECON-SUCCESS] Order {} synchronized to FILLED.", order.getId());
+                stateChanged = true;
             } else if (exchangeState.getStatus() == ExecutionResult.Status.REJECTED) {
-                transitionExecutor.execute(order, orderEntity, OrderStatus.REJECTED, () ->
-                        order.markAsRejected(exchangeState.getErrorMessage())
-                );
-                riskEngine.release(order.getId());
-                log.warn("[RECON-SUCCESS] Order {} synchronized to REJECTED", order.getId());
+                // RECOVERING -> REJECTED
+                order.markAsRejected(context, exchangeState.getErrorMessage());
+                riskEngine.release(context, order.getQuantity(), "Reconciliation rejection");
+                log.warn("[RECON-SUCCESS] Order {} synchronized to REJECTED.", order.getId());
+                stateChanged = true;
+            } else if (exchangeState.getStatus() == ExecutionResult.Status.CANCELED) {
+                // RECOVERING -> CANCELED
+                order.markCancelled(context);
+                riskEngine.release(context, order.getQuantity(), "Reconciliation cancellation");
+                log.warn("[RECON-SUCCESS] Order {} synchronized to CANCELED.", order.getId());
+                stateChanged = true;
             } else {
+                // Обработка stuck PENDING_EXECUTION или RECOVERING без ответа от биржи
                 Instant graceThreshold = Instant.now().minus(RECONCILIATION_GRACE_PERIOD);
-                if (orderEntity.getExecutionStartedAt() != null && orderEntity.getExecutionStartedAt().isBefore(graceThreshold)) {
+                Instant startTime = order.getExecutionStartedAt() != null ? order.getExecutionStartedAt() : order.getCreatedAt();
+
+                if (startTime != null && startTime.isBefore(graceThreshold)) {
                     log.warn("[RECON-PROPOSAL] Order {} not found after grace period. Syncing to REJECTED.", order.getId());
-                    transitionExecutor.execute(order, orderEntity, OrderStatus.REJECTED, () ->
-                            order.markAsRejected("Not found on exchange after grace period")
-                    );
-                    riskEngine.release(order.getId());
+                    order.markAsRejected(context, "Not found on exchange after grace period");
+                    riskEngine.release(context, order.getQuantity(), "Reconciliation not found");
+                    stateChanged = true;
                 }
             }
 
-            // Синхронизируем технические поля через маппер
-            orderMapper.updateEntity(order, orderEntity);
-            orderEntity.setUpdatedAt(Instant.now());
-            orderRepository.saveAndFlush(orderEntity);
+                if (stateChanged) {
+                if (OrderStateTransitionPolicy.isTerminal(order.getStatus())) {
+                    order.clearExecutionOwner();
+                }
+                orderRepository.save(order);
+            }
+        } catch (OptimisticLockException e) {
+            log.warn("[RECON-CONFLICT] Stale version for order {}. Skipping.", targetOrder.getId());
         } catch (Exception e) {
-            log.error("[RECON-ERROR] Failed to sync order {}", orderEntity.getId(), e);
+            log.error("[RECON-ERROR] Failed to sync order {}", targetOrder.getId(), e);
         }
-    }
-
-    @Scheduled(cron = "0 0 * * * *") // Раз в час
-    public void globalPositionReconciliation() {
-        log.info("[RECON] Starting global position reconciliation...");
     }
 }

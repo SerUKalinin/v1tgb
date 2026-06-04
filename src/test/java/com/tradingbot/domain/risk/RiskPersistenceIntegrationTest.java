@@ -1,5 +1,6 @@
 package com.tradingbot.domain.risk;
 
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
 import org.junit.jupiter.api.BeforeEach;

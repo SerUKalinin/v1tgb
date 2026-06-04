@@ -10,7 +10,6 @@ import java.math.RoundingMode;
 import java.time.Instant;
 
 @Slf4j
-@Component
 public class PositionReducer {
 
     public PositionState reduce(PositionState state, TradeCreatedEvent event) {

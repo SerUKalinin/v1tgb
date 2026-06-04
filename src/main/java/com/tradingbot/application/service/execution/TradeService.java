@@ -1,16 +1,18 @@
 package com.tradingbot.application.service.execution;
 
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.application.service.risk.EquityService;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Trade;
-import com.tradingbot.domain.risk.RiskEngine;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.TradeEntity;
 import com.tradingbot.infrastructure.persistence.mapper.TradeMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.IdentityFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -18,7 +20,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.UUID;
 
 @Service
 @Slf4j
@@ -27,7 +28,6 @@ public class TradeService {
 
     private final TradeRepository tradeRepository;
     private final TradeMapper tradeMapper;
-    private final PositionService positionService;
     private final EquityService equityService;
     private final OutboxService outboxService;
     private final OrderRepository orderRepository;
@@ -37,10 +37,19 @@ public class TradeService {
     public void onOrderFilled(OrderFilledEvent event) {
         log.info("[TRADE-SERVICE] Handling order fill for order: {}", event.getOrderId());
 
+        ExecutionContext context = ExecutionContext.of(
+                event.getIdentity(),
+                event.getAttempt(),
+                event.getBusiness()
+        );
+        
         // 1. Outbox: ORDER_FILLED
-        outboxService.publishEvent(event.getOrderId(), "ORDER", "ORDER_FILLED", event);
-
-        if (tradeRepository.existsByExchangeTradeId(event.getExternalExecutionId())) {
+        outboxService.publishEvent(
+                context,
+                "ORDER",
+                "ORDER_FILLED",
+                event
+        );        if (tradeRepository.existsByExchangeTradeId(event.getExternalExecutionId())) {
             log.warn("[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.", event.getExternalExecutionId());
             return;
         }
@@ -48,9 +57,9 @@ public class TradeService {
         var order = orderRepository.findById(event.getOrderId())
                 .orElseThrow(() -> new RuntimeException("Order not found: " + event.getOrderId()));
 
-        // 2. Создание сделки
+        // 2. Создание сущности сделки
         TradeEntity entity = new TradeEntity();
-        entity.setId(UUID.randomUUID());
+        entity.setId(IdentityFactory.deriveEventId(context.attempt().executionId(), "trade"));
         entity.setOrder(order);
         entity.setClientOrderId(order.getClientOrderId());
         entity.setExchangeTradeId(event.getExternalExecutionId());
@@ -64,8 +73,17 @@ public class TradeService {
 
         TradeEntity saved = tradeRepository.save(entity);
 
-        // 3. Outbox: TRADE_CREATED
-        outboxService.publishEvent(saved.getId(), "TRADE", "TRADE_CREATED", saved);
+        // 3. Outbox: TRADE_CREATED (продвижение контекста на следующий шаг)
+        ExecutionContext tradeContext = context.withNextStep(
+                IdentityFactory.deriveEventId(context.attempt().executionId(), "trade-publish")
+        );
+
+        outboxService.publishEvent(
+                tradeContext,
+                "TRADE",
+                "TRADE_CREATED",
+                saved
+        );
 
         // 4. Уведомление RiskEngine
         riskEngine.publish(new RiskEvent.TradeExecuted(
@@ -77,8 +95,11 @@ public class TradeService {
                 saved.getExecutedAt()
         ));
 
-        // 5. Синхронное обновление проекций
+        // 5. Синхронное обновление проекций (Equity/Position)
         TradeCreatedEvent tradeCreatedEvent = new TradeCreatedEvent(
+                tradeContext.identity(),
+                tradeContext.attempt(),
+                tradeContext.business(),
                 saved.getId(),
                 saved.getOrder().getId(),
                 saved.getSymbol(),

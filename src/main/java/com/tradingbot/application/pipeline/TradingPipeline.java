@@ -5,8 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.application.service.risk.EquityService;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.event.TradeCreatedEvent;
-import com.tradingbot.domain.model.Trade;
-import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
@@ -15,6 +14,9 @@ import com.tradingbot.infrastructure.persistence.mapper.TradeMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.IdentityFactory;
+import com.tradingbot.domain.model.Trade;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -44,10 +46,14 @@ public class TradingPipeline {
     public void onOrderFilled(OrderFilledEvent event) {
         log.info("[TRADE-SERVICE] Handling order fill for order: {}", event.getOrderId());
 
-        // 1. Outbox: ORDER_FILLED (Фиксация факта исполнения)
-        saveOutbox(event.getOrderId(), "ORDER", "ORDER_FILLED", event);
+        ExecutionContext context = ExecutionContext.of(
+                event.getIdentity(),
+                event.getAttempt(),
+                event.getBusiness()
+        );
 
-        if (tradeRepository.existsByExchangeTradeId(event.getExternalExecutionId())) {
+        // 1. Outbox: ORDER_FILLED (Фиксация факта исполнения)
+        saveOutbox(context, "ORDER", "ORDER_FILLED", event);        if (tradeRepository.existsByExchangeTradeId(event.getExternalExecutionId())) {
             log.warn("[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.", event.getExternalExecutionId());
             return;
         }
@@ -70,10 +76,10 @@ public class TradingPipeline {
 
         TradeEntity saved = tradeRepository.save(entity);
 
-        // 3. Outbox: TRADE_CREATED (Для асинхронных проекций, например PositionService)
-        saveOutbox(saved.getId(), "TRADE", "TRADE_CREATED", saved);
-
-        // 4. Обновление RiskEngine (внутренний Event Sourcing)
+        // 3. Outbox: TRADE_CREATED
+        ExecutionContext tradeContext = context.withNextStep(IdentityFactory.deriveEventId(context.attempt().executionId(), "trade-event"));
+        saveOutbox(tradeContext, "TRADE", "TRADE_CREATED", saved);
+        // 4. Обновление RiskEngine
         riskEngine.publish(new RiskEvent.TradeExecuted(
                 saved.getExchangeTradeId(),
                 saved.getSymbol(),
@@ -83,8 +89,11 @@ public class TradingPipeline {
                 saved.getExecutedAt()
         ));
 
-        // 5. Синхронное уведомление Equity (если требуется немедленный пересчет баланса)
+        // 5. Синхронное уведомление Equity
         TradeCreatedEvent tradeCreatedEvent = new TradeCreatedEvent(
+                tradeContext.identity(),
+                tradeContext.attempt(),
+                tradeContext.business(),
                 saved.getId(),
                 saved.getOrder().getId(),
                 saved.getSymbol(),
@@ -98,16 +107,20 @@ public class TradingPipeline {
         equityService.onTradeCreated(tradeCreatedEvent);
     }
 
-    private void saveOutbox(UUID aggregateId, String aggregateType, String eventType, Object payload) {
+    private void saveOutbox(ExecutionContext context, String aggregateType, String eventType, Object payload) {
         try {
             OutboxEventEntity outboxEvent = OutboxEventEntity.builder()
-                    .id(UUID.randomUUID())
-                    .aggregateId(aggregateId)
-                    .aggregateType(aggregateType)
+                    .id(IdentityFactory.deriveEventId(context.attempt().executionId(), eventType))
+                    .aggregateId(context.identity().aggregateId())                    .aggregateType(aggregateType)
                     .eventType(eventType)
                     .payload(objectMapper.writeValueAsString(payload))
                     .status(OutboxStatus.NEW)
                     .createdAt(Instant.now())
+                    .signalId(context.identity().signalId())
+                    .orderId(context.business().orderId() != null && !"UNKNOWN".equals(context.business().orderId()) ? UUID.fromString(context.business().orderId()) : null)
+                    .executionId(context.attempt().executionId())
+                    .causationId(context.attempt().causationId())
+                    .correlationId(context.identity().correlationId())
                     .build();
 
             outboxRepository.save(outboxEvent);

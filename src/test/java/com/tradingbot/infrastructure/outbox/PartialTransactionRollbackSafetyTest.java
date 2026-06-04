@@ -1,8 +1,8 @@
 package com.tradingbot.infrastructure.outbox;
 
-import com.tradingbot.domain.risk.RiskRepository;
 import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.domain.risk.RiskState;
+import com.tradingbot.domain.risk.RiskStatePort;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -28,7 +28,7 @@ class PartialTransactionRollbackSafetyTest {
     private OutboxEventRepository outboxRepository;
 
     @Autowired
-    private RiskRepository riskRepository;
+    private RiskStatePort riskStatePort;
 
     @org.springframework.boot.test.context.TestConfiguration
     static class TestConfig {
@@ -64,7 +64,7 @@ class PartialTransactionRollbackSafetyTest {
         UUID orderId = UUID.randomUUID();
         BigDecimal amount = new BigDecimal("100.00");
         
-        RiskState initialState = riskRepository.get();
+        RiskState initialState = riskStatePort.get();
         BigDecimal initialReserved = initialState.getReservedMargin();
 
         // When
@@ -80,7 +80,7 @@ class PartialTransactionRollbackSafetyTest {
         assertEquals(0, outboxCount, "Outbox event MUST be rolled back");
 
         // 2. Проверяем Risk State - резерв не должен измениться
-        RiskState finalState = riskRepository.get();
+        RiskState finalState = riskStatePort.get();
         assertEquals(initialReserved.stripTrailingZeros(), 
                      finalState.getReservedMargin().stripTrailingZeros(), 
                      "Risk reservation MUST be rolled back");

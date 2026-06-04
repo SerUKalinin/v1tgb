@@ -2,10 +2,28 @@ package com.tradingbot.domain.policy;
 
 import com.tradingbot.common.enums.OrderStatus;
 
+import com.tradingbot.tracing.ExecutionContext;
+
 import java.time.Instant;
-import java.util.*;
+import java.util.Collections;
+import java.util.EnumMap;
+import java.util.Map;
+import java.util.Set;
 
 public class OrderStateTransitionPolicy {
+
+    public static ExecutionContext validateAndPassThrough(ExecutionContext context, OrderStatus current, OrderStatus target) {
+        if (current == target) return context;
+        
+        if (!canTransition(current, target)) {
+            throw new IllegalStateException(String.format(
+                "IDENTITY-STRICT-VIOLATION: Transition from %s to %s is forbidden. Identity: %s", 
+                current, target, context.identity().signalId()));
+        }
+        
+        // Возвращаем контекст без модификации identity (identity-pass-through)
+        return context;
+    }
 
     private static final Map<OrderStatus, Set<OrderStatus>> STATE_GRAPH = new EnumMap<>(OrderStatus.class);
 
@@ -13,16 +31,15 @@ public class OrderStateTransitionPolicy {
         // NEW -> PENDING_EXECUTION (одобрен), REJECTED (отклонен рисками)
         STATE_GRAPH.put(OrderStatus.NEW, Set.of(OrderStatus.PENDING_EXECUTION, OrderStatus.REJECTED));
 
-        // PENDING_EXECUTION -> EXECUTING (захват), CANCELED (отмена до отправки), REJECTED (таймаут)
-        STATE_GRAPH.put(OrderStatus.PENDING_EXECUTION, Set.of(OrderStatus.EXECUTING, OrderStatus.CANCELED, OrderStatus.REJECTED));
-
-        // EXECUTING -> EXECUTING (идемпотентность), SENT_TO_EXCHANGE, FILLED, PARTIALLY_FILLED, REJECTED, CANCELED
+        // PENDING_EXECUTION -> EXECUTING (захват), CANCELED (отмена до отправки), REJECTED (reconciliation)
+        STATE_GRAPH.put(OrderStatus.PENDING_EXECUTION, Set.of(OrderStatus.EXECUTING, OrderStatus.CANCELED, OrderStatus.REJECTED));        // EXECUTING -> EXECUTING (идемпотентность), SENT_TO_EXCHANGE, FILLED, PARTIALLY_FILLED, REJECTED, UNKNOWN, CANCELED
         STATE_GRAPH.put(OrderStatus.EXECUTING, Set.of(
             OrderStatus.EXECUTING, 
             OrderStatus.SENT_TO_EXCHANGE, 
             OrderStatus.FILLED, 
             OrderStatus.PARTIALLY_FILLED, 
             OrderStatus.REJECTED, 
+            OrderStatus.UNKNOWN,
             OrderStatus.CANCELED
         ));
 
@@ -42,8 +59,23 @@ public class OrderStateTransitionPolicy {
             OrderStatus.REJECTED
         ));
 
-        // TERMINAL STATES (пустые сеты - переходы запрещены)
-        STATE_GRAPH.put(OrderStatus.FILLED, Collections.emptySet());
+        // UNKNOWN -> FILLED, REJECTED, EXECUTING (retry / recovery), RECOVERING
+        STATE_GRAPH.put(OrderStatus.UNKNOWN, Set.of(
+            OrderStatus.FILLED,
+            OrderStatus.REJECTED,
+            OrderStatus.EXECUTING,
+            OrderStatus.RECOVERING
+        ));
+
+        // RECOVERING -> FILLED, REJECTED, CANCELED, UNKNOWN
+        STATE_GRAPH.put(OrderStatus.RECOVERING, Set.of(
+            OrderStatus.FILLED,
+            OrderStatus.REJECTED,
+            OrderStatus.CANCELED,
+            OrderStatus.UNKNOWN
+        ));
+
+        // TERMINAL STATES (пустые сеты - переходы запрещены)        STATE_GRAPH.put(OrderStatus.FILLED, Collections.emptySet());
         STATE_GRAPH.put(OrderStatus.REJECTED, Collections.emptySet());
         STATE_GRAPH.put(OrderStatus.CANCELED, Collections.emptySet());
         STATE_GRAPH.put(OrderStatus.ERROR, Collections.emptySet());
@@ -61,12 +93,17 @@ public class OrderStateTransitionPolicy {
     public static void requestTransition(OrderStatus current, OrderStatus target) {
         if (current == target) return;
         
-        if (!canTransition(current, target)) {            throw new IllegalStateException(String.format(
+        if (target == OrderStatus.UNKNOWN && current != OrderStatus.EXECUTING) {
+            throw new IllegalStateException(String.format(
+                "STATE-POLICY-VIOLATION: Transition to UNKNOWN is only allowed from EXECUTING. Current: %s", current));
+        }
+
+        if (!canTransition(current, target)) {
+            throw new IllegalStateException(String.format(
                 "STATE MUST GO THROUGH POLICY: Transition from %s to %s is forbidden by Formal State Graph", 
                 current, target));
         }
     }
-
     public static boolean canTransition(OrderStatus current, OrderStatus target) {
         if (current == target) return true;
         return STATE_GRAPH.getOrDefault(current, Collections.emptySet()).contains(target);
@@ -82,10 +119,11 @@ public class OrderStateTransitionPolicy {
         return switch (resultStatus) {
             case SUCCESS -> OrderStatus.FILLED;
             case REJECTED -> OrderStatus.REJECTED;
+            case CANCELED -> OrderStatus.CANCELED;
+            case TIMEOUT -> OrderStatus.UNKNOWN;
             default -> null;
         };
     }
-
     public static boolean isTerminal(OrderStatus status) {
         // Терминальное состояние - то, из которого нет исходящих переходов в графе
         return STATE_GRAPH.containsKey(status) && STATE_GRAPH.get(status).isEmpty();
@@ -106,12 +144,12 @@ public class OrderStateTransitionPolicy {
         return status == OrderStatus.PENDING_EXECUTION;
     }
 
-    public static boolean isActive(OrderStatus status) {        return !isTerminal(status) && status != OrderStatus.NEW;
+    public static boolean isActive(OrderStatus status) {
+        return !isTerminal(status) && status != OrderStatus.NEW;
     }
     public static Set<OrderStatus> getReconcilableStatuses() {
-        return Set.of(OrderStatus.PENDING_EXECUTION, OrderStatus.EXECUTING, OrderStatus.SENT_TO_EXCHANGE, OrderStatus.PARTIALLY_FILLED);
+        return Set.of(OrderStatus.PENDING_EXECUTION, OrderStatus.EXECUTING, OrderStatus.SENT_TO_EXCHANGE, OrderStatus.PARTIALLY_FILLED, OrderStatus.UNKNOWN, OrderStatus.RECOVERING);
     }
-
     public static boolean isReconcilable(OrderStatus status) {
         return getReconcilableStatuses().contains(status);
     }

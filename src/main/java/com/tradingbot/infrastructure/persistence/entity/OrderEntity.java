@@ -16,19 +16,21 @@ import java.util.UUID;
 @Table(name = "orders",
         indexes = {
                 @Index(name = "idx_orders_client_order_id", columnList = "client_order_id"),
-                @Index(name = "idx_orders_strategy_id", columnList = "strategy_id")
+                @Index(name = "idx_orders_strategy_id", columnList = "strategy_id"),
+                @Index(name = "idx_orders_signal_id", columnList = "signal_id", unique = true)
         }
-)
-@Getter
+)@Getter
 @Setter
+@Builder(toBuilder = true)
 @NoArgsConstructor(access = AccessLevel.PUBLIC)
 @AllArgsConstructor(access = AccessLevel.PACKAGE)
-public class OrderEntity {
-    @Id    private UUID id;
+public class OrderEntity {    @Id
+    @Setter(AccessLevel.NONE)
+    private UUID id;
 
     @Column(name = "client_order_id", nullable = false, unique = true, updatable = false)
+    @Setter(AccessLevel.NONE)
     private String clientOrderId;
-
     @Column(name = "exchange_order_id")
     private String exchangeOrderId;
 
@@ -62,19 +64,26 @@ public class OrderEntity {
     private BigDecimal averagePrice;
 
     @Column(name = "strategy_id", nullable = false)
+    @Setter(AccessLevel.NONE)
     private String strategyId;
 
-    @Column(name = "execution_id")
-    private UUID executionId;
+    @Column(name = "signal_id", nullable = false, updatable = false)
+    @Setter(AccessLevel.NONE)
+    private UUID signalId;
 
+    @Column(name = "execution_id")
+    @Setter(AccessLevel.NONE)
+    private UUID executionId;
     @Column(name = "execution_started_at")
     private Instant executionStartedAt;
 
     @Column(name = "execution_attempts")
     private int executionAttempts;
 
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(name = "rejection_reason")
+    private String rejectionReason;
+
+    @Enumerated(EnumType.STRING)    @Column(nullable = false)
     private OrderStatus status;
 
     @Column(name = "created_at", nullable = false, updatable = false)

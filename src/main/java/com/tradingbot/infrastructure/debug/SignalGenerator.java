@@ -2,6 +2,7 @@ package com.tradingbot.infrastructure.debug;
 
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.tracing.IdentityFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -11,6 +12,7 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Random;
+import java.util.UUID;
 
 /**
  * Генератор тестовых сигналов для проверки работы Product Layer и Telegram.
@@ -19,7 +21,8 @@ import java.util.Random;
 @Slf4j
 @RequiredArgsConstructor
 @org.springframework.context.annotation.Profile("none") // Отключено, чтобы не мешать реальным сигналам
-public class SignalGenerator {    private final ApplicationEventPublisher eventPublisher;
+public class SignalGenerator {
+    private final ApplicationEventPublisher eventPublisher;
     private final Random random = new Random();
     private final String[] symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"};
 
@@ -29,15 +32,19 @@ public class SignalGenerator {    private final ApplicationEventPublisher eventP
         SignalType type = random.nextBoolean() ? SignalType.BUY : SignalType.SELL;
         BigDecimal price = BigDecimal.valueOf(30000 + random.nextDouble() * 1000);
 
-        SignalEvent event = SignalEvent.builder()
-                .symbol(symbol)
-                .type(type)
-                .price(price)
-                .strategyId("DEBUG-STRATEGY")
-                .candleTime(Instant.now())
-                .build();
+        UUID signalId = IdentityFactory.derive(UUID.nameUUIDFromBytes("debug-generator".getBytes()), "signal-" + System.nanoTime());
+        SignalEvent event = new SignalEvent(
+                signalId,
+                symbol,
+                type,
+                price,
+                BigDecimal.ZERO, // quantity
+                BigDecimal.ZERO, // stopLoss
+                BigDecimal.ZERO, // takeProfit
+                Instant.now(),
+                "DEBUG-STRATEGY"
+        );
 
-        log.info("[DEBUG] Generating fake signal: {} {} at {}", type, symbol, price);
-        eventPublisher.publishEvent(event);
+        log.info("[DEBUG] Generating fake signal: {} {} at {}", type, symbol, price);        eventPublisher.publishEvent(event);
     }
 }

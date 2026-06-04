@@ -1,7 +1,7 @@
 package com.tradingbot.interfaces.web;
 
 import com.tradingbot.domain.model.SubscriptionTier;
-import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.infrastructure.persistence.repository.SignalRepository;
 import com.tradingbot.infrastructure.persistence.repository.UserRepository;
 import lombok.RequiredArgsConstructor;

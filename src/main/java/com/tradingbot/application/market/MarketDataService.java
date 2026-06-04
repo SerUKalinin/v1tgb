@@ -3,9 +3,10 @@ package com.tradingbot.application.market;
 import com.tradingbot.application.event.CandleTransitionDetector;
 import com.tradingbot.domain.model.Candle;
 import com.tradingbot.domain.model.CandleWindow;
-import com.tradingbot.domain.risk.RiskEngine;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.infrastructure.client.binance.BinanceMarketDataClient;
+import com.tradingbot.tracing.IdentityFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -75,7 +76,7 @@ public class MarketDataService {
             BigDecimal currentPrice = candles.get(candles.size() - 1).getClose();
             if (shouldUpdateRisk(symbol, currentPrice)) {
                 riskEngine.publish(new RiskEvent.PriceUpdated(
-                        UUID.randomUUID().toString(),
+                        IdentityFactory.derive(UUID.nameUUIDFromBytes(symbol.getBytes()), "price-update").toString(),
                         symbol,
                         currentPrice,
                         Instant.now()

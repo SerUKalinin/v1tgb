@@ -3,6 +3,7 @@ package com.tradingbot.infrastructure.persistence.entity;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import jakarta.persistence.*;
 import lombok.*;
+
 import java.time.Instant;
 import java.util.UUID;
 
@@ -60,13 +61,38 @@ public class OutboxEventEntity {
     @Column(name = "next_attempt_at")
     private Instant nextAttemptAt;
 
-    @Column(name = "attempt_count", nullable = false)    private int attemptCount;
+    @Column(name = "claimed_by")
+    private String claimedBy;
 
-    @PrePersist
-    protected void onCreate() {
-        if (sequenceNumber == null) {
-            throw new IllegalStateException("OutboxEvent must have sequenceNumber before persisting");
-        }
+    @Column(name = "claimed_at")
+    private Instant claimedAt;
+
+    @Column(name = "lease_until")
+    private Instant leaseUntil;
+
+    @Column(name = "attempt_count", nullable = false)
+    private int attemptCount;
+
+    @Builder.Default
+    @Column(name = "schema_version", nullable = false)
+    private int schemaVersion = 1;
+    @Column(name = "signal_id")
+    private UUID signalId;
+    @Column(name = "order_id")
+    private UUID orderId;
+
+    @Column(name = "execution_id")
+    private UUID executionId;
+
+    @Column(name = "causation_id")
+    private UUID causationId;
+
+    @Column(name = "correlation_id")
+    private UUID correlationId;
+
+    @Column(name = "event_id", nullable = false, unique = true)
+    private UUID eventId;
+    @PrePersist    protected void onCreate() {
         if (status == null) status = OutboxStatus.NEW;
         if (createdAt == null) createdAt = Instant.now();
         if (updatedAt == null) updatedAt = createdAt;

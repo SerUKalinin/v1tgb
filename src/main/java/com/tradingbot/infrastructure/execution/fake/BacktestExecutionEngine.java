@@ -4,15 +4,20 @@ import com.tradingbot.application.service.execution.TradeService;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.execution.ExecutionEngine;
 import com.tradingbot.domain.model.ExecutionResult;
-import com.tradingbot.domain.risk.ApprovedOrder;
+import com.tradingbot.domain.model.Order;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.IdentityFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.util.UUID;
 
+/**
+ * FAKE EXECUTION ENGINE (Backtest)
+ * Симулирует исполнение ордеров без реального обращения к бирже.
+ */
 @Component
 @Profile("backtest")
 @Slf4j
@@ -22,33 +27,39 @@ public class BacktestExecutionEngine implements ExecutionEngine {
     private final TradeService tradeService;
 
     @Override
-    public ExecutionResult execute(ApprovedOrder approvedOrder) {
+    public ExecutionResult execute(Order order) {
         log.info("[FAKE-EXEC] Executing order: {} {} {} @ {}",
-                approvedOrder.getSide(), approvedOrder.getQuantity(), approvedOrder.getSymbol(), approvedOrder.getPrice());
+                order.getSide(), order.getQuantity(), order.getSymbol(), order.getPrice());
 
-        String externalOrderId = "fake-order-" + UUID.randomUUID().toString().substring(0, 8);
-        String externalTradeId = "fake-trade-" + UUID.randomUUID().toString().substring(0, 8);
+        String externalOrderId = "fake-order-" + IdentityFactory.deriveEventId(order.getSignalId(), "external-order").toString().substring(0, 8);
+        String externalTradeId = "fake-trade-" + IdentityFactory.deriveEventId(order.getSignalId(), "external-trade").toString().substring(0, 8);
 
-        // Прямой вызов TradeService вместо публикации события
+        // TRANSPORT RETRY: Используем транспортную семантику для симуляции прохода через инфраструктуру
+        ExecutionContext context = ExecutionContext.of(order).withTransportRetry();
+
+        // Прямой вызов TradeService для мгновенного подтверждения в режиме бэктеста
         tradeService.onOrderFilled(new OrderFilledEvent(
-                approvedOrder.getOrderId(),
+                context.identity(),
+                context.attempt(),
+                context.business(),
+                order.getId(),
                 externalTradeId,
-                approvedOrder.getSymbol(),
-                approvedOrder.getQuantity(),
-                approvedOrder.getPrice()
+                order.getSymbol(),
+                order.getQuantity(),
+                order.getPrice()
         ));
 
         return ExecutionResult.success(
-                approvedOrder.getOrderId(),
+                order.getId(),
                 externalOrderId,
                 externalTradeId,
-                approvedOrder.getSymbol(),
-                approvedOrder.getSide(),
-                approvedOrder.getQuantity(),
-                approvedOrder.getPrice(),
-                approvedOrder.getQuantity().multiply(new BigDecimal("0.001")),
+                order.getSymbol(),
+                order.getSide(),
+                order.getQuantity(),
+                order.getPrice(),
+                order.getQuantity().multiply(new BigDecimal("0.001")), // 0.1% commission
                 "USDT",
-                approvedOrder.getClientOrderId()
+                order.getClientOrderId()
         );
     }
 
@@ -59,7 +70,7 @@ public class BacktestExecutionEngine implements ExecutionEngine {
         return ExecutionResult.builder()
                 .exchangeOrderId("fake-recon-" + clientOrderId)
                 .executedQty(BigDecimal.ZERO)
-                .status(ExecutionResult.Status.SUCCESS) // Исправлено здесь
+                .status(ExecutionResult.Status.SUCCESS)
                 .build();
     }
 }

@@ -1,0 +1,24 @@
+package com.tradingbot.tracing;
+
+public enum ExecutionEventType {
+    SIGNAL_RECEIVED,
+    ORDER_CREATED,
+    RISK_DECISION,
+    RISK_APPROVED,
+    RISK_REJECTED,
+    RISK_HALTED,
+    RISK_NOT_FEASIBLE,
+    ORDER_PERSISTED,
+
+    OUTBOX_CLAIM_START,
+    OUTBOX_DISPATCH,
+    OUTBOX_ACK,
+
+    EXECUTION_START,
+    EXECUTION_SUCCESS,
+    EXECUTION_FAIL,
+
+    RECON_START,
+    RECON_SYNC,
+    RECON_FIX
+}

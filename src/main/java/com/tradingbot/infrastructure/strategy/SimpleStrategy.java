@@ -4,10 +4,12 @@ import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.model.CandleWindow;
 import com.tradingbot.domain.model.Signal;
 import com.tradingbot.domain.strategy.TradingStrategy;
+import com.tradingbot.tracing.IdentityFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.util.UUID;
 
 /**
  * Простейшая тестовая стратегия.
@@ -22,9 +24,10 @@ public class SimpleStrategy implements TradingStrategy {
     public Signal analyze(CandleWindow window) {
         int size = window.getCandles().size();
         if (size < 2) {
-            log.info("[STRATEGY] Not enough candles for {}: {}", window.getSymbol(), size);
-            return new Signal(window.getSymbol(), "simple-strategy", SignalType.HOLD, window.getLast().getClose(), BigDecimal.ZERO);
+            UUID signalId = IdentityFactory.derive(UUID.nameUUIDFromBytes(window.getSymbol().getBytes()), "hold-" + window.getLast().getOpenTime());
+            return new Signal(signalId, window.getSymbol(), "simple-strategy", SignalType.HOLD, window.getLast().getClose(), BigDecimal.ZERO);
         }
+
 
         BigDecimal currentClose = window.getLast().getClose();
         BigDecimal prevClose = window.getCandles().get(size - 2).getClose();
@@ -35,6 +38,7 @@ public class SimpleStrategy implements TradingStrategy {
         log.info("[STRATEGY] Signal generated for {}: {} (current={}, prev={})", 
                 window.getSymbol(), type, currentClose, prevClose);
         
-        return new Signal(window.getSymbol(), "simple-strategy", type, currentClose, quantity);
+        UUID signalId = IdentityFactory.derive(UUID.nameUUIDFromBytes(window.getSymbol().getBytes()), "signal-" + currentClose + "-" + quantity);
+        return new Signal(signalId, window.getSymbol(), "simple-strategy", type, currentClose, quantity);
     }
 }

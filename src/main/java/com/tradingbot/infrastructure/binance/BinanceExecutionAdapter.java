@@ -1,10 +1,10 @@
 package com.tradingbot.infrastructure.binance;
 
+import com.tradingbot.domain.model.Order;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.exchange.ExecutionPort;
-import com.tradingbot.domain.risk.ApprovedOrder;
 import com.tradingbot.infrastructure.execution.binance.BinanceClient;
 import com.tradingbot.infrastructure.execution.binance.OrderStatusResponse;
 import lombok.RequiredArgsConstructor;
@@ -33,13 +33,13 @@ public class BinanceExecutionAdapter implements ExecutionPort {
     }
 
     @Override
-    public ExecutionResult placeOrder(ApprovedOrder order) {
+    public ExecutionResult placeOrder(Order order) {
         return self.doPlaceOrder(order);
     }
 
     @CircuitBreaker(name = "exchangeExecution", fallbackMethod = "fallbackPlaceOrder")
     @Retry(name = "exchangeExecution")
-    public ExecutionResult doPlaceOrder(ApprovedOrder order) {
+    public ExecutionResult doPlaceOrder(Order order) {
         log.info("[BINANCE-ADAPTER] Placing order: {} {} {}", order.getSymbol(), order.getSide(), order.getQuantity());
         
         Map<String, String> params = new HashMap<>();
@@ -57,8 +57,8 @@ public class BinanceExecutionAdapter implements ExecutionPort {
             Map response = binanceClient.post("/api/v3/order", params, Map.class, true);
             return mapToExecutionResult(order, response);
         } catch (Exception e) {
-            log.error("[BINANCE-ADAPTER] Failed to place order {}: {}", order.getOrderId(), e.getMessage());
-            ExecutionResult errorResult = mapErrorToResult(order.getOrderId(), e);
+            log.error("[BINANCE-ADAPTER] Failed to place order {}: {}", order.getId(), e.getMessage());
+            ExecutionResult errorResult = mapErrorToResult(order.getId(), e);
             if (errorResult.getStatus() == ExecutionResult.Status.REJECTED) {
                 return errorResult;
             }
@@ -66,10 +66,10 @@ public class BinanceExecutionAdapter implements ExecutionPort {
         }
     }
 
-    public ExecutionResult fallbackPlaceOrder(ApprovedOrder order, Throwable t) {
+    public ExecutionResult fallbackPlaceOrder(Order order, Throwable t) {
         log.error("[BINANCE-ADAPTER][FALLBACK] Circuit breaker open or retries exhausted for order {}: {}", 
-                order.getOrderId(), t.getMessage());
-        return mapErrorToResult(order.getOrderId(), (Exception) t);
+                order.getId(), t.getMessage());
+        return mapErrorToResult(order.getId(), (Exception) t);
     }
     @Override
     public ExecutionResult cancelOrder(String clientOrderId) {
@@ -148,19 +148,19 @@ public class BinanceExecutionAdapter implements ExecutionPort {
         
         return sanitized;
     }
-    private ExecutionResult mapToExecutionResult(ApprovedOrder order, Map response) {
+    private ExecutionResult mapToExecutionResult(Order order, Map response) {
         String status = (String) response.get("status");
         boolean success = "FILLED".equals(status) || "NEW".equals(status) || "PARTIALLY_FILLED".equals(status);
         
         if (success) {
             return ExecutionResult.builder()
-                    .orderId(order.getOrderId())
+                    .orderId(order.getId())
                     .exchangeOrderId(response.get("orderId").toString())
                     .executedQty(new java.math.BigDecimal((String) response.get("executedQty")))
                     .status(ExecutionResult.Status.SUCCESS)
                     .build();
         } else {
-            return ExecutionResult.rejected(order.getOrderId(), status);
+            return ExecutionResult.rejected(order.getId(), status);
         }
     }
 

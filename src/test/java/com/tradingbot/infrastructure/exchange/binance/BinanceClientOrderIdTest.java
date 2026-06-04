@@ -1,16 +1,14 @@
 package com.tradingbot.infrastructure.exchange.binance;
 
-import com.tradingbot.domain.risk.ApprovedOrder;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.common.util.ClientOrderIdGenerator;
+import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.binance.BinanceExecutionAdapter;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.ActiveProfiles;
-import com.tradingbot.infrastructure.execution.binance.BinanceClient;
 
 import java.math.BigDecimal;
 import java.util.UUID;
@@ -28,13 +26,13 @@ public class BinanceClientOrderIdTest {
     @Test
     void shouldThrowExceptionWhenClientOrderIdIsMissing() {
         UUID orderId = UUID.randomUUID();
-        ApprovedOrder orderWithoutId = ApprovedOrder.builder()
-                .orderId(orderId)
+        Order orderWithoutId = Order.builder()
+                .id(orderId)
                 .clientOrderId(null) // Намеренно null
                 .symbol("BTCUSDT")
                 .side(OrderSide.BUY)
                 .type(OrderType.MARKET)
-                .quantity(new BigDecimal("0.001"))
+                .originalQuantity(new BigDecimal("0.001"))
                 .price(new BigDecimal("50000"))
                 .build();
 
@@ -51,16 +49,15 @@ public class BinanceClientOrderIdTest {
         UUID orderId = UUID.randomUUID();
         String clientOrderId = ClientOrderIdGenerator.generate(orderId);
         
-        ApprovedOrder order = ApprovedOrder.builder()
-                .orderId(orderId)
+        Order order = Order.builder()
+                .id(orderId)
                 .clientOrderId(clientOrderId)
                 .symbol("BTCUSDT")
                 .side(OrderSide.BUY)
                 .type(OrderType.MARKET)
-                .quantity(new BigDecimal("0.001"))
+                .originalQuantity(new BigDecimal("0.001"))
                 .price(new BigDecimal("50000"))
                 .build();
-
         // Проверяем, что генератор детерминирован
         String secondGen = ClientOrderIdGenerator.generate(orderId);
         assertThat(clientOrderId).isEqualTo(secondGen);
