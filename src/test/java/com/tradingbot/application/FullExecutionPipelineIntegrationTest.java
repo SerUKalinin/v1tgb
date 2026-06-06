@@ -1,7 +1,6 @@
 package com.tradingbot.application;
 
 import com.tradingbot.BaseIntegrationTest;
-import com.tradingbot.application.pipeline.TradingPipeline;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;

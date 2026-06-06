@@ -41,15 +41,17 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
     @Override
     @Transactional
     public void consume(OutboxEventEntity event) throws Exception {
-        // 1. Проверка идемпотентности
-        if (idempotencyService.isAlreadyProcessed(event.getId())) {
-            log.info("[ORDER-EXECUTED-HANDLER] Event {} already processed, skipping", event.getId());
-            return;
-        }
-
-        // 2. Десериализация данных в строгое DTO
+        // 1. Десериализация ДО проверки идемпотентности (нужен доменный ключ)
         OrderExecutedEvent payload = objectMapper.readValue(event.getPayload(), OrderExecutedEvent.class);
         UUID orderId = payload.getOrderId();
+        UUID executionId = payload.getAttempt().executionId();
+
+        // 2. Проверка идемпотентности по доменно-стабильному ключу (orderId + executionId)
+        UUID idempotencyKey = deriveIdempotencyKey(orderId, executionId);
+        if (idempotencyService.isAlreadyProcessed(idempotencyKey)) {
+            log.info("[ORDER-EXECUTED-HANDLER] executionId {} for order {} already processed, skipping", executionId, orderId);
+            return;
+        }
 
         log.info("[ORDER-EXECUTED-HANDLER] Processing execution for order {}. Status: {}, Qty: {}, Price: {}",
                 orderId, payload.getStatus(), payload.getQuantity(), payload.getPrice());
@@ -71,8 +73,12 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
             order.applyPartialFill(context, executedQty, executionPrice);
         } else if (targetStatus == OrderStatus.REJECTED) {
             order.markAsRejected(context, payload.getRejectionReason() != null ? payload.getRejectionReason() : "Unknown rejection");
-        }        // 5. Обновление позиции через PositionService (только если есть реальное исполнение)
-        if (executedQty != null && executedQty.compareTo(BigDecimal.ZERO) > 0) {
+        } else if (targetStatus == OrderStatus.UNKNOWN) {
+            order.markAsUnknown(context);
+        }
+        // 5. Обновление позиции через PositionService (только если есть реальное исполнение с ценой)
+        if (executedQty != null && executedQty.compareTo(BigDecimal.ZERO) > 0
+                && executionPrice != null) {
             ExecutionContext tradeEventContext = context.withNextStep(IdentityFactory.deriveEventId(context.attempt().executionId(), "trade-created"));
 
             TradeCreatedEvent tradeEvent = new TradeCreatedEvent(
@@ -80,7 +86,7 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
                     tradeEventContext.attempt(),
                     tradeEventContext.business(),
                     IdentityFactory.deriveEventId(tradeEventContext.attempt().executionId(), "trade-created"),
-                    orderId,                    order.getSymbol(),
+                    orderId, order.getSymbol(),
                     order.getStrategyId(),
                     executedQty,
                     executionPrice,
@@ -90,5 +96,12 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
             );
             positionService.updatePosition(tradeEvent);
         }
+
+        // 6. Фиксация идемпотентности по доменному ключу
+        idempotencyService.markAsProcessed(idempotencyKey, "OrderExecutedEventHandler");
+    }
+
+    private static UUID deriveIdempotencyKey(UUID orderId, UUID executionId) {
+        return UUID.nameUUIDFromBytes((orderId + ":" + executionId).getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 }

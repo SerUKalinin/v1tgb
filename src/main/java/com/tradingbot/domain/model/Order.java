@@ -43,6 +43,7 @@ public class Order {
     private BigDecimal executedQuantity;
     private BigDecimal averagePrice;
     private String rejectionReason;
+    private UUID lastAppliedExecutionId;
 
     // Приватный конструктор для обеспечения целостности через фабричные методы
     private Order(UUID id,
@@ -119,7 +120,9 @@ public class Order {
                                     BigDecimal executedQuantity,
                                     BigDecimal averagePrice,
                                     String rejectionReason,
-                                    int executionAttempts) {
+                                    int executionAttempts,
+                                    UUID lastAppliedExecutionId
+    ) {
         Order order = new Order(id,
                 clientOrderId,
                 symbol,
@@ -140,6 +143,7 @@ public class Order {
         order.averagePrice = averagePrice;
         order.rejectionReason = rejectionReason;
         order.executionAttempts = executionAttempts;
+        order.lastAppliedExecutionId = lastAppliedExecutionId;
         return order;
     }
     // --- Бизнес-логика и переходы состояний ---
@@ -150,7 +154,11 @@ public class Order {
 
     public void assignExecutionOwner(UUID executionId) {
         Objects.requireNonNull(executionId, "executionId is required");
-        if (this.executionId != null && !this.executionId.equals(executionId) && !OrderStateTransitionPolicy.isTerminal(this.status)) {
+        // Idempotency guard: same owner — NOOP
+        if (this.executionId != null && this.executionId.equals(executionId)) {
+            return;
+        }
+        if (this.executionId != null && !OrderStateTransitionPolicy.isTerminal(this.status)) {
             throw new IllegalStateException(String.format("Order %s already claimed by %s", this.id, this.executionId));
         }
         this.executionId = executionId;
@@ -166,45 +174,129 @@ public class Order {
     }
 
     public void markExecuting(ExecutionContext context) {
+        UUID incomingExecutionId = context.attempt().executionId();
+
+        // Idempotency guard: already EXECUTING — safe NOOP
+        if (this.status == OrderStatus.EXECUTING) {
+            return;
+        }
+
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.EXECUTING);
+        this.executionId = incomingExecutionId;
         this.status = OrderStatus.EXECUTING;
     }
 
     public void fill(ExecutionContext context, String exchangeOrderId, BigDecimal executedQty, BigDecimal executedPrice) {
+        UUID incomingExecutionId = context.attempt().executionId();
+
+        // Idempotency guard: already terminal FILLED — safe NOOP
+        if (this.status == OrderStatus.FILLED) {
+            return;
+        }
+
+        // Idempotency guard: retry of same execution — NOOP
+        if (this.lastAppliedExecutionId != null && this.lastAppliedExecutionId.equals(incomingExecutionId)) {
+            return;
+        }
+
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.FILLED);
+        this.lastAppliedExecutionId = incomingExecutionId;
         this.exchangeOrderId = exchangeOrderId;
         this.executedQuantity = executedQty;
         this.averagePrice = executedPrice;
         this.status = OrderStatus.FILLED;
     }
 
+
     public void fill(ExecutionContext context, BigDecimal executedQty, BigDecimal executedPrice) {
         fill(context, this.exchangeOrderId, executedQty, executedPrice);
     }
 
+    /**
+     * Принудительный fill для реконсиляции.
+     * Пропускает lastAppliedExecutionId guard, т.к. контекст восстановлен из Order
+     * и executionId совпадает с оригинальным.
+     */
+    public void forceFill(ExecutionContext context, String exchangeOrderId, BigDecimal executedQty, BigDecimal executedPrice) {
+        // Idempotency guard: already terminal FILLED — safe NOOP
+        if (this.status == OrderStatus.FILLED) {
+            return;
+        }
+
+        // NOTE: no lastAppliedExecutionId guard — reconciliation must force through
+        OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.FILLED);
+        this.lastAppliedExecutionId = context.attempt().executionId();
+        this.exchangeOrderId = exchangeOrderId;
+        this.executedQuantity = executedQty;
+        this.averagePrice = executedPrice;
+        this.status = OrderStatus.FILLED;
+    }
+
     public void applyPartialFill(ExecutionContext context, BigDecimal qty, BigDecimal price) {
+        UUID incomingExecutionId = context.attempt().executionId();
+
+        // Idempotency guard: already PARTIALLY_FILLED — safe NOOP
+        if (this.status == OrderStatus.PARTIALLY_FILLED) {
+            return;
+        }
+
+        // Idempotency guard: retry of same execution — NOOP
+        if (this.lastAppliedExecutionId != null && this.lastAppliedExecutionId.equals(incomingExecutionId)) {
+            return;
+        }
+
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.PARTIALLY_FILLED);
+        this.lastAppliedExecutionId = incomingExecutionId;
         this.executedQuantity = qty;
         this.averagePrice = price;
         this.status = OrderStatus.PARTIALLY_FILLED;
     }
+
     public void markRecovering(ExecutionContext context) {
+        // Idempotency guard: already RECOVERING — safe NOOP
+        if (this.status == OrderStatus.RECOVERING) {
+            return;
+        }
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.RECOVERING);
         this.status = OrderStatus.RECOVERING;
     }
 
+    public void markAccepted(ExecutionContext context, String exchangeOrderId) {
+        // Idempotency guard: already SENT_TO_EXCHANGE — safe NOOP
+        if (this.status == OrderStatus.SENT_TO_EXCHANGE) {
+            return;
+        }
+
+        OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.SENT_TO_EXCHANGE);
+        this.exchangeOrderId = exchangeOrderId;
+        this.status = OrderStatus.SENT_TO_EXCHANGE;
+    }
+
     public void markAsRejected(ExecutionContext context, String reason) {
+        // Idempotency guard: already REJECTED — safe NOOP
+        if (this.status == OrderStatus.REJECTED) {
+            return;
+        }
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.REJECTED);
         this.status = OrderStatus.REJECTED;
         this.rejectionReason = reason;
     }
 
     public void markCancelled(ExecutionContext context) {
+        // Idempotency guard: already CANCELED — safe NOOP
+        if (this.status == OrderStatus.CANCELED) {
+            return;
+        }
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.CANCELED);
         this.status = OrderStatus.CANCELED;
     }
 
+
     public void markAsUnknown(ExecutionContext context) {
+        // Idempotency guard: already UNKNOWN — safe NOOP
+        if (this.status == OrderStatus.UNKNOWN) {
+            return;
+        }
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.UNKNOWN);
         this.status = OrderStatus.UNKNOWN;
     }
@@ -231,5 +323,9 @@ public class Order {
         if (!OrderStateTransitionPolicy.canTransition(this.status, targetStatus)) {
             throw new IllegalStateException(String.format("Transition from %s to %s forbidden by policy", this.status, targetStatus));
         }
+    }
+
+    public void setExchangeOrderId(String exchangeOrderId) {
+        this.exchangeOrderId = exchangeOrderId;
     }
 }

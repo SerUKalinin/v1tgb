@@ -1,7 +1,6 @@
 package com.tradingbot.application;
 
 import com.tradingbot.BaseIntegrationTest;
-import com.tradingbot.application.pipeline.TradingPipeline;
 import com.tradingbot.application.service.execution.PositionService;
 import com.tradingbot.domain.model.Position;
 import com.tradingbot.domain.risk.RiskManager;

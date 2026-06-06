@@ -72,7 +72,6 @@ public class OrderEntity {    @Id
     private UUID signalId;
 
     @Column(name = "execution_id")
-    @Setter(AccessLevel.NONE)
     private UUID executionId;
     @Column(name = "execution_started_at")
     private Instant executionStartedAt;
@@ -91,6 +90,9 @@ public class OrderEntity {    @Id
 
     @Column(name = "updated_at")
     private Instant updatedAt;
+
+    @Column(name = "last_applied_execution_id")
+    private UUID lastAppliedExecutionId;
 
     @Version
     private Long version;

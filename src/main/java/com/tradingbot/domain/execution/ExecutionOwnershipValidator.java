@@ -1,5 +1,6 @@
 package com.tradingbot.domain.execution;
 
+import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.execution.ExecutionOwnershipException;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.policy.OrderStateTransitionPolicy;
@@ -21,12 +22,11 @@ public final class ExecutionOwnershipValidator {
         if (!order.getExecutionId().equals(executionId)) {
             throw new ExecutionOwnershipException(String.format("Order %s ownership mismatch: expected=%s actual=%s", order.getId(), executionId, order.getExecutionId()));
         }
+        if (order.getStatus() == OrderStatus.FILLED) {
+            return;
+        }
         if (OrderStateTransitionPolicy.isTerminal(order.getStatus())) {
             throw new ExecutionOwnershipException(String.format("Order %s already terminal (%s)", order.getId(), order.getStatus()));
         }
-    }
-
-    public static void validateMutationAllowedOrThrow(Order order, UUID executionId) {
-        validateExecutionOwnership(order, executionId);
     }
 }

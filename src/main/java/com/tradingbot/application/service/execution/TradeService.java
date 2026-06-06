@@ -1,7 +1,6 @@
 package com.tradingbot.application.service.execution;
 
 import com.tradingbot.application.risk.RiskEngine;
-import com.tradingbot.application.service.risk.EquityService;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Trade;
@@ -28,7 +27,6 @@ public class TradeService {
 
     private final TradeRepository tradeRepository;
     private final TradeMapper tradeMapper;
-    private final EquityService equityService;
     private final OutboxService outboxService;
     private final OrderRepository orderRepository;
     private final RiskEngine riskEngine;
@@ -42,7 +40,7 @@ public class TradeService {
                 event.getAttempt(),
                 event.getBusiness()
         );
-        
+
         // 1. Outbox: ORDER_FILLED
         outboxService.publishEvent(
                 context,
@@ -78,24 +76,6 @@ public class TradeService {
                 IdentityFactory.deriveEventId(context.attempt().executionId(), "trade-publish")
         );
 
-        outboxService.publishEvent(
-                tradeContext,
-                "TRADE",
-                "TRADE_CREATED",
-                saved
-        );
-
-        // 4. Уведомление RiskEngine
-        riskEngine.publish(new RiskEvent.TradeExecuted(
-                saved.getExchangeTradeId(),
-                saved.getSymbol(),
-                saved.getQuantity(),
-                saved.getPrice(),
-                saved.getRealizedPnl(),
-                saved.getExecutedAt()
-        ));
-
-        // 5. Синхронное обновление проекций (Equity/Position)
         TradeCreatedEvent tradeCreatedEvent = new TradeCreatedEvent(
                 tradeContext.identity(),
                 tradeContext.attempt(),
@@ -111,7 +91,25 @@ public class TradeService {
                 order.getTakeProfit()
         );
 
-        equityService.onTradeCreated(tradeCreatedEvent);
+        outboxService.publishEvent(
+                tradeContext,
+                "TRADE",
+                "TRADE_CREATED",
+                tradeCreatedEvent
+        );
+
+        // 4. Уведомление RiskEngine
+        riskEngine.publish(new RiskEvent.TradeExecuted(
+                saved.getExchangeTradeId(),
+                saved.getSymbol(),
+                saved.getQuantity(),
+                saved.getPrice(),
+                saved.getRealizedPnl(),
+                saved.getExecutedAt()
+        ));
+
+        // 5. Projection updates (Equity/Position) are handled asynchronously
+        //    via Outbox consumers — no direct sync calls here.
     }
 
     public List<Trade> getTradeHistory(String symbol, String strategyId) {

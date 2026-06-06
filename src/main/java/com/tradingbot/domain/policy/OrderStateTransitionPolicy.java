@@ -117,13 +117,15 @@ public class OrderStateTransitionPolicy {
 
     public static OrderStatus mapExecutionResult(com.tradingbot.domain.model.ExecutionResult.Status resultStatus) {
         return switch (resultStatus) {
-            case SUCCESS -> OrderStatus.FILLED;
+            case FILLED -> OrderStatus.FILLED;
+            case PARTIALLY_FILLED -> OrderStatus.PARTIALLY_FILLED;
+            case ACCEPTED -> OrderStatus.SENT_TO_EXCHANGE;
             case REJECTED -> OrderStatus.REJECTED;
             case CANCELED -> OrderStatus.CANCELED;
-            case TIMEOUT -> OrderStatus.UNKNOWN;
-            default -> null;
+            case EXCHANGE_STATE_UNKNOWN -> OrderStatus.UNKNOWN;
         };
     }
+
     public static boolean isTerminal(OrderStatus status) {
         // Терминальное состояние - то, из которого нет исходящих переходов в графе
         return STATE_GRAPH.containsKey(status) && STATE_GRAPH.get(status).isEmpty();

@@ -11,6 +11,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -41,14 +42,14 @@ public class BinanceExecutionAdapter implements ExecutionPort {
     @Retry(name = "exchangeExecution")
     public ExecutionResult doPlaceOrder(Order order) {
         log.info("[BINANCE-ADAPTER] Placing order: {} {} {}", order.getSymbol(), order.getSide(), order.getQuantity());
-        
+
         Map<String, String> params = new HashMap<>();
         params.put("symbol", order.getSymbol());
         params.put("side", order.getSide().name());
         params.put("type", order.getType().name());
         params.put("quantity", normalizeQuantity(order.getQuantity()));
         params.put("newClientOrderId", sanitizeClientId(order.getClientOrderId()));
-        
+
         if ("LIMIT".equals(order.getType().name())) {
             params.put("price", normalizePrice(order.getPrice()));
             params.put("timeInForce", "GTC");
@@ -58,23 +59,23 @@ public class BinanceExecutionAdapter implements ExecutionPort {
             return mapToExecutionResult(order, response);
         } catch (Exception e) {
             log.error("[BINANCE-ADAPTER] Failed to place order {}: {}", order.getId(), e.getMessage());
-            ExecutionResult errorResult = mapErrorToResult(order.getId(), e);
+            ExecutionResult errorResult = BinanceStatusMapper.mapError(e, order.getId());
             if (errorResult.getStatus() == ExecutionResult.Status.REJECTED) {
                 return errorResult;
             }
-            throw e; 
+            throw e;
         }
     }
 
     public ExecutionResult fallbackPlaceOrder(Order order, Throwable t) {
-        log.error("[BINANCE-ADAPTER][FALLBACK] Circuit breaker open or retries exhausted for order {}: {}", 
+        log.error("[BINANCE-ADAPTER][FALLBACK] Circuit breaker open or retries exhausted for order {}: {}",
                 order.getId(), t.getMessage());
-        return mapErrorToResult(order.getId(), (Exception) t);
+        return BinanceStatusMapper.mapError((Exception) t, order.getId());
     }
+
     @Override
     public ExecutionResult cancelOrder(String clientOrderId) {
         log.info("[BINANCE-ADAPTER] Cancelling order: {}", clientOrderId);
-        // Реализация отмены будет добавлена при необходимости
         return ExecutionResult.failure(null, "Not implemented yet");
     }
 
@@ -84,16 +85,14 @@ public class BinanceExecutionAdapter implements ExecutionPort {
         log.info("[BINANCE-ADAPTER] Querying order status: {} (sanitized: {})", clientOrderId, sanitizedId);
         Map<String, String> params = new HashMap<>();
         params.put("origClientOrderId", sanitizedId);
-        // В Binance API символ обязателен для запроса ордера. 
-        // В будущем стоит расширить интерфейс или хранить маппинг clientOrderId -> symbol
-        params.put("symbol", "BTCUSDT"); 
+        params.put("symbol", "BTCUSDT");
 
         try {
             OrderStatusResponse response = binanceClient.get("/api/v3/order", params, OrderStatusResponse.class, true);
             return mapStatusResponse(response);
         } catch (Exception e) {
             log.error("[BINANCE-ADAPTER] Failed to get status for {}: {}", clientOrderId, e.getMessage());
-            return ExecutionResult.timeout(null);
+            return ExecutionResult.exchangeStateUnknown(null);
         }
     }
 
@@ -102,7 +101,7 @@ public class BinanceExecutionAdapter implements ExecutionPort {
         try {
             Map accountInfo = binanceClient.getAccountInfo();
             java.util.List<Map<String, String>> balances = (java.util.List<Map<String, String>>) accountInfo.get("balances");
-            
+
             return balances.stream()
                     .collect(java.util.stream.Collectors.toMap(
                             b -> b.get("asset"),
@@ -113,74 +112,61 @@ public class BinanceExecutionAdapter implements ExecutionPort {
             return Map.of();
         }
     }
+
     private String normalizeQuantity(java.math.BigDecimal quantity) {
         if (quantity == null) return "0";
-        // Для BTCUSDT на Binance точность количества обычно 5 знаков (stepSize 0.00001)
         return quantity.setScale(5, java.math.RoundingMode.DOWN).stripTrailingZeros().toPlainString();
     }
 
     private String normalizePrice(java.math.BigDecimal price) {
         if (price == null) return "0";
-        // Для пар к USDT точность цены обычно 2 знака (tickSize 0.01)
         return price.setScale(2, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
     }
 
-    /**
-     * Нормализует clientOrderId под требования Binance:
-     * regex: [a-zA-Z0-9-_]{1,36}
-     */
     private String sanitizeClientId(String clientId) {
         if (clientId == null || clientId.isBlank()) {
             throw new IllegalArgumentException("clientOrderId must not be null or empty for Binance execution");
         }
-        
-        // Оставляем только разрешенные символы: буквы, цифры, дефис, подчеркивание
+
         String sanitized = clientId.replaceAll("[^a-zA-Z0-9-_]", "");
-        
-        // Ограничиваем длину до 36 символов (Binance limit)
+
         if (sanitized.length() > 36) {
             sanitized = sanitized.substring(0, 36);
         }
-        
+
         if (sanitized.isEmpty()) {
             throw new IllegalArgumentException("clientOrderId contains no valid characters for Binance: " + clientId);
         }
-        
+
         return sanitized;
     }
+
     private ExecutionResult mapToExecutionResult(Order order, Map response) {
         String status = (String) response.get("status");
-        boolean success = "FILLED".equals(status) || "NEW".equals(status) || "PARTIALLY_FILLED".equals(status);
-        
-        if (success) {
-            return ExecutionResult.builder()
-                    .orderId(order.getId())
-                    .exchangeOrderId(response.get("orderId").toString())
-                    .executedQty(new java.math.BigDecimal((String) response.get("executedQty")))
-                    .status(ExecutionResult.Status.SUCCESS)
-                    .build();
-        } else {
-            return ExecutionResult.rejected(order.getId(), status);
-        }
-    }
+        String exchangeOrderId = response.get("orderId").toString();
+        BigDecimal executedQty = new BigDecimal((String) response.get("executedQty"));
+        BigDecimal executedPrice = new BigDecimal((String) response.get("price"));
+        ExecutionResult.Status mappedStatus = BinanceStatusMapper.mapBinanceStatus(status);
 
-    private ExecutionResult mapErrorToResult(UUID orderId, Exception e) {
-        String msg = e.getMessage();
-        if (msg != null && (msg.contains("400") || msg.contains("-1013") || msg.contains("-1111"))) {
-            return ExecutionResult.rejected(orderId, msg);
-        }
-        if (msg != null && (msg.contains("Timeout") || msg.contains("504"))) {
-            return ExecutionResult.timeout(orderId);
-        }
-        return ExecutionResult.failedIo(orderId, msg);
+        return ExecutionResult.of(
+                order.getId(),
+                exchangeOrderId,
+                executedQty,
+                executedPrice,
+                mappedStatus,
+                BinanceStatusMapper.isTerminalBinanceStatus(status) ? null : status
+        );
     }
 
     private ExecutionResult mapStatusResponse(OrderStatusResponse response) {
-        boolean success = "FILLED".equals(response.getStatus());
-        return ExecutionResult.builder()
-                .exchangeOrderId(response.getExchangeOrderId())
-                .executedQty(response.getExecutedQty())
-                .status(success ? ExecutionResult.Status.SUCCESS : ExecutionResult.Status.REJECTED)
-                .errorMessage(success ? null : response.getStatus())
-                .build();
-    }}
+        String status = response.getStatus();
+        return ExecutionResult.of(
+                null,
+                response.getExchangeOrderId(),
+                response.getExecutedQty(),
+                response.getPrice(),
+                BinanceStatusMapper.mapBinanceStatus(status),
+                BinanceStatusMapper.isTerminalBinanceStatus(status) ? null : status
+        );
+    }
+}

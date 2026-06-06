@@ -9,6 +9,7 @@ import java.math.BigDecimal;
 public class OrderStatusResponse {
     String status;
     BigDecimal executedQty;
+    BigDecimal price;
     String exchangeOrderId;
     String clientOrderId;
 

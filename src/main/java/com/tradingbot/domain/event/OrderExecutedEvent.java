@@ -39,8 +39,8 @@ public class OrderExecutedEvent {
                 context.business(),
                 order.getId(),
                 order.getSymbol(),
-                order.getQuantity(),
-                order.getAveragePrice(),
+                order.getExecutedQuantity(),  // ← реально исполненное количество (может быть null)
+                order.getAveragePrice(),      // ← средняя цена (может быть null)
                 order.getStatus(),
                 order.getRejectionReason(),
                 Instant.now()

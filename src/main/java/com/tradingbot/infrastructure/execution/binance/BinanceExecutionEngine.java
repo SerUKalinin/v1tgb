@@ -32,23 +32,21 @@ public class BinanceExecutionEngine implements ExecutionEngine {
         log.info("[EXECUTION] Попытка исполнения ордера через порт: symbol={}, side={}, amount={}, clientOrderId={}",
                 order.getSymbol(), order.getSide(), order.getQuantity(), order.getClientOrderId());
 
-        // 1. Проверка идемпотентности перед отправкой
         Optional<OrderEntity> existingOrder = orderRepository.findByClientOrderId(order.getClientOrderId());
         if (existingOrder.isPresent()) {
             com.tradingbot.common.enums.OrderStatus status = existingOrder.get().getStatus();
             if (!com.tradingbot.domain.policy.OrderStateTransitionPolicy.isReadyForExecution(status)) {
-                log.warn("[EXECUTION] Ордер с clientOrderId {} уже обработан (статус: {}). Пропуск отправки.", 
+                log.warn("[EXECUTION] Ордер с clientOrderId {} уже обработан (статус: {}). Пропуск отправки.",
                         order.getClientOrderId(), existingOrder.get().getStatus());
-                
+
                 return mapToResult(existingOrder.get(), order);
             }
         }
-        // 2. Отправка через порт
+
         ExecutionResult result = executionPort.placeOrder(order);
 
-        // 3. Логика восстановления при таймаутах
-        if (!result.isSuccess() && "TIMEOUT".equals(result.getErrorMessage())) {
-            log.warn("[VERIFY][FLOW] Timeout detected for orderId={}, starting recovery", order.getClientOrderId());
+        if (!result.isFilled() && result.getStatus() == ExecutionResult.Status.EXCHANGE_STATE_UNKNOWN) {
+            log.warn("[VERIFY][FLOW] Exchange state unknown for orderId={}, starting recovery", order.getClientOrderId());
             return verifyOrderInternal(order);
         }
 
@@ -59,29 +57,15 @@ public class BinanceExecutionEngine implements ExecutionEngine {
     public ExecutionResult verifyOrder(String clientOrderId) {
         return executionPort.getOrderStatus(clientOrderId);
     }
+
     private ExecutionResult verifyOrderInternal(Order order) {
         ExecutionResult recoveryResult = executionPort.getOrderStatus(order.getClientOrderId());
-        
-        if (recoveryResult.isSuccess()) {
-            log.info("[VERIFY][FLOW] orderId={} result=RECOVERED_SUCCESS", order.getClientOrderId());
-            return ExecutionResult.success(
-                    order.getId(),
-                    recoveryResult.getExchangeOrderId(),
-                    "recovered-" + recoveryResult.getExchangeOrderId(),
-                    order.getSymbol(),
-                    order.getSide(),
-                    recoveryResult.getExecutedQty(),
-                    order.getPrice(),
-                    BigDecimal.ZERO,
-                    "USDT",
-                    order.getClientOrderId()
-            );
-        }
-        
+        log.info("[VERIFY][FLOW] orderId={} result={}", order.getClientOrderId(), recoveryResult.getStatus());
         return recoveryResult;
     }
+
     private ExecutionResult mapToResult(OrderEntity entity, Order order) {
-        return ExecutionResult.success(
+        return ExecutionResult.filled(
                 entity.getId(),
                 entity.getExchangeOrderId(),
                 "existing-trade",

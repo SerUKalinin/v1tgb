@@ -10,6 +10,7 @@ import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.tracing.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -48,7 +49,7 @@ public class RiskService {
     }
 
     // ==================== MAIN FLOW ====================
-
+    @Transactional
     public Optional<Order> evaluateSignal(ExecutionContext context, SignalEvent signal) {
         IdentityContext identity = context.identity();
         log.info("[TRACE_FLOW] ENTER RiskService.evaluateSignal for identity: {}", identity);
