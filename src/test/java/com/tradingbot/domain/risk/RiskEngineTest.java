@@ -1,6 +1,10 @@
 package com.tradingbot.domain.risk;
 
 import com.tradingbot.application.risk.RiskEngine;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -13,6 +17,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -25,8 +30,8 @@ class RiskEngineTest {
     private RiskEngine riskEngine;
 
     @Test
-    void shouldBlockEventsWhenHalted() {
-        RiskEvent tradeEvent = new RiskEvent.TradeExecuted(
+    void shouldDelegatePublishToRiskService() {
+        RiskEvent.TradeExecuted tradeEvent = new RiskEvent.TradeExecuted(
                 UUID.randomUUID().toString(),
                 "BTCUSDT",
                 BigDecimal.ONE,
@@ -37,40 +42,37 @@ class RiskEngineTest {
 
         riskEngine.publish(tradeEvent);
 
-        verify(riskService, times(1)).publish(tradeEvent);
+        verify(riskService).publish(tradeEvent);
     }
 
     @Test
-    void shouldReserveCapital() {
+    void shouldReserveCapitalViaExecutionContext() {
         UUID orderId = UUID.randomUUID();
         BigDecimal amount = new BigDecimal("1000");
-        
-        riskEngine.reserve(orderId, amount);
+        UUID signalId = UUID.randomUUID();
 
-        verify(riskService, times(1)).reserve(orderId, amount);
-    }
-
-    @Test
-    void shouldIncrementVersionAndPersist() {
-        RiskEvent event = new RiskEvent.TradeExecuted(
-                UUID.randomUUID().toString(),
-                "BTCUSDT",
-                BigDecimal.ONE,
-                BigDecimal.valueOf(50000),
-                BigDecimal.ZERO,
-                Instant.now()
+        ExecutionContext context = new ExecutionContext(
+                IdentityContext.of(signalId),
+                ExecutionAttemptContext.firstAttempt(signalId),
+                BusinessContext.of(orderId.toString())
         );
 
-        riskEngine.publish(event);
+        riskEngine.reserve(context, amount);
 
-        verify(riskService, times(1)).publish(event);
+        verify(riskService).reserve(context, eq(amount));
     }
 
     @Test
-    void shouldThrowExceptionWhenRepositoryFails() {
-        doThrow(new RuntimeException("DB Error")).when(riskService).publish(any());
+    void shouldPropagateExceptionFromRiskService() {
+        doThrow(new RuntimeException("DB Error"))
+                .when(riskService).publish(any());
 
-        RiskEvent event = new RiskEvent.PriceUpdated(UUID.randomUUID().toString(), "BTC", BigDecimal.ONE, Instant.now());
+        RiskEvent.PriceUpdated event = new RiskEvent.PriceUpdated(
+                UUID.randomUUID().toString(),
+                "BTC",
+                BigDecimal.ONE,
+                Instant.now()
+        );
 
         assertThrows(RuntimeException.class, () -> riskEngine.publish(event));
     }

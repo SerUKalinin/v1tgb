@@ -25,17 +25,17 @@ public class TestOrderFactory {
 
     public Order create(OrderStatus status) {
 
-        Order order = Order.builder()
-                .id(UUID.randomUUID())
-                .clientOrderId("test-order-" + UUID.randomUUID())
-                .symbol("BTCUSDT")
-                .side(OrderSide.BUY)
-                .type(OrderType.LIMIT)
-                .originalQuantity(BigDecimal.ONE)
-                .price(new BigDecimal("10000"))
-                .strategyId("test-suite")
-                .status(status)
-                .build();
+        Order order = Order.createPendingExecution(
+                UUID.randomUUID(),
+                "test-order-" + UUID.randomUUID(),
+                "BTCUSDT",
+                OrderSide.BUY,
+                OrderType.LIMIT,
+                BigDecimal.ONE,
+                new BigDecimal("10000"),
+                "test-suite",
+                UUID.randomUUID()
+        );
 
         OrderEntity entity = orderMapper.toEntity(order);
 

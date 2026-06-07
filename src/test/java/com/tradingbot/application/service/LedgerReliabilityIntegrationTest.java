@@ -1,20 +1,29 @@
 package com.tradingbot.application.service;
 
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.application.service.execution.PositionRebuildService;
 import com.tradingbot.application.service.execution.TradeService;
 import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.event.OrderFilledEvent;
+import com.tradingbot.infrastructure.outbox.OutboxService;
+import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -37,13 +46,16 @@ public class LedgerReliabilityIntegrationTest extends com.tradingbot.BaseIntegra
     private PositionRepository positionRepository;
 
     @Autowired
-    private ApplicationEventPublisher eventPublisher;
-
-    @Autowired
     private OrderRepository orderRepository;
 
     @Autowired
     private jakarta.persistence.EntityManager entityManager;
+
+    @MockBean
+    private OutboxService outboxService;
+
+    @MockBean
+    private RiskEngine riskEngine;
 
     @BeforeEach
     void setUp() {
@@ -69,8 +81,10 @@ public class LedgerReliabilityIntegrationTest extends com.tradingbot.BaseIntegra
         assertThat(posOpt).isPresent();
         PositionEntity pos = posOpt.get();
 
-        assertThat(pos.getQuantity()).isEqualByComparingTo("0.8");
-        assertThat(pos.getEntryPrice()).isEqualByComparingTo("55000");
+        assertThat(pos.getQuantity())
+                .isEqualByComparingTo(new BigDecimal("0.8"));
+        assertThat(pos.getEntryPrice())
+                .isEqualByComparingTo(new BigDecimal("55000"));
     }
 
     @Test
@@ -87,26 +101,43 @@ public class LedgerReliabilityIntegrationTest extends com.tradingbot.BaseIntegra
     }
 
     private void publishTrade(String tradeId, String symbol, OrderSide side, String qty, String price) {
-        UUID orderId = UUID.nameUUIDFromBytes(tradeId.getBytes()); // Deterministic UUID for tests
+        UUID orderId = UUID.nameUUIDFromBytes(
+                tradeId.getBytes(StandardCharsets.UTF_8));
+        UUID signalId = UUID.nameUUIDFromBytes(
+                ("signal-" + tradeId).getBytes(StandardCharsets.UTF_8));
         String clientOrderId = "C-" + tradeId;
-        
+
         if (!orderRepository.existsById(orderId)) {
-            com.tradingbot.infrastructure.persistence.entity.OrderEntity order = new com.tradingbot.infrastructure.persistence.entity.OrderEntity();
-            order.setId(orderId);
-            order.setClientOrderId(clientOrderId);
-            order.setSymbol(symbol);
-            order.setSide(side);
-            order.setType(com.tradingbot.common.enums.OrderType.MARKET);
-            order.setStrategyId("default");
-            order.setQuantity(new BigDecimal(qty));
-            order.setPrice(new BigDecimal(price));
-            order.setStatus(com.tradingbot.common.enums.OrderStatus.FILLED);
-            order.setVersion(0L);
-            order.setCreatedAt(Instant.now());
+            OrderEntity order = OrderEntity.builder()
+                    .id(orderId)
+                    .clientOrderId(clientOrderId)
+                    .symbol(symbol)
+                    .side(side)
+                    .type(OrderType.MARKET)
+                    .quantity(new BigDecimal(qty))
+                    .price(new BigDecimal(price))
+                    .strategyId("default")
+                    .signalId(signalId)
+                    .status(OrderStatus.FILLED)
+                    .createdAt(Instant.now())
+                    .build();
             orderRepository.saveAndFlush(order);
         }
-        // Вызываем сервис напрямую, так как в новой архитектуре он не слушает события Spring автоматически
-        tradeService.onOrderFilled(new OrderFilledEvent(orderId, "EXT-" + tradeId, symbol, new BigDecimal(qty), new BigDecimal(price)));
+
+        // Собираем полноценный контекст для OrderFilledEvent
+        IdentityContext identity = IdentityContext.of(signalId);
+        ExecutionAttemptContext attempt = ExecutionAttemptContext.firstAttempt(signalId);
+        BusinessContext business = BusinessContext.of(orderId.toString());
+
+        OrderFilledEvent event = new OrderFilledEvent(
+                identity, attempt, business,
+                orderId,
+                "EXT-" + tradeId,
+                symbol,
+                new BigDecimal(qty),
+                new BigDecimal(price));
+
+        tradeService.onOrderFilled(event);
         entityManager.flush();
     }
 }
