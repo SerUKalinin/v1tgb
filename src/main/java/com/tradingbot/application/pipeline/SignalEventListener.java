@@ -11,6 +11,16 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
+/**
+ * Обработчик доменных событий сигналов торговли.
+ * <p>
+ * Является входной точкой execution pipeline:
+ * принимает {@link SignalEvent}, проверяет готовность системы и
+ * передаёт сигнал в {@link SignalExecutionFacade}.
+ * <p>
+ * Поддерживает идемпотентность через обработку {@link AlreadyClaimedException}.
+ * Также блокирует исполнение, если система не находится в состоянии READY/TRADING_ENABLED.
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -19,6 +29,18 @@ public class SignalEventListener {
     private final SignalExecutionFacade signalExecutionFacade;
     private final SystemStateManager stateManager;
 
+    /**
+     * Основной обработчик торгового сигнала.
+     * <p>
+     * Выполняет проверку состояния системы и инициирует execution pipeline.
+     * <ul>
+     *     <li>Если система не готова — сигнал игнорируется</li>
+     *     <li>Если сигнал уже обработан — выполняется idempotent skip</li>
+     *     <li>Иначе запускается execution через {@link SignalExecutionFacade}</li>
+     * </ul>
+     *
+     * @param signal торговый доменный сигнал
+     */
     @EventListener
     public void onSignal(SignalEvent signal) {
 

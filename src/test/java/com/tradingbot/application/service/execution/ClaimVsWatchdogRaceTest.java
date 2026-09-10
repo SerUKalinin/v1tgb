@@ -1,21 +1,25 @@
 package com.tradingbot.application.service.execution;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.application.bootstrap.SystemStateManager;
-import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.application.risk.OrderCompensationService;
+import com.tradingbot.application.service.order.OrderCreatedEvent;
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.exchange.ExecutionPort;
-import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.execution.ExecutionClaimPort;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
-import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.infrastructure.execution.ExecutionLockService;
-import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
+import com.tradingbot.tracing.IdentityFactory;
+import com.tradingbot.tracing.ExecutionLogger;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -28,15 +32,15 @@ class ClaimVsWatchdogRaceTest {
     private OrderExecutionHandler handler;
     private ExecutionPort executionPort;
     private OrderRepositoryPort orderRepository;
-    private ExecutionLockService lockService;
-    private TransitionValidator transitionValidator;
+    private ExecutionClaimPort executionClaimPort;
+    private ObjectMapper objectMapper;
 
     @BeforeEach
     void setUp() {
         executionPort = mock(ExecutionPort.class);
         orderRepository = mock(OrderRepositoryPort.class);
-        lockService = mock(ExecutionLockService.class);
-        transitionValidator = mock(TransitionValidator.class);
+        executionClaimPort = mock(ExecutionClaimPort.class);
+        objectMapper = new ObjectMapper();
 
         SystemStateManager stateManager = mock(SystemStateManager.class);
         when(stateManager.isReady()).thenReturn(true);
@@ -45,58 +49,56 @@ class ClaimVsWatchdogRaceTest {
                 executionPort,
                 orderRepository,
                 stateManager,
-                mock(IdempotencyService.class),
-                lockService,
-                mock(RiskEngine.class),
+                mock(ExecutionLockService.class),
+                mock(OrderCompensationService.class),
                 mock(OutboxService.class),
-                transitionValidator
+                mock(TransitionValidator.class),
+                mock(ExecutionLogger.class),
+                executionClaimPort,
+                objectMapper
         );
     }
 
     @Test
-    @DisplayName("Watchdog MUST NOT call placeOrder if Node A already started execution")
     void watchdogRaceProtectionTest() throws Exception {
-        // Given
+        // GIVEN
         UUID orderId = UUID.randomUUID();
-        UUID eventId = UUID.randomUUID();
-        String clientOrderId = "CL-" + orderId;
+        UUID signalId = UUID.randomUUID();
+        UUID executionId = IdentityFactory.deriveExecution(orderId, 1);
 
-        Order order = Order.builder()
-                .id(orderId)
-                .clientOrderId(clientOrderId)
-                .status(OrderStatus.EXECUTING)
-                .build();
-
-        OutboxEventEntity event = OutboxEventEntity.builder()
-                .id(eventId)
-                .aggregateId(orderId)
-                .build();
-
-        // 1. Watchdog (Node B) находит ордер
-        when(orderRepository.claimForExecution(orderId)).thenReturn(Optional.of(order));
-
-        // 2. Валидатор считает ордер "зависшим" (stale)
-        when(transitionValidator.isTerminal(any())).thenReturn(false);
-        when(transitionValidator.isStale(eq(OrderStatus.EXECUTING), any())).thenReturn(true);
-
-        // 3. LockService говорит, что кто-то уже выполняет (isNewExecution = false)
-        String lockKey = "EXEC_ORDER_" + orderId;
-        when(lockService.getLockState(lockKey)).thenReturn("PENDING");
-        when(lockService.tryEnterExecuting(lockKey)).thenReturn(false);
-
-        // 4. Биржа подтверждает, что ордер существует/исполнен
-        when(executionPort.getOrderStatus(clientOrderId)).thenReturn(
-                ExecutionResult.builder().status(ExecutionResult.Status.SUCCESS).build()
+        Order order = Order.createPendingExecution(
+                orderId,
+                "CL-" + orderId,
+                "BTCUSDT",
+                OrderSide.BUY,
+                OrderType.MARKET,
+                BigDecimal.TEN,
+                BigDecimal.ZERO,
+                "strategy-1",
+                signalId
         );
 
-        // When
+        OutboxEventEntity event = new OutboxEventEntity();
+        event.setId(UUID.randomUUID());
+        event.setAggregateId(orderId);
+        event.setSignalId(signalId);
+        // Обязательные поля для ExecutionContext.from()
+        event.setExecutionId(executionId);
+        event.setCausationId(orderId);
+        event.setCorrelationId(signalId);
+        event.setAttemptCount(1);
+        event.setPayload(objectMapper.writeValueAsString(
+                new OrderCreatedEvent(signalId, orderId, executionId)
+        ));
+
+        // Watchdog race: claimForExecution returns empty — другой consumer уже забрал ордер
+        when(orderRepository.claimForExecution(eq(orderId), any())).thenReturn(Optional.empty());
+
+        // WHEN
         handler.consume(event);
 
-        // Then
-        // CRITICAL: Node B (watchdog) НЕ должен вызывать placeOrder, так как Node A уже заняла лок
+        // THEN: защита от гонки — ни размещения, ни сохранения
         verify(executionPort, never()).placeOrder(any());
-
-        // Node B должен вызвать getOrderStatus для синхронизации состояния с биржей
-        verify(executionPort, times(1)).getOrderStatus(clientOrderId);
+        verify(orderRepository, never()).save(any());
     }
 }

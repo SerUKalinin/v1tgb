@@ -34,10 +34,8 @@ public class BacktestExecutionEngine implements ExecutionEngine {
         String externalOrderId = "fake-order-" + IdentityFactory.deriveEventId(order.getSignalId(), "external-order").toString().substring(0, 8);
         String externalTradeId = "fake-trade-" + IdentityFactory.deriveEventId(order.getSignalId(), "external-trade").toString().substring(0, 8);
 
-        // TRANSPORT RETRY: Используем транспортную семантику для симуляции прохода через инфраструктуру
         ExecutionContext context = ExecutionContext.of(order).withTransportRetry();
 
-        // Прямой вызов TradeService для мгновенного подтверждения в режиме бэктеста
         tradeService.onOrderFilled(new OrderFilledEvent(
                 context.identity(),
                 context.attempt(),
@@ -49,7 +47,7 @@ public class BacktestExecutionEngine implements ExecutionEngine {
                 order.getPrice()
         ));
 
-        return ExecutionResult.success(
+        return ExecutionResult.filled(
                 order.getId(),
                 externalOrderId,
                 externalTradeId,
@@ -57,7 +55,7 @@ public class BacktestExecutionEngine implements ExecutionEngine {
                 order.getSide(),
                 order.getQuantity(),
                 order.getPrice(),
-                order.getQuantity().multiply(new BigDecimal("0.001")), // 0.1% commission
+                order.getQuantity().multiply(new BigDecimal("0.001")),
                 "USDT",
                 order.getClientOrderId()
         );
@@ -66,11 +64,10 @@ public class BacktestExecutionEngine implements ExecutionEngine {
     @Override
     public ExecutionResult verifyOrder(String clientOrderId) {
         log.info("[FAKE-EXEC] Verifying order: {}", clientOrderId);
-        // В режиме бэктеста считаем, что если мы здесь, то ордер был исполнен
-        return ExecutionResult.builder()
-                .exchangeOrderId("fake-recon-" + clientOrderId)
-                .executedQty(BigDecimal.ZERO)
-                .status(ExecutionResult.Status.SUCCESS)
-                .build();
+
+        return ExecutionResult.accepted(
+                "fake-recon-" + clientOrderId,
+                clientOrderId
+        );
     }
 }

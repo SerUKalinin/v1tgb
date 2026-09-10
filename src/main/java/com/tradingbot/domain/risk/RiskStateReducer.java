@@ -13,22 +13,47 @@ import java.util.HashSet;
 
 import static com.tradingbot.domain.risk.RiskState.safeCompare;
 
+/**
+ * Редьюсер состояния risk-engine.
+ *
+ * <p>Отвечает за чистое (deterministic) применение RiskEvent к RiskState.
+ * Не содержит I/O и работает как функциональный трансформер состояния.</p>
+ *
+ * <p>Основные обязанности:
+ * <ul>
+ *   <li>обновление баланса и экспозиций</li>
+ *   <li>обработка резервов капитала</li>
+ *   <li>обработка PnL</li>
+ *   <li>автоматический HALT при нарушении рисков</li>
+ *   <li>идемпотентность по eventId</li>
+ * </ul>
+ * </p>
+ */
 @Slf4j
 public class RiskStateReducer {
 
+    /**
+     * Применяет событие к текущему состоянию risk-engine.
+     */
     public RiskState reduce(RiskState currentState, RiskEvent event) {
         return reduce(currentState, event, false);
     }
 
+    /**
+     * Применяет событие к состоянию risk-engine.
+     *
+     * @param isReplaying флаг режима восстановления (replay mode)
+     */
     public RiskState reduce(RiskState currentState, RiskEvent event, boolean isReplaying) {
-        // 1. Глобальная проверка идемпотентности по ID события
+
+        // 1. Идемпотентность по eventId
         if (currentState.getProcessedEventIds().contains(event.getEventId())) {
             log.debug("[RiskReducer] Event {} already processed. Skipping.", event.getEventId());
             return currentState;
         }
 
         try {
-            // 2. Применение бизнес-логики события
+            // 2. Диспетчеризация событий
             RiskState newState = switch (event) {
                 case RiskEvent.TradeExecuted e -> handleTradeExecuted(currentState, e);
                 case RiskEvent.PriceUpdated e -> handlePriceUpdated(currentState, e);
@@ -38,16 +63,17 @@ public class RiskStateReducer {
                 default -> currentState;
             };
 
-            // 3. Проверка финансовых инвариантов (пропускаем при реплее)
+            // 3. Проверка инвариантов
             if (!isReplaying) {
                 newState.validateInvariants();
             }
 
-            // 4. Логика автоматической остановки (Auto-Halt) (пропускаем при реплее)
+            // 4. Auto-HALT логика
             if (!isReplaying && !newState.isHalted()) {
                 checkAndApplyAutoHalt(newState);
             }
-            // 5. Фиксация ID события в состоянии
+
+            // 5. Обновление списка обработанных событий
             Set<String> newEventIds = new HashSet<>(newState.getProcessedEventIds());
             newEventIds.add(event.getEventId());
 
@@ -66,17 +92,23 @@ public class RiskStateReducer {
         }
     }
 
+    /**
+     * Auto-halt проверка лимитов риска.
+     */
     private void checkAndApplyAutoHalt(RiskState state) {
-        // Лимит дневного убытка > 5%
+
+        // Дневной убыток > 5%
         BigDecimal dailyLossLimit = MoneyMath.multiply(state.getTotalEquity(), new BigDecimal("0.05"));
+
         if (MoneyMath.isLess(state.getDailyPnl(), dailyLossLimit.negate())) {
             log.error("[RiskReducer] AUTO-HALT: Daily loss limit exceeded (5%)");
             state.setHalted(true);
             return;
         }
 
-        // Максимальная просадка > 10%
+        // Просадка > 10%
         BigDecimal currentDrawdown = calculateDrawdown(state);
+
         if (MoneyMath.isGreater(currentDrawdown, new BigDecimal("10.0"))) {
             log.error("[RiskReducer] AUTO-HALT: Max drawdown exceeded (10%). Current DD: {}%", currentDrawdown);
             state.setHalted(true);
@@ -87,16 +119,21 @@ public class RiskStateReducer {
         if (MoneyMath.isZero(state.getMaxEquity()) || MoneyMath.isLess(state.getMaxEquity(), BigDecimal.ZERO)) {
             return BigDecimal.ZERO;
         }
-        
+
         BigDecimal diff = MoneyMath.subtract(state.getMaxEquity(), state.getTotalEquity());
+
         return MoneyMath.multiply(
                 MoneyMath.divide(diff, state.getMaxEquity()),
                 new BigDecimal("100")
         );
     }
 
+    /**
+     * Обработка события остановки торговли.
+     */
     private RiskState handleTradingHalted(RiskState state, RiskEvent.TradingHalted event) {
         log.warn("Risk Engine HALTED: {}", event.reason());
+
         return state.toBuilder()
                 .halted(true)
                 .lastUpdateTimestamp(event.timestamp())
@@ -104,6 +141,7 @@ public class RiskStateReducer {
     }
 
     private RiskState handleTradeExecuted(RiskState state, RiskEvent.TradeExecuted event) {
+
         BigDecimal newDailyPnl = MoneyMath.add(state.getDailyPnl(), event.realizedPnl());
         BigDecimal newEquity = MoneyMath.add(state.getTotalEquity(), event.realizedPnl());
         BigDecimal newMaxEquity = newEquity.max(state.getMaxEquity());
@@ -129,6 +167,7 @@ public class RiskStateReducer {
     }
 
     private RiskState handleCapitalReserved(RiskState state, RiskEvent.CapitalReserved event) {
+
         if (state.getActiveReservations().containsKey(event.orderId())) {
             log.warn("[RiskReducer] Idempotency: Order {} already has active reservation. No-op.", event.orderId());
             return state;
@@ -147,6 +186,7 @@ public class RiskStateReducer {
     }
 
     private RiskState handleCapitalReleased(RiskState state, RiskEvent.CapitalReleased event) {
+
         BigDecimal reservedAmount = state.getActiveReservations().get(event.orderId());
 
         if (reservedAmount == null) {
@@ -154,12 +194,13 @@ public class RiskStateReducer {
             return state;
         }
 
-        // Используем сумму из резерва, если в событии 0 (компенсация)
-        BigDecimal amountToRelease = (event.amount() == null || MoneyMath.isZero(event.amount()))
-                ? reservedAmount
-                : event.amount();
+        BigDecimal amountToRelease =
+                (event.amount() == null || MoneyMath.isZero(event.amount()))
+                        ? reservedAmount
+                        : event.amount();
 
-        log.info("[RiskReducer] Releasing {} for order {} (Reason: {})", amountToRelease, event.orderId(), event.reason());
+        log.info("[RiskReducer] Releasing {} for order {} (Reason: {})",
+                amountToRelease, event.orderId(), event.reason());
 
         Map<UUID, BigDecimal> newReservations = new HashMap<>(state.getActiveReservations());
         newReservations.remove(event.orderId());
@@ -169,4 +210,5 @@ public class RiskStateReducer {
                 .activeReservations(Map.copyOf(newReservations))
                 .lastUpdateTimestamp(event.timestamp())
                 .build();
-    }}
+    }
+}

@@ -5,11 +5,14 @@ import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.position.PositionReducer;
 import com.tradingbot.domain.position.PositionState;
 import com.tradingbot.domain.position.PositionStatus;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.Collections;
 import java.util.Map;
 import java.util.UUID;
 
@@ -20,51 +23,55 @@ class StateInvariantTest {
     @Test
     void shouldMaintainEquityAndPositionConsistency() {
 
-        // 1. Risk state
+        // 1. Risk state — баланс меньше totalEquity, чтобы инвариант не нарушался после убытка
         RiskState riskState = RiskState.builder()
                 .totalEquity(new BigDecimal("10000"))
-                .balance(new BigDecimal("10000"))
+                .balance(new BigDecimal("5000"))
                 .dailyPnl(BigDecimal.ZERO)
                 .maxEquity(new BigDecimal("10000"))
                 .symbolExposures(Map.of("BTCUSDT", BigDecimal.ZERO))
-                .processedEventIds(Collections.emptySet())
                 .build();
 
-        // 2. PositionState (АКТУАЛЬНЫЙ record-конструктор)
-        PositionState positionState = new PositionState(
-                "BTCUSDT",                    // symbol
-                "strat-1",                   // strategyId
-                BigDecimal.ZERO,             // netQuantity
-                BigDecimal.ZERO,             // averagePrice
-                UUID.randomUUID(),           // lastTradeId
-                BigDecimal.ZERO,             // realizedPnL
-                null,                        // stopLoss
-                null,                        // takeProfit
-                PositionStatus.NEW,          // status
-                null,                        // closeRequestId
-                Instant.now()                // updatedAt
-        );
-
+        UUID signalId = UUID.randomUUID();
         BigDecimal qty = new BigDecimal("0.1");
         BigDecimal price = new BigDecimal("60000");
 
-        // 3. TradeCreatedEvent (НОВАЯ СИГНАТУРА)
+        // 2. PositionState
+        PositionState positionState = new PositionState(
+                "BTCUSDT",
+                "strat-1",
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                UUID.randomUUID(),
+                BigDecimal.ZERO,
+                null,
+                null,
+                PositionStatus.NEW,
+                null,
+                Instant.now()
+        );
+
+        // 3. TradeCreatedEvent — полная сигнатура с контекстом
         TradeCreatedEvent event = new TradeCreatedEvent(
-                UUID.randomUUID(),
-                UUID.randomUUID(),
+                IdentityContext.of(signalId),
+                ExecutionAttemptContext.firstAttempt(signalId),
+                BusinessContext.of(UUID.randomUUID().toString()),
+                UUID.randomUUID(),        // tradeId
+                UUID.randomUUID(),        // orderId
                 "BTCUSDT",
                 "strat-1",
                 qty,
                 price,
                 OrderSide.BUY,
-                BigDecimal.ZERO, // realizedPnL
-                BigDecimal.ZERO  // fees
+                BigDecimal.ZERO,          // stopLoss
+                BigDecimal.ZERO           // takeProfit
         );
+
         // 4. Reduce
         PositionReducer reducer = new PositionReducer();
         PositionState nextState = reducer.reduce(positionState, event);
 
-        // 5. Проверки (record -> геттеры через методы)
+        // 5. Проверки
         assertEquals(0, qty.compareTo(nextState.netQuantity()));
         assertEquals(0, price.compareTo(nextState.averagePrice()));
 
@@ -76,7 +83,7 @@ class StateInvariantTest {
 
         assertEquals(0, new BigDecimal("9000").compareTo(equity));
 
-        // 7. Risk halt
+        // 7. Risk halt — убыток 2000 на equity 10000 = 20% > 5%, должен вызвать halt
         RiskStateReducer riskReducer = new RiskStateReducer();
 
         RiskEvent.TradeExecuted hugeLoss = new RiskEvent.TradeExecuted(

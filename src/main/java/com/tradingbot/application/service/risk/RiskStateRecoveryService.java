@@ -19,6 +19,20 @@ import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * Сервис восстановления риск-состояния системы.
+ *
+ * <p>Отвечает за полный rebuild риск-модели из:
+ * <ul>
+ *     <li>snapshot состояния</li>
+ *     <li>event log (event sourcing)</li>
+ *     <li>reservation log (source of truth для капитала)</li>
+ * </ul>
+ *
+ * <p>После восстановления выполняется реконсиляция с биржей и инициализация RiskEngine.</p>
+ *
+ * <p>Является критическим компонентом cold-start recovery pipeline.</p>
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -37,17 +51,30 @@ public class RiskStateRecoveryService {
     private static final String AGGREGATE_ID = RiskStateEntity.SINGLETON_ID;
     private static final String CAPITAL_ASSET = "USDT";
 
-    // HARD SINGLE EXECUTION GUARANTEE
+    /**
+     * Гарантия однократного выполнения recovery.
+     */
     private final AtomicBoolean recovered = new AtomicBoolean(false);
 
+    /**
+     * Запуск процесса восстановления риск-состояния.
+     *
+     * <p>Содержит жёсткие инварианты:
+     * <ul>
+     *     <li>non-reentrant execution</li>
+     *     <li>execution только в состоянии RISK_RECOVERING</li>
+     * </ul>
+     *
+     * @return true если система восстановлена впервые (без snapshot + events)
+     */
     public boolean recover() {
 
-        // 🔒 NON-REENTRANT GUARANTEE
+        // 🔒 защита от повторного запуска
         if (!recovered.compareAndSet(false, true)) {
             throw new IllegalStateException("[RISK-RECOVERY] already executed - non reentrant violation");
         }
 
-        // 🔒 STATE MACHINE CONTRACT ENFORCEMENT
+        // 🔒 проверка корректного состояния системы
         if (stateManager.getState() != SystemStateManager.SystemState.RISK_RECOVERING) {
             throw new IllegalStateException(
                     "[RISK-RECOVERY] invalid state: " + stateManager.getState()
@@ -57,6 +84,18 @@ public class RiskStateRecoveryService {
         return recoverState();
     }
 
+    /**
+     * Основной pipeline восстановления состояния.
+     *
+     * <p>Шаги:
+     * <ol>
+     *     <li>загрузка snapshot</li>
+     *     <li>replay событий</li>
+     *     <li>rebuild reservation state</li>
+     *     <li>reconciliation с биржей</li>
+     *     <li>инициализация RiskEngine</li>
+     * </ol>
+     */
     private boolean recoverState() {
 
         log.info("[RISK-RECOVERY] START");
@@ -104,13 +143,14 @@ public class RiskStateRecoveryService {
         log.info("[RISK-RECOVERY] reservations={}, reserved={}",
                 reservations.size(), state.getReserved());
 
+        // 4. RECONCILIATION WITH EXCHANGE
         state = reconcileWithExchange(state);
 
         log.info("[RISK-RECOVERY] reconciled balance={}, totalEquity={}",
                 state.getAvailableBalance(),
                 state.getTotalEquity());
 
-        // 5. ENGINE INIT
+        // 5. ENGINE INITIALIZATION
         riskEngine.initialize(state);
 
         log.info("[RISK-RECOVERY] COMPLETE version={}, halted={}, pnl={}",
@@ -122,6 +162,9 @@ public class RiskStateRecoveryService {
         return snapshotOpt.isEmpty() && events.isEmpty();
     }
 
+    /**
+     * Десериализация snapshot состояния риска.
+     */
     private RiskState deserializeSnapshot(RiskSnapshotEntity entity) {
         try {
             return objectMapper.readValue(entity.getStateJson(), RiskState.class);
@@ -130,6 +173,9 @@ public class RiskStateRecoveryService {
         }
     }
 
+    /**
+     * Десериализация доменного risk event из persisted entity.
+     */
     private RiskEvent deserializeEvent(RiskEventEntity entity) {
         try {
             Class<? extends RiskEvent> type = switch (entity.getEventType()) {
@@ -148,6 +194,15 @@ public class RiskStateRecoveryService {
         }
     }
 
+    /**
+     * Реконсиляция восстановленного состояния с биржей.
+     *
+     * <p>При критических ошибках:
+     * <ul>
+     *     <li>перевод системы в HALTED</li>
+     *     <li>emergency stop RiskEngine</li>
+     * </ul>
+     */
     private RiskState reconcileWithExchange(RiskState state) {
         BigDecimal exchangeBalance = exchangeQueryService.getAvailableBalance(CAPITAL_ASSET);
         try {

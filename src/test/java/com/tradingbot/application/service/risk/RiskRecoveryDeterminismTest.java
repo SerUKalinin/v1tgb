@@ -36,15 +36,14 @@ public class RiskRecoveryDeterminismTest {
     @Test
     void testRecoveryDeterminismWithMixedCommitOrder() throws InterruptedException {
         repository.deleteAll();
-        
+
         UUID order1 = UUID.randomUUID();
         UUID order2 = UUID.randomUUID();
-        
+
         CountDownLatch latch1 = new CountDownLatch(1);
         CountDownLatch latch2 = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(2);
 
-        // Thread A: Start first, but commit LATER
         executor.execute(() -> transactionTemplate.execute(status -> {
             repository.save(RiskReservationLogEntity.builder()
                     .id(UUID.randomUUID())
@@ -53,20 +52,19 @@ public class RiskRecoveryDeterminismTest {
                     .amount(new BigDecimal("100"))
                     .createdAt(Instant.now())
                     .build());
-            latch1.countDown(); // Signal A has inserted (and got sequence_id)
+            latch1.countDown();
             try {
-                latch2.await(); // Wait for B to finish
-                Thread.sleep(100); // Ensure B commits first
+                latch2.await();
+                Thread.sleep(100);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
             return null;
         }));
 
-        // Thread B: Start second, but commit FIRST
         executor.execute(() -> {
             try {
-                latch1.await(); // Wait for A to get its sequence_id
+                latch1.await();
                 transactionTemplate.execute(status -> {
                     repository.save(RiskReservationLogEntity.builder()
                             .id(UUID.randomUUID())
@@ -77,7 +75,7 @@ public class RiskRecoveryDeterminismTest {
                             .build());
                     return null;
                 });
-                latch2.countDown(); // Signal B has committed
+                latch2.countDown();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }

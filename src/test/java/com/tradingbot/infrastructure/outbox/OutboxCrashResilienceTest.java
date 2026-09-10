@@ -76,7 +76,7 @@ class OutboxCrashResilienceTest extends BaseIntegrationTest {
         // Force next attempt time to past to bypass backoff
         afterCrash.setNextAttemptAt(java.time.Instant.now().minusSeconds(1));
         outboxRepository.saveAndFlush(afterCrash);
-        
+
         outboxProcessor.processOutbox();
 
 

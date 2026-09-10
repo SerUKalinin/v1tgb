@@ -65,7 +65,7 @@ class ExchangeResilienceIntegrationTest extends BaseIntegrationTest {
         outboxEventRepository.saveAndFlush(failedEvent);
 
         // When: Second attempt - succeeds
-        outboxProcessor.processOutbox(); 
+        outboxProcessor.processOutbox();
 
         // Then
         OutboxEventEntity successEvent = outboxEventRepository.findById(eventId).orElseThrow();

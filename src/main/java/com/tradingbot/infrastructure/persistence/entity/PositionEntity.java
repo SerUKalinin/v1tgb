@@ -1,5 +1,6 @@
 package com.tradingbot.infrastructure.persistence.entity;
 
+import com.tradingbot.domain.exception.InvalidTradeDataException;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -65,7 +66,15 @@ public class PositionEntity {
      * Инвариант: количество не может быть отрицательным (только Long позиции).
      */
     public void applyTrade(BigDecimal tradeQty, BigDecimal tradePrice, java.util.UUID tradeId) {
-        if (tradeQty == null || tradeQty.signum() == 0) return;
+        if (tradeQty == null) {
+            throw new InvalidTradeDataException(symbol, "tradeQty", null);
+        }
+        if (tradePrice == null) {
+            throw new InvalidTradeDataException(symbol, "tradePrice", null);
+        }
+        if (tradeQty.signum() == 0) {
+            throw new InvalidTradeDataException(symbol, "tradeQty", tradeQty);
+        }
         
         BigDecimal newQuantity = this.quantity.add(tradeQty);
         

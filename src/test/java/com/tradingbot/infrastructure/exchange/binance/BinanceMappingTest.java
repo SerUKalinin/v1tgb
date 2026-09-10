@@ -1,5 +1,7 @@
 package com.tradingbot.infrastructure.exchange.binance;
 
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.binance.BinanceExecutionAdapter;
@@ -8,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
+import java.math.BigDecimal;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -25,6 +28,7 @@ public class BinanceMappingTest {
         adapter = new BinanceExecutionAdapter(binanceClient);
         adapter.setSelf(adapter);
     }
+
     @Test
     void testMappingLotSizeErrorToRejected() {
         UUID orderId = UUID.randomUUID();
@@ -40,30 +44,34 @@ public class BinanceMappingTest {
     }
 
     @Test
-    void testMappingTimeoutToTimeoutStatus() {
+    void testMappingTimeoutToExchangeStateUnknown() {
         UUID orderId = UUID.randomUUID();
         Order order = createOrder(orderId);
 
         when(binanceClient.post(anyString(), anyMap(), any(), anyBoolean()))
                 .thenThrow(new RuntimeException("Read Timeout 504"));
 
-        // В юнит-тесте без Spring контекста прокси не создается, поэтому вызываем fallback вручную
-        // для проверки логики маппинга ошибок в нем.
+        // doPlaceOrder выбрасывает исключение → fallback вызывается прокси,
+        // но в юнит-тесте прокси нет, поэтому проверяем логику fallback вручную
         try {
             adapter.doPlaceOrder(order);
         } catch (Exception e) {
             ExecutionResult result = adapter.fallbackPlaceOrder(order, e);
-            assertEquals(ExecutionResult.Status.TIMEOUT, result.getStatus());
+            assertEquals(ExecutionResult.Status.EXCHANGE_STATE_UNKNOWN, result.getStatus());
         }
     }
 
     private Order createOrder(UUID orderId) {
-        return Order.builder()
-                .id(orderId)
-                .clientOrderId("bot_" + orderId.toString().replace("-", ""))
-                .symbol("BTCUSDT")
-                .side(com.tradingbot.common.enums.OrderSide.BUY)
-                .type(com.tradingbot.common.enums.OrderType.MARKET)
-                .originalQuantity(java.math.BigDecimal.ONE)
-                .build();
-    }}
+        return Order.createPendingExecution(
+                orderId,
+                "bot_" + orderId.toString().replace("-", ""),
+                "BTCUSDT",
+                OrderSide.BUY,
+                OrderType.MARKET,
+                BigDecimal.ONE,
+                new BigDecimal("50000"),
+                "test-strategy",
+                UUID.randomUUID()
+        );
+    }
+}

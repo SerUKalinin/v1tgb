@@ -12,32 +12,43 @@ import org.springframework.context.annotation.Profile;
 
 /**
  * Конфигурация приложения.
- * <p>
- * Определяет бины исполнительного движка в зависимости от профиля Spring.
+ *
+ * <p>Определяет реализации {@link ExecutionEngine} в зависимости от активного Spring profile.</p>
+ *
+ * <p>Фактически управляет выбором execution backend:
+ * <ul>
+ *     <li>prod → реальная торговля через Binance</li>
+ *     <li>test → backtest / симуляция исполнения</li>
+ * </ul>
  */
 @Configuration
 public class AppConfig {
 
     /**
-     * Создаёт исполнительный движок для реальной торговли на Binance.
-     * <p>
-     * Активируется в профиле "prod".
+     * Бин исполнительного движка для production среды (Binance).
      *
-     * @param binanceClient клиент API Binance
+     * <p>Используется для реальной торговли и отправки ордеров на биржу.</p>
+     *
+     * @param executionPort порт взаимодействия с биржей
      * @param orderRepository репозиторий ордеров
-     * @return экземпляр BinanceExecutionEngine
+     * @return реализация ExecutionEngine для Binance
      */
     @Bean
     @Profile("prod")
-    public ExecutionEngine binanceExecutionEngine(ExecutionPort executionPort, OrderRepository orderRepository) {
+    public ExecutionEngine binanceExecutionEngine(
+            ExecutionPort executionPort,
+            OrderRepository orderRepository
+    ) {
         return new BinanceExecutionEngine(executionPort, orderRepository);
-    }    /**
-     * Создаёт исполнительный движок для бэктестирования.
-     * <p>
-     * Активируется в профиле "test".
+    }
+
+    /**
+     * Бин исполнительного движка для тестовой среды.
      *
-     * @param tradeService сервис сделок
-     * @return экземпляр BacktestExecutionEngine
+     * <p>Используется для backtesting и локальной симуляции исполнения ордеров.</p>
+     *
+     * @param tradeService сервис работы со сделками
+     * @return реализация ExecutionEngine для backtest
      */
     @Bean
     @Profile("test")

@@ -2,13 +2,16 @@ package com.tradingbot.domain.risk;
 
 import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.application.risk.RiskEngine;
-import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
+import com.tradingbot.domain.risk.RiskDecision;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
 import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -21,9 +24,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@ActiveProfiles("test")
-public class ConcurrentRiskStressTest extends BaseIntegrationTest {
+class ConcurrentRiskStressTest extends BaseIntegrationTest {
+
     @Autowired
     private RiskEngine riskEngine;
 
@@ -31,31 +33,21 @@ public class ConcurrentRiskStressTest extends BaseIntegrationTest {
     private RiskStateRepository riskStateRepository;
 
     @Autowired
-    private org.springframework.transaction.support.TransactionTemplate transactionTemplate;
+    private TransactionTemplate transactionTemplate;
 
     @BeforeEach
     void setUp() {
-        transactionTemplate.execute(status -> {
-            riskStateRepository.deleteAll();
-            riskStateRepository.flush();
-            return null;
-        });
-        
-        riskEngine.syncBalance(new BigDecimal("1000.00"));
-        
-        transactionTemplate.execute(status -> {
-            RiskStateEntity entity = riskStateRepository.findById(RiskStateEntity.SINGLETON_ID).orElseThrow();
-            entity.setTotalEquity(new BigDecimal("1000.00"));            riskStateRepository.saveAndFlush(entity);
-            return null;
-        });
-    }
+        transactionTemplate.executeWithoutResult(status ->
+                riskStateRepository.deleteAll());
 
+        riskEngine.syncBalance(new BigDecimal("1000.00"));
+    }
 
     @Test
     void shouldPreventDoubleSpendUnderHighConcurrency() throws Exception {
         int threadCount = 10;
         BigDecimal orderAmount = new BigDecimal("600.00");
-        
+
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         AtomicInteger approvedCount = new AtomicInteger(0);
         AtomicInteger rejectedCount = new AtomicInteger(0);
@@ -64,18 +56,21 @@ public class ConcurrentRiskStressTest extends BaseIntegrationTest {
         for (int i = 0; i < threadCount; i++) {
             futures.add(CompletableFuture.runAsync(() -> {
                 try {
-                    transactionTemplate.execute(status -> {
-                        RiskDecision decision = riskEngine.reserve(UUID.randomUUID(), orderAmount);
+                    transactionTemplate.executeWithoutResult(status -> {
+                        UUID signalId = UUID.randomUUID();
+                        ExecutionContext context = new ExecutionContext(
+                                IdentityContext.of(signalId),
+                                ExecutionAttemptContext.firstAttempt(signalId),
+                                BusinessContext.empty()
+                        );
+                        RiskDecision decision = riskEngine.reserve(context, orderAmount);
                         if (decision.isApproved()) {
                             approvedCount.incrementAndGet();
                         } else {
                             rejectedCount.incrementAndGet();
                         }
-                        return null;
                     });
                 } catch (Exception e) {
-                    // Конфликты конкуренции (DataIntegrityViolationException, OptimisticLockingFailureException)
-                    // являются ожидаемым поведением при защите от Double Spend.
                     rejectedCount.incrementAndGet();
                 }
             }, executor));
@@ -86,7 +81,7 @@ public class ConcurrentRiskStressTest extends BaseIntegrationTest {
         assertThat(approvedCount.get()).isEqualTo(1);
         assertThat(rejectedCount.get()).isEqualTo(9);
 
-        BigDecimal finalBalance = riskEngine.getState().availableBalance();
+        BigDecimal finalBalance = riskEngine.getState().getBalance();
         assertThat(finalBalance).isEqualByComparingTo(new BigDecimal("400.00"));
     }
 }

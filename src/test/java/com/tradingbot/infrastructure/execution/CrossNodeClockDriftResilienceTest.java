@@ -37,9 +37,9 @@ class CrossNodeClockDriftResilienceTest {
         boolean nodeAExecuting = lockService.tryEnterExecuting(lockKey);
         assertTrue(nodeAExecuting, "Node A should enter EXECUTING state");
 
-        // 3. Симулируем Node B. 
+        // 3. Симулируем Node B.
         // Даже если на Node B другое время, логика переходов в БД защищает от перехвата.
-        
+
         // Проверка текущего состояния
         String currentState = lockService.getLockState(lockKey);
         assertEquals("EXECUTING", currentState);

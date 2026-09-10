@@ -13,6 +13,14 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 
+/**
+ * Bootstrapper торговой системы.
+ *
+ * Отвечает за последовательный запуск всех критически важных подсистем:
+ * риск-движка, сверки состояния, прогрева рынка и перевода системы в режим торговли.
+ *
+ * Обеспечивает детерминированный startup pipeline с защитой от частичного запуска.
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -25,11 +33,28 @@ public class TradingSystemBootstrapper {
     private final com.tradingbot.domain.execution.ExchangeOrderQueryService exchangeQueryService;
     private final ApplicationEventPublisher eventPublisher;
 
+    /**
+     * Точка входа после полного старта Spring контекста.
+     */
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
         bootstrap();
     }
 
+    /**
+     * Основной bootstrap-процесс системы.
+     *
+     * Последовательность:
+     * 1. Восстановление риск-состояния
+     * 2. Проверка баланса (internal vs exchange)
+     * 3. Выбор режима холодного старта или сверки
+     * 4. Прогрев рыночных данных
+     * 5. Перевод системы в READY
+     * 6. Активация торгового режима
+     * 7. Отправка SystemReadyEvent
+     *
+     * Выполняется синхронно для исключения гонок при старте.
+     */
     public synchronized void bootstrap() {
 
         log.info("[BOOTSTRAP] START");
@@ -69,6 +94,14 @@ public class TradingSystemBootstrapper {
         }
     }
 
+    /**
+     * Аварийная остановка системы.
+     *
+     * Переводит систему в HALTED состояние и инициирует emergency stop
+     * в риск-движке для защиты капитала.
+     *
+     * @param reason причина остановки
+     */
     public void haltSystem(String reason) {
         log.error("[BOOTSTRAP] HALT: {}", reason);
         riskEngine.emergencyStop(reason);

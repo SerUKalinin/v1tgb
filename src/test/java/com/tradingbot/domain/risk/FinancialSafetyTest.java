@@ -1,8 +1,14 @@
 package com.tradingbot.domain.risk;
 
 import com.tradingbot.application.risk.DefaultRiskManager;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.application.risk.RiskStateStore;
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderType;
+import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.model.Signal;
+import com.tradingbot.tracing.ExecutionLogger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -27,8 +33,10 @@ class FinancialSafetyTest {
         stateStore = new RiskStateStore();
         reducer = new RiskStateReducer();
         riskService = mock(RiskService.class);
+        RiskEngine riskEngine = mock(RiskEngine.class);
+        ExecutionLogger executionLogger = mock(ExecutionLogger.class);
 
-        riskManager = new DefaultRiskManager(riskService);
+        riskManager = new DefaultRiskManager(riskService, riskEngine, executionLogger);
 
         RiskState initialState = RiskState.builder()
                 .totalEquity(new BigDecimal("10000"))
@@ -48,25 +56,17 @@ class FinancialSafetyTest {
     @Test
     @DisplayName("Система должна останавливать торговлю при превышении лимита дневного убытка")
     void testDailyLossLimitAutoHalt() {
-        // 1. Симулируем убыток > 5% (501 из 10000)
-        // Чтобы не нарушить инвариант balance + reserved <= equity, 
-        // при уменьшении equity (из-за убытка) мы должны также уменьшить balance.
         RiskEvent.TradeExecuted lossEvent = new RiskEvent.TradeExecuted(
                 UUID.randomUUID().toString(),
                 "BTCUSDT",
                 new BigDecimal("1"),
                 new BigDecimal("10000"),
-                new BigDecimal("-501"), // Realized PnL
+                new BigDecimal("-501"),
                 Instant.now()
         );
 
-        // В handleTradeExecuted: equity = equity + pnl, но balance не меняется.
-        // Чтобы инвариант (balance <= equity) сохранился, нужно либо чтобы balance изначально был меньше,
-        // либо чтобы событие также корректировало баланс (но TradeExecuted в текущем Reducer этого не делает).
-        // Поэтому для теста инициализируем состояние, где balance < equity на величину возможного убытка.
-        
         RiskState safeInitialState = stateStore.getState().toBuilder()
-                .balance(new BigDecimal("9000")) // Запас прочности для убытка
+                .balance(new BigDecimal("9000"))
                 .totalEquity(new BigDecimal("10000"))
                 .build();
         stateStore.updateCache(safeInitialState);
@@ -74,40 +74,48 @@ class FinancialSafetyTest {
         RiskState newState = reducer.reduce(stateStore.getState(), lossEvent);
         stateStore.updateCache(newState);
 
-        assertTrue(stateStore.getState().isHalted(), "System should be halted after 5% daily loss");
+        assertTrue(stateStore.getState().isHalted(),
+                "System should be halted after 5% daily loss");
 
-        // 2. Настраиваем мок на новое (остановленное) состояние
         when(riskService.getState()).thenReturn(stateStore.getState());
 
-        // 3. Проверяем, что RiskManager отклоняет проверку ордера
-        Order order = Order.builder()
-                .symbol("BTCUSDT")
-                .originalQuantity(BigDecimal.ONE)
-                .build();
+        Order order = Order.createPendingExecution(
+                UUID.randomUUID(),
+                "test-" + UUID.randomUUID(),
+                "BTCUSDT",
+                OrderSide.BUY,
+                OrderType.LIMIT,
+                BigDecimal.ONE,
+                null,
+                "STRAT-1",
+                UUID.randomUUID()
+        );
 
         RiskDecision decision = riskManager.check(order);
 
-        assertFalse(decision.isApproved(), "RiskManager should reject signals when halted");
-        // В новой архитектуре reason — это Enum, а не String.
+        assertFalse(decision.isApproved(),
+                "RiskManager should reject signals when halted");
         assertEquals(RiskDecision.Reason.HALTED, decision.getReason());
-    }    @Test
+    }
+
+    @Test
     @DisplayName("Расчет объема позиции должен соответствовать риск-политике (1% от капитала)")
     void testCentralizedSizingIntegrity() {
-        // Equity = 10000, Risk = 1% (100 USDT), Price = 100 -> Qty should be 1.0
-        com.tradingbot.domain.model.Signal signal = new com.tradingbot.domain.model.Signal(
+        Signal signal = new Signal(
+                UUID.randomUUID(),
                 "ETHUSDT",
                 "test-strat",
-                com.tradingbot.common.enums.SignalType.BUY,
+                SignalType.BUY,
                 new BigDecimal("100"),
                 BigDecimal.ZERO
         );
 
-        // DefaultRiskManager использует RiskService для получения актуального эквити
         when(riskService.getState()).thenReturn(stateStore.getState());
 
-        BigDecimal quantity = riskManager.calculateQuantity(signal, stateStore.getState());
+        RiskDecision decision = riskManager.evaluate(signal);
 
-        assertNotNull(quantity);
-        assertEquals(0, new BigDecimal("1.00").compareTo(quantity),
+        assertTrue(decision.isApproved());
+        assertEquals(0, new BigDecimal("1.00").compareTo(decision.getAmount()),
                 "Quantity should be 1% of equity divided by price");
-    }}
+    }
+}

@@ -13,6 +13,11 @@ import java.util.Map;
 
 /**
  * Клиент для получения рыночных данных с Binance.
+ *
+ * <p>Отвечает за получение исторических свечей (klines) через REST API Binance
+ * и преобразование сырого ответа в доменную модель {@link Candle}.
+ *
+ * <p>Является инфраструктурным адаптером и не содержит бизнес-логики.
  */
 @Component
 @RequiredArgsConstructor
@@ -23,10 +28,13 @@ public class BinanceMarketDataClient {
     /**
      * Получает свечные данные с Binance.
      *
-     * @param symbol   торговый символ
-     * @param interval свечной интервал
-     * @param limit    количество свечей
-     * @return список свечей
+     * <p>Выполняет HTTP-запрос к endpoint {@code /api/v3/klines} и преобразует
+     * результат в список доменных свечей.
+     *
+     * @param symbol   торговый символ (например, BTCUSDT)
+     * @param interval свечной интервал (например, 1m, 5m, 1h)
+     * @param limit    количество свечей для загрузки
+     * @return список свечей; пустой список, если данных нет
      */
     public List<Candle> getCandles(String symbol, String interval, int limit) {
         Map<String, String> params = Map.of(
@@ -47,11 +55,23 @@ public class BinanceMarketDataClient {
     }
 
     /**
-     * Преобразует данные из ответа Binance в модель Candle.
+     * Преобразует массив данных свечи, полученный от Binance API,
+     * в доменную модель {@link Candle}.
+     *
+     * <p>Формат массива соответствует Binance Klines API:
+     * <ul>
+     *   <li>[0] - open time</li>
+     *   <li>[1] - open price</li>
+     *   <li>[2] - high price</li>
+     *   <li>[3] - low price</li>
+     *   <li>[4] - close price</li>
+     *   <li>[5] - volume</li>
+     *   <li>[6] - close time</li>
+     * </ul>
      *
      * @param symbol торговый символ
-     * @param data   массив данных свечи
-     * @return объект Candle
+     * @param data   массив данных одной свечи
+     * @return доменная свеча {@link Candle}
      */
     private Candle mapToCandle(String symbol, Object[] data) {
         return Candle.builder()

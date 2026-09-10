@@ -6,15 +6,20 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Конфигурация OpenAPI (Swagger) для генерации документации API.
+ * Конфигурация OpenAPI (Swagger) для генерации документации REST API.
+ *
+ * <p>Определяет базовую метаинформацию API, используемую Swagger UI и OpenAPI spec.</p>
+ *
+ * <p>Применяется для документирования интерфейсов торговой системы
+ * (backtest / live режимы).</p>
  */
 @Configuration
 public class OpenApiConfig {
 
     /**
-     * Создаёт и настраивает объект OpenAPI.
+     * Создаёт экземпляр OpenAPI спецификации.
      *
-     * @return экземпляр OpenAPI с метаинформацией
+     * @return сконфигурированный OpenAPI объект
      */
     @Bean
     public OpenAPI tradingBotOpenAPI() {
@@ -22,6 +27,6 @@ public class OpenApiConfig {
                 .info(new Info()
                         .title("Trading Bot API")
                         .version("1.0")
-                        .description("API для торгового бота (backtest/live)"));
+                        .description("API торгового бота (backtest / live режимы)"));
     }
 }

@@ -8,10 +8,25 @@ import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+/**
+ * Конфигурация Telegram-бота.
+ *
+ * <p>Отвечает за инициализацию и регистрацию Telegram-бота
+ * в режиме Long Polling через TelegramBotsApi.
+ *
+ * <p>Активна во всех профилях, кроме {@code test}.
+ */
 @Slf4j
 @Configuration
 @Profile("!test")
 public class TelegramConfig {
+
+    /**
+     * Регистрирует Telegram-бота в Telegram API и запускает Long Polling сессию.
+     *
+     * @param bot экземпляр торгового Telegram-бота
+     * @return TelegramBotsApi или {@code null} в случае критической ошибки инициализации
+     */
     @Bean
     public TelegramBotsApi telegramBotsApi(TradingTelegramBot bot) {
         try {
@@ -21,7 +36,7 @@ public class TelegramConfig {
             return api;
         } catch (Exception e) {
             log.error("[TG] Критическая ошибка при регистрации бота: {}. Проверьте интернет-соединение или VPN.", e.getMessage());
-            return null; 
+            return null;
         }
     }
 }

@@ -15,8 +15,31 @@ import java.math.BigDecimal;
 import java.util.Optional;
 
 /**
- * Исполнительный движок, использующий ExecutionPort для взаимодействия с биржей.
- * Обеспечивает логику идемпотентности и восстановления на уровне приложения.
+ * Исполнительный движок ордеров для Binance.
+ *
+ * <p>Реализует {@link ExecutionEngine} и является адаптером между доменным
+ * слоем исполнения и внешним {@link ExecutionPort} (Binance API).</p>
+ *
+ * <h2>Основные обязанности:</h2>
+ * <ul>
+ *     <li>Отправка ордеров на биржу через ExecutionPort</li>
+ *     <li>Обеспечение идемпотентности на уровне clientOrderId</li>
+ *     <li>Защита от повторной отправки уже обработанных ордеров</li>
+ *     <li>Обработка состояния "UNKNOWN" через recovery-запрос</li>
+ * </ul>
+ *
+ * <h2>Идемпотентность:</h2>
+ * <p>
+ * Проверяется наличие ордера в БД по clientOrderId.
+ * Если ордер уже существует и находится в неготовом к исполнению статусе —
+ * повторная отправка в ExecutionPort не выполняется.
+ * </p>
+ *
+ * <h2>Recovery логика:</h2>
+ * <p>
+ * При статусе EXCHANGE_STATE_UNKNOWN выполняется повторная проверка
+ * состояния ордера через getOrderStatus.
+ * </p>
  */
 @Slf4j
 @Component
@@ -27,61 +50,80 @@ public class BinanceExecutionEngine implements ExecutionEngine {
     private final ExecutionPort executionPort;
     private final OrderRepository orderRepository;
 
+    /**
+     * Основной метод исполнения ордера.
+     *
+     * <p>Порядок выполнения:</p>
+     * <ol>
+     *     <li>Проверка идемпотентности по clientOrderId</li>
+     *     <li>Отправка ордера через ExecutionPort</li>
+     *     <li>Обработка неопределённого состояния биржи</li>
+     * </ol>
+     *
+     * @param order доменный ордер
+     * @return результат исполнения
+     */
     @Override
     public ExecutionResult execute(Order order) {
         log.info("[EXECUTION] Попытка исполнения ордера через порт: symbol={}, side={}, amount={}, clientOrderId={}",
                 order.getSymbol(), order.getSide(), order.getQuantity(), order.getClientOrderId());
 
-        // 1. Проверка идемпотентности перед отправкой
         Optional<OrderEntity> existingOrder = orderRepository.findByClientOrderId(order.getClientOrderId());
         if (existingOrder.isPresent()) {
             com.tradingbot.common.enums.OrderStatus status = existingOrder.get().getStatus();
             if (!com.tradingbot.domain.policy.OrderStateTransitionPolicy.isReadyForExecution(status)) {
-                log.warn("[EXECUTION] Ордер с clientOrderId {} уже обработан (статус: {}). Пропуск отправки.", 
+                log.warn("[EXECUTION] Ордер с clientOrderId {} уже обработан (статус: {}). Пропуск отправки.",
                         order.getClientOrderId(), existingOrder.get().getStatus());
-                
+
                 return mapToResult(existingOrder.get(), order);
             }
         }
-        // 2. Отправка через порт
+
         ExecutionResult result = executionPort.placeOrder(order);
 
-        // 3. Логика восстановления при таймаутах
-        if (!result.isSuccess() && "TIMEOUT".equals(result.getErrorMessage())) {
-            log.warn("[VERIFY][FLOW] Timeout detected for orderId={}, starting recovery", order.getClientOrderId());
+        if (!result.isFilled() && result.getStatus() == ExecutionResult.Status.EXCHANGE_STATE_UNKNOWN) {
+            log.warn("[VERIFY][FLOW] Exchange state unknown for orderId={}, starting recovery", order.getClientOrderId());
             return verifyOrderInternal(order);
         }
 
         return result;
     }
 
+    /**
+     * Проверка статуса ордера на бирже.
+     *
+     * @param clientOrderId идентификатор клиента ордера
+     * @return актуальный статус исполнения
+     */
     @Override
     public ExecutionResult verifyOrder(String clientOrderId) {
         return executionPort.getOrderStatus(clientOrderId);
     }
+
+    /**
+     * Внутренняя recovery-проверка состояния ордера.
+     *
+     * @param order доменный ордер
+     * @return результат проверки статуса на бирже
+     */
     private ExecutionResult verifyOrderInternal(Order order) {
         ExecutionResult recoveryResult = executionPort.getOrderStatus(order.getClientOrderId());
-        
-        if (recoveryResult.isSuccess()) {
-            log.info("[VERIFY][FLOW] orderId={} result=RECOVERED_SUCCESS", order.getClientOrderId());
-            return ExecutionResult.success(
-                    order.getId(),
-                    recoveryResult.getExchangeOrderId(),
-                    "recovered-" + recoveryResult.getExchangeOrderId(),
-                    order.getSymbol(),
-                    order.getSide(),
-                    recoveryResult.getExecutedQty(),
-                    order.getPrice(),
-                    BigDecimal.ZERO,
-                    "USDT",
-                    order.getClientOrderId()
-            );
-        }
-        
+        log.info("[VERIFY][FLOW] orderId={} result={}", order.getClientOrderId(), recoveryResult.getStatus());
         return recoveryResult;
     }
+
+    /**
+     * Маппинг ранее сохранённого ордера в ExecutionResult.
+     *
+     * <p>Используется для идемпотентного возврата результата,
+     * если ордер уже был обработан ранее.</p>
+     *
+     * @param entity сохранённая сущность ордера
+     * @param order  доменный ордер
+     * @return результат исполнения
+     */
     private ExecutionResult mapToResult(OrderEntity entity, Order order) {
-        return ExecutionResult.success(
+        return ExecutionResult.filled(
                 entity.getId(),
                 entity.getExchangeOrderId(),
                 "existing-trade",

@@ -1,12 +1,15 @@
 package com.tradingbot.application.service.execution;
 
 import com.tradingbot.BaseIntegrationTest;
+import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.persistence.adapter.OrderRepositoryAdapter;
 import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.testutil.TestOrderFactory;
+import com.tradingbot.tracing.ExecutionContext;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,13 +18,13 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 
-import jakarta.persistence.OptimisticLockException;
-
 import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.mockito.Mockito.mock;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -38,10 +41,12 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
     private OrderMapper orderMapper;
 
     private TestOrderFactory orderFactory;
+    private ExecutionContext mockCtx;
 
     @BeforeEach
     void setUp() {
         orderFactory = new TestOrderFactory(orderRepository, orderMapper);
+        mockCtx = mock(ExecutionContext.class);
     }
 
     private Order persistOrder(OrderStatus status) {
@@ -79,7 +84,7 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
         try {
             executor.submit(() -> {
                 Optional<Order> executionOrder =
-                        orderRepositoryAdapter.claimForExecution(entity.getId());
+                        orderRepositoryAdapter.claimForExecution(entity.getId(), mockCtx);
 
                 Assertions.assertThat(executionOrder).isPresent();
 
@@ -87,7 +92,7 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
 
                 reconStart.countDown();
 
-                order.fill("ex-1", BigDecimal.ONE, new BigDecimal("10001"));
+                order.fill(mockCtx, "ex-1", BigDecimal.ONE, new BigDecimal("10001"));
                 orderRepositoryAdapter.save(order);
 
                 finished.countDown();
@@ -102,7 +107,7 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
                 reconClaimed.set(reconOrder.isPresent());
 
                 reconOrder.ifPresent(o -> {
-                    o.markAsRejected("race");
+                    o.markAsRejected(mockCtx, "race");
                     try {
                         orderRepositoryAdapter.save(o);
                     } catch (Exception ignored) {}
@@ -139,10 +144,10 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
         try {
             executor.submit(() -> {
                 Order executionOrder =
-                        orderRepositoryAdapter.claimForExecution(entity.getId())
+                        orderRepositoryAdapter.claimForExecution(entity.getId(), mockCtx)
                                 .orElseThrow();
 
-                executionOrder.fill("ex-2", BigDecimal.ONE, new BigDecimal("10002"));
+                executionOrder.fill(mockCtx, "ex-2", BigDecimal.ONE, new BigDecimal("10002"));
                 orderRepositoryAdapter.save(executionOrder);
             }).get();
 
@@ -152,9 +157,9 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
             executor.shutdownNow();
         }
 
-        // ❗ теперь корректное поведение — state machine reject
+        // корректное поведение — state machine reject
         Assertions.assertThatThrownBy(() -> {
-            staleSnapshot.markAsRejected("stale");
+            staleSnapshot.markAsRejected(mockCtx, "stale");
         }).isInstanceOf(IllegalStateException.class);
     }
 
@@ -166,7 +171,7 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
                 orderRepositoryAdapter.findById(entity.getId()).orElseThrow();
 
         Assertions.assertThatThrownBy(() ->
-                terminalOrder.markAsRejected("illegal")
+                terminalOrder.markAsRejected(mockCtx, "illegal")
         );
 
         Order finalState =
@@ -192,7 +197,7 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
             Order executionOrder =
                     orderRepositoryAdapter.findById(entity.getId()).orElseThrow();
 
-            executionOrder.fill("ex-3", BigDecimal.ONE, new BigDecimal("10003"));
+            executionOrder.fill(mockCtx, "ex-3", BigDecimal.ONE, new BigDecimal("10003"));
             orderRepositoryAdapter.save(executionOrder);
         }));
 
@@ -202,7 +207,7 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
             Order reconOrder =
                     orderRepositoryAdapter.findById(entity.getId()).orElseThrow();
 
-            reconOrder.markAsRejected("exchange");
+            reconOrder.markAsRejected(mockCtx, "exchange");
 
             try {
                 orderRepositoryAdapter.save(reconOrder);
@@ -245,7 +250,7 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
             futures.add(executor.submit(() -> {
                 await(latch);
 
-                if (orderRepositoryAdapter.claimForExecution(entity.getId()).isPresent()) {
+                if (orderRepositoryAdapter.claimForExecution(entity.getId(), mockCtx).isPresent()) {
                     successCount.incrementAndGet();
                 }
             }));
