@@ -17,8 +17,17 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Адаптер для работы с Binance API через ExecutionPort.
- * Изолирует специфику Binance от доменной логики.
+ * Адаптер интеграции с Binance API.
+ *
+ * <p>Реализует {@link ExecutionPort} и инкапсулирует:
+ * <ul>
+ *   <li>HTTP-вызовы Binance API</li>
+ *   <li>нормализацию параметров ордера</li>
+ *   <li>маппинг статусов Binance → доменная модель</li>
+ *   <li>обработку ошибок и fallback-логику</li>
+ * </ul>
+ *
+ * <p>Является антикоррупционным слоем между доменом и внешней биржей.</p>
  */
 @Slf4j
 @Component
@@ -54,6 +63,7 @@ public class BinanceExecutionAdapter implements ExecutionPort {
             params.put("price", normalizePrice(order.getPrice()));
             params.put("timeInForce", "GTC");
         }
+
         try {
             Map response = binanceClient.post("/api/v3/order", params, Map.class, true);
             return mapToExecutionResult(order, response);
@@ -67,6 +77,9 @@ public class BinanceExecutionAdapter implements ExecutionPort {
         }
     }
 
+    /**
+     * Fallback при срабатывании circuit breaker или исчерпании retry.
+     */
     public ExecutionResult fallbackPlaceOrder(Order order, Throwable t) {
         log.error("[BINANCE-ADAPTER][FALLBACK] Circuit breaker open or retries exhausted for order {}: {}",
                 order.getId(), t.getMessage());
@@ -83,12 +96,15 @@ public class BinanceExecutionAdapter implements ExecutionPort {
     public ExecutionResult getOrderStatus(String clientOrderId) {
         String sanitizedId = sanitizeClientId(clientOrderId);
         log.info("[BINANCE-ADAPTER] Querying order status: {} (sanitized: {})", clientOrderId, sanitizedId);
+
         Map<String, String> params = new HashMap<>();
         params.put("origClientOrderId", sanitizedId);
         params.put("symbol", "BTCUSDT");
 
         try {
-            OrderStatusResponse response = binanceClient.get("/api/v3/order", params, OrderStatusResponse.class, true);
+            OrderStatusResponse response =
+                    binanceClient.get("/api/v3/order", params, OrderStatusResponse.class, true);
+
             return mapStatusResponse(response);
         } catch (Exception e) {
             log.error("[BINANCE-ADAPTER] Failed to get status for {}: {}", clientOrderId, e.getMessage());
@@ -97,15 +113,17 @@ public class BinanceExecutionAdapter implements ExecutionPort {
     }
 
     @Override
-    public Map<String, java.math.BigDecimal> getBalances() {
+    public Map<String, BigDecimal> getBalances() {
         try {
             Map accountInfo = binanceClient.getAccountInfo();
-            java.util.List<Map<String, String>> balances = (java.util.List<Map<String, String>>) accountInfo.get("balances");
+
+            java.util.List<Map<String, String>> balances =
+                    (java.util.List<Map<String, String>>) accountInfo.get("balances");
 
             return balances.stream()
                     .collect(java.util.stream.Collectors.toMap(
                             b -> b.get("asset"),
-                            b -> new java.math.BigDecimal(b.get("free"))
+                            b -> new BigDecimal(b.get("free"))
                     ));
         } catch (Exception e) {
             log.error("[BINANCE-ADAPTER] Failed to fetch balances: {}", e.getMessage());
@@ -113,14 +131,18 @@ public class BinanceExecutionAdapter implements ExecutionPort {
         }
     }
 
-    private String normalizeQuantity(java.math.BigDecimal quantity) {
+    private String normalizeQuantity(BigDecimal quantity) {
         if (quantity == null) return "0";
-        return quantity.setScale(5, java.math.RoundingMode.DOWN).stripTrailingZeros().toPlainString();
+        return quantity.setScale(5, java.math.RoundingMode.DOWN)
+                .stripTrailingZeros()
+                .toPlainString();
     }
 
-    private String normalizePrice(java.math.BigDecimal price) {
+    private String normalizePrice(BigDecimal price) {
         if (price == null) return "0";
-        return price.setScale(2, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+        return price.setScale(2, java.math.RoundingMode.HALF_UP)
+                .stripTrailingZeros()
+                .toPlainString();
     }
 
     private String sanitizeClientId(String clientId) {
@@ -160,6 +182,7 @@ public class BinanceExecutionAdapter implements ExecutionPort {
 
     private ExecutionResult mapStatusResponse(OrderStatusResponse response) {
         String status = response.getStatus();
+
         return ExecutionResult.of(
                 null,
                 response.getExchangeOrderId(),

@@ -20,8 +20,13 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * Обработчик события ORDER_EXECUTED.
- * Отвечает за финальную обработку исполненного ордера и обновление позиций.
+ * Обработчик outbox-события ORDER_EXECUTED.
+ * <p>
+ * Отвечает за финализацию исполнения ордера:
+ * обновление состояния агрегата Order и синхронизацию с PositionService.
+ * <p>
+ * Гарантирует идемпотентность обработки через executionId + orderId.
+ * Является частью transactional outbox consumer pipeline.
  */
 @Slf4j
 @Service
@@ -38,25 +43,43 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
         return "ORDER_EXECUTED".equals(eventType);
     }
 
+    /**
+     * Основная точка обработки события исполнения ордера.
+     * <p>
+     * Последовательность:
+     * <ul>
+     *     <li>десериализация event payload</li>
+     *     <li>проверка идемпотентности</li>
+     *     <li>загрузка агрегата Order</li>
+     *     <li>применение результата исполнения</li>
+     *     <li>обновление позиции (PositionService)</li>
+     *     <li>фиксация идемпотентности</li>
+     * </ul>
+     *
+     * @param event outbox-событие исполнения ордера
+     * @throws Exception при ошибках десериализации или бизнес-логики
+     */
     @Override
     @Transactional
     public void consume(OutboxEventEntity event) throws Exception {
+
         // 1. Десериализация ДО проверки идемпотентности (нужен доменный ключ)
         OrderExecutedEvent payload = objectMapper.readValue(event.getPayload(), OrderExecutedEvent.class);
         UUID orderId = payload.getOrderId();
         UUID executionId = payload.getAttempt().executionId();
 
-        // 2. Проверка идемпотентности по доменно-стабильному ключу (orderId + executionId)
+        // 2. Идемпотентность по orderId + executionId
         UUID idempotencyKey = deriveIdempotencyKey(orderId, executionId);
         if (idempotencyService.isAlreadyProcessed(idempotencyKey)) {
-            log.info("[ORDER-EXECUTED-HANDLER] executionId {} for order {} already processed, skipping", executionId, orderId);
+            log.info("[ORDER-EXECUTED-HANDLER] executionId {} for order {} already processed, skipping",
+                    executionId, orderId);
             return;
         }
 
         log.info("[ORDER-EXECUTED-HANDLER] Processing execution for order {}. Status: {}, Qty: {}, Price: {}",
                 orderId, payload.getStatus(), payload.getQuantity(), payload.getPrice());
 
-        // 3. Поиск ордера через порт (агрегат)
+        // 3. Загрузка агрегата Order
         Order order = orderPort.findById(orderId)
                 .orElseThrow(() -> new IllegalStateException("Order not found: " + orderId));
 
@@ -72,36 +95,61 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
         } else if (targetStatus == OrderStatus.PARTIALLY_FILLED) {
             order.applyPartialFill(context, executedQty, executionPrice);
         } else if (targetStatus == OrderStatus.REJECTED) {
-            order.markAsRejected(context, payload.getRejectionReason() != null ? payload.getRejectionReason() : "Unknown rejection");
+            order.markAsRejected(
+                    context,
+                    payload.getRejectionReason() != null ? payload.getRejectionReason() : "Unknown rejection"
+            );
         } else if (targetStatus == OrderStatus.UNKNOWN) {
             order.markAsUnknown(context);
         }
-        // 5. Обновление позиции через PositionService (только если есть реальное исполнение с ценой)
+
+        // 5. Обновление позиции при фактическом исполнении
         if (executedQty != null && executedQty.compareTo(BigDecimal.ZERO) > 0
                 && executionPrice != null) {
-            ExecutionContext tradeEventContext = context.withNextStep(IdentityFactory.deriveEventId(context.attempt().executionId(), "trade-created"));
+
+            ExecutionContext tradeEventContext =
+                    context.withNextStep(
+                            IdentityFactory.deriveEventId(
+                                    context.attempt().executionId(),
+                                    "trade-created"
+                            )
+                    );
 
             TradeCreatedEvent tradeEvent = new TradeCreatedEvent(
                     tradeEventContext.identity(),
                     tradeEventContext.attempt(),
                     tradeEventContext.business(),
-                    IdentityFactory.deriveEventId(tradeEventContext.attempt().executionId(), "trade-created"),
-                    orderId, order.getSymbol(),
+                    IdentityFactory.deriveEventId(
+                            tradeEventContext.attempt().executionId(),
+                            "trade-created"
+                    ),
+                    orderId,
+                    order.getSymbol(),
                     order.getStrategyId(),
                     executedQty,
                     executionPrice,
                     order.getSide(),
-                    null, // stopLoss
-                    null  // takeProfit
+                    null,
+                    null
             );
+
             positionService.updatePosition(tradeEvent);
         }
 
-        // 6. Фиксация идемпотентности по доменному ключу
+        // 6. Фиксация идемпотентности
         idempotencyService.markAsProcessed(idempotencyKey, "OrderExecutedEventHandler");
     }
 
+    /**
+     * Формирует стабильный idempotency key для защиты от повторной обработки.
+     *
+     * @param orderId идентификатор ордера
+     * @param executionId идентификатор исполнения
+     * @return deterministic UUID ключ идемпотентности
+     */
     private static UUID deriveIdempotencyKey(UUID orderId, UUID executionId) {
-        return UUID.nameUUIDFromBytes((orderId + ":" + executionId).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return UUID.nameUUIDFromBytes(
+                (orderId + ":" + executionId).getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
     }
 }

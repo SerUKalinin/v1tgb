@@ -1,16 +1,17 @@
 package com.tradingbot.domain.model;
 
-import lombok.Value;
-
 import java.math.BigDecimal;
 import java.time.Instant;
 
 /**
  * Текущие рыночные данные (тикер).
+ * <p>
+ * Представляет актуальную цену торгового инструмента на момент времени.
+ * Используется в стратегиях, индикаторах и системах принятия торговых решений.
  *
- * @param symbol    торговый символ
- * @param price     текущая цена
- * @param timestamp временная метка
+ * @param symbol    торговый символ инструмента
+ * @param price     текущая рыночная цена
+ * @param timestamp временная метка фиксации значения
  */
 public record MarketData(
         String symbol,

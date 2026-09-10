@@ -17,6 +17,20 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.Optional;
 
+/**
+ * Application service, отвечающий за создание ордера на основе торгового сигнала.
+ *
+ * <p>Является оркестратором use-case уровня "Signal → Order creation":
+ * <ul>
+ *     <li>валидация через RiskEngine</li>
+ *     <li>формирование доменной модели Order</li>
+ *     <li>персист в БД</li>
+ *     <li>публикация Outbox события ORDER_CREATED</li>
+ *     <li>фиксация execution tracing</li>
+ * </ul>
+ *
+ * <p>Слой не содержит торговой логики — только orchestration.</p>
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -28,6 +42,20 @@ public class OrderApplicationService {
     private final OutboxService outboxService;
     private final ExecutionLogger executionLogger;
 
+    /**
+     * Обрабатывает торговый сигнал и инициирует создание ордера.
+     *
+     * <p>Pipeline:
+     * <ol>
+     *     <li>Risk evaluation (RiskEngine)</li>
+     *     <li>Domain Order creation</li>
+     *     <li>Persistence</li>
+     *     <li>Outbox event publication</li>
+     *     <li>Execution logging</li>
+     * </ol>
+     *
+     * @param signal торговый сигнал, инициирующий создание ордера
+     */
     @Transactional
     public void handleSignal(SignalEvent signal) {
         ExecutionContext context = signal.getExecutionContext();
@@ -42,20 +70,22 @@ public class OrderApplicationService {
 
         Order order = orderOpt.get();
 
-        // 2. Защита от коррапта идентичности (инвариант: orderId != signalId)
+        // 2. Инвариант идентичности (signalId ≠ orderId)
         if (order.getId().toString().equals(context.signalId().toString())) {
             throw new IllegalStateException("Security violation: orderId must not equal signalId");
         }
 
-        // 3. Создание бизнес-контекста ордера (новая SSOT ветка)
-        ExecutionContext orderContext = context.withBusiness(BusinessContext.of(order.getId().toString()));
+        // 3. Формирование бизнес-контекста ордера (новая SSOT ветка)
+        ExecutionContext orderContext = context.withBusiness(
+                BusinessContext.of(order.getId().toString())
+        );
 
-        // 4. Сохранение в БД
+        // 4. Persist ордера
         OrderEntity entity = orderMapper.toEntity(order);
         entity.setCreatedAt(Instant.now());
         orderRepository.save(entity);
 
-        // 5. Публикация события в Outbox с использованием строго типизированного DTO
+        // 5. Outbox событие ORDER_CREATED
         outboxService.publishEvent(
                 orderContext,
                 "ORDER",
@@ -67,7 +97,7 @@ public class OrderApplicationService {
                 )
         );
 
-        // 6. Логирование трассировки исполнения
+        // 6. Execution tracing
         executionLogger.log(
                 ExecutionLogFactory.from(
                         order,

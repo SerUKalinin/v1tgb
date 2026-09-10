@@ -12,12 +12,30 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.UUID;
 
+/**
+ * Адаптер для сохранения логов резервирования капитала.
+ *
+ * <p>Реализует {@link RiskReservationLogPort} и отвечает за
+ * запись событий резервирования/освобождения капитала в персистентное хранилище.</p>
+ *
+ * <p>Используется для аудита риск-операций и трассировки движения капитала
+ * в execution pipeline.</p>
+ */
 @Component
 @RequiredArgsConstructor
 public class RiskReservationLogAdapter implements RiskReservationLogPort {
 
+    /** Репозиторий для сохранения логов резервирования */
     private final RiskReservationLogRepository repository;
 
+    /**
+     * Добавляет запись о событии резервирования капитала.
+     *
+     * <p>Преобразует доменную модель {@link RiskReservationLog} в
+     * {@link RiskReservationLogEntity} и сохраняет в БД.</p>
+     *
+     * @param log доменный лог события резервирования
+     */
     @Override
     public void append(RiskReservationLog log) {
         RiskReservationLogEntity entity = RiskReservationLogEntity.builder()
@@ -28,5 +46,7 @@ public class RiskReservationLogAdapter implements RiskReservationLogPort {
                 .amount(log.amount())
                 .createdAt(Instant.now())
                 .build();
+
         repository.save(entity);
-    }}
+    }
+}

@@ -15,6 +15,14 @@ import java.util.stream.Collectors;
 
 /**
  * Клиент для взаимодействия с API Binance.
+ *
+ * <p>Отвечает за:
+ * <ul>
+ *     <li>HTTP-взаимодействие с Binance API</li>
+ *     <li>Подпись запросов (HMAC-SHA256)</li>
+ *     <li>Синхронизацию времени с сервером Binance</li>
+ *     <li>Формирование signed/unsigned запросов</li>
+ * </ul>
  */
 @Slf4j
 @Component
@@ -26,6 +34,13 @@ public class BinanceClient {
     private final RestTemplate restTemplate;
     private long timeOffset = 0;
 
+    /**
+     * Создаёт клиент Binance API.
+     *
+     * @param apiKey    публичный API ключ Binance
+     * @param secretKey  секретный ключ Binance
+     * @param baseUrl   базовый URL API (по умолчанию https://api.binance.com)
+     */
     public BinanceClient(
             @Value("${binance.api-key}") String apiKey,
             @Value("${binance.secret-key}") String secretKey,
@@ -37,7 +52,9 @@ public class BinanceClient {
     }
 
     /**
-     * Синхронизирует локальное время с временем сервера Binance.
+     * Синхронизирует локальное время с сервером Binance.
+     *
+     * <p>Используется для корректной подписи запросов, зависящих от timestamp.
      */
     public void syncTime() {
         try {
@@ -51,10 +68,10 @@ public class BinanceClient {
     }
 
     /**
-     * Подписывает параметры запроса.
+     * Формирует HMAC-SHA256 подпись для параметров запроса.
      *
      * @param params параметры запроса
-     * @return подпись HMAC-SHA256
+     * @return строка подписи
      */
     public String sign(Map<String, String> params) {
         String query = params.entrySet().stream()
@@ -63,6 +80,13 @@ public class BinanceClient {
         return hmacSha256(query, secretKey);
     }
 
+    /**
+     * Внутренний метод вычисления HMAC-SHA256.
+     *
+     * @param data   строка данных
+     * @param secret секретный ключ
+     * @return hex-подпись
+     */
     private String hmacSha256(String data, String secret) {
         try {
             Mac sha256_HMAC = Mac.getInstance("HmacSHA256");
@@ -82,14 +106,14 @@ public class BinanceClient {
     }
 
     /**
-     * Выполняет GET-запрос к API Binance.
+     * Выполняет GET-запрос к Binance API.
      *
-     * @param path         путь запроса
+     * @param path         endpoint (например /api/v3/order)
      * @param params       параметры запроса
-     * @param responseType класс ответа
+     * @param responseType тип ответа
      * @param signed       требуется ли подпись
-     * @param <T>          тип ответа
-     * @return ответ от API
+     * @param <T>          тип результата
+     * @return ответ API
      */
     public <T> T get(String path, Map<String, String> params, Class<T> responseType, boolean signed) {
         String url = buildUrl(path, params, signed);
@@ -100,14 +124,14 @@ public class BinanceClient {
     }
 
     /**
-     * Выполняет POST-запрос к API Binance.
+     * Выполняет POST-запрос к Binance API.
      *
-     * @param path         путь запроса
+     * @param path         endpoint
      * @param params       параметры запроса
-     * @param responseType класс ответа
+     * @param responseType тип ответа
      * @param signed       требуется ли подпись
-     * @param <T>          тип ответа
-     * @return ответ от API
+     * @param <T>          тип результата
+     * @return ответ API
      */
     public <T> T post(String path, Map<String, String> params, Class<T> responseType, boolean signed) {
         String url = buildUrl(path, params, signed);
@@ -117,6 +141,14 @@ public class BinanceClient {
         return restTemplate.exchange(url, org.springframework.http.HttpMethod.POST, entity, responseType).getBody();
     }
 
+    /**
+     * Формирует полный URL запроса с параметрами и подписью (если требуется).
+     *
+     * @param path   endpoint
+     * @param params параметры запроса
+     * @param signed требуется ли подпись
+     * @return готовый URL
+     */
     private String buildUrl(String path, Map<String, String> params, boolean signed) {
         Map<String, String> allParams = new TreeMap<>(params);
         if (signed) {
@@ -131,9 +163,9 @@ public class BinanceClient {
     }
 
     /**
-     * Возвращает текущее время сервера Binance с учётом смещения.
+     * Возвращает текущее серверное время Binance с учётом смещения.
      *
-     * @return время сервера в миллисекундах
+     * @return время в миллисекундах
      */
     public long getServerTime() {
         return System.currentTimeMillis() + timeOffset;
@@ -158,7 +190,9 @@ public class BinanceClient {
     }
 
     /**
-     * Получает информацию об аккаунте (балансы).
+     * Получает информацию об аккаунте Binance (балансы, лимиты и т.д.).
+     *
+     * @return карта данных аккаунта
      */
     public Map getAccountInfo() {
         return get("/api/v3/account", new HashMap<>(), Map.class, true);

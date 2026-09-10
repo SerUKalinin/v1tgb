@@ -1,7 +1,7 @@
 package com.tradingbot.interfaces.scheduler;
 
 import com.tradingbot.application.market.MarketDataService;
-import com.tradingbot.application.service.strategy.StrategyService;
+import com.tradingbot.application.strategy.StrategyService;
 import com.tradingbot.infrastructure.execution.binance.BinanceClient;
 import com.tradingbot.application.event.SystemEvents;
 import jakarta.annotation.PostConstruct;

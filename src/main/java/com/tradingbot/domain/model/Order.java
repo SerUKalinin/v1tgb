@@ -5,7 +5,6 @@ import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.exception.InvalidOrderStateException;
-import com.tradingbot.domain.exception.InvalidOrderTransitionException;
 import com.tradingbot.domain.policy.OrderStateTransitionPolicy;
 import lombok.Getter;
 
@@ -14,6 +13,13 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
+/**
+ * Доменные агрегат: торговый ордер.
+ * <p>
+ * Инкапсулирует весь жизненный цикл ордера: от создания до исполнения,
+ * включая управление состояниями, идемпотентность обработки и контроль
+ * переходов состояний через state machine policy.
+ */
 @Getter
 public class Order {
     // Идентификационные данные
@@ -45,7 +51,12 @@ public class Order {
     private String rejectionReason;
     private UUID lastAppliedExecutionId;
 
-    // Приватный конструктор для обеспечения целостности через фабричные методы
+    /**
+     * Приватный конструктор агрегата.
+     * <p>
+     * Используется только через фабричные методы createPendingExecution и reconstruct.
+     * Обеспечивает контроль обязательных полей и базовую валидацию состояния.
+     */
     private Order(UUID id,
                   String clientOrderId,
                   String symbol,
@@ -60,6 +71,7 @@ public class Order {
         if (status == null) {
             throw new InvalidOrderStateException("Order status cannot be null");
         }
+
         this.id = Objects.requireNonNull(id, "orderId is required");
         this.clientOrderId = Objects.requireNonNull(clientOrderId, "clientOrderId is required");
         this.symbol = Objects.requireNonNull(symbol, "symbol is required");
@@ -73,8 +85,11 @@ public class Order {
         this.status = status;
         this.version = version;
     }
+
     /**
-     * Создает новый ордер в начальном состоянии PENDING_EXECUTION.
+     * Создает новый ордер в состоянии ожидания исполнения.
+     *
+     * @return новый агрегат Order в состоянии PENDING_EXECUTION
      */
     public static Order createPendingExecution(UUID id,
                                                String clientOrderId,
@@ -99,7 +114,9 @@ public class Order {
     }
 
     /**
-     * Восстанавливает состояние агрегата из хранилища (Persistence -> Domain).
+     * Восстанавливает агрегат из персистентного слоя.
+     * <p>
+     * Используется только при загрузке данных из БД (Persistence → Domain).
      */
     public static Order reconstruct(UUID id,
                                     String clientOrderId,
@@ -134,6 +151,7 @@ public class Order {
                 signalId,
                 status,
                 version);
+
         order.createdAt = createdAt;
         order.updatedAt = updatedAt;
         order.executionId = executionId;
@@ -144,39 +162,61 @@ public class Order {
         order.rejectionReason = rejectionReason;
         order.executionAttempts = executionAttempts;
         order.lastAppliedExecutionId = lastAppliedExecutionId;
+
         return order;
     }
-    // --- Бизнес-логика и переходы состояний ---
 
+    /**
+     * Возвращает идентификатор execution, владеющий ордером.
+     */
     public UUID getExecutionId() {
         return executionId;
     }
 
+    /**
+     * Назначает владельца исполнения ордера.
+     * <p>
+     * Используется для защиты от повторного захвата ордера разными execution-потоками.
+     */
     public void assignExecutionOwner(UUID executionId) {
         Objects.requireNonNull(executionId, "executionId is required");
+
         // Idempotency guard: same owner — NOOP
         if (this.executionId != null && this.executionId.equals(executionId)) {
             return;
         }
+
         if (this.executionId != null && !OrderStateTransitionPolicy.isTerminal(this.status)) {
-            throw new IllegalStateException(String.format("Order %s already claimed by %s", this.id, this.executionId));
+            throw new IllegalStateException(
+                    String.format("Order %s already claimed by %s", this.id, this.executionId)
+            );
         }
+
         this.executionId = executionId;
         this.executionStartedAt = Instant.now();
         this.executionAttempts++;
     }
 
+    /**
+     * Очищает владельца execution.
+     * <p>
+     * Допустимо только для терминальных состояний.
+     */
     public void clearExecutionOwner() {
         if (!OrderStateTransitionPolicy.isTerminal(this.status)) {
-            throw new IllegalStateException(String.format("Order %s is not terminal (%s) - cannot clear execution owner", this.id, this.status));
+            throw new IllegalStateException(
+                    String.format("Order %s is not terminal (%s) - cannot clear execution owner", this.id, this.status)
+            );
         }
         this.executionId = null;
     }
 
+    /**
+     * Переводит ордер в состояние EXECUTING.
+     */
     public void markExecuting(ExecutionContext context) {
         UUID incomingExecutionId = context.attempt().executionId();
 
-        // Idempotency guard: already EXECUTING — safe NOOP
         if (this.status == OrderStatus.EXECUTING) {
             return;
         }
@@ -186,20 +226,22 @@ public class Order {
         this.status = OrderStatus.EXECUTING;
     }
 
+    /**
+     * Помечает ордер как полностью исполненный (FILLED).
+     */
     public void fill(ExecutionContext context, String exchangeOrderId, BigDecimal executedQty, BigDecimal executedPrice) {
         UUID incomingExecutionId = context.attempt().executionId();
 
-        // Idempotency guard: already terminal FILLED — safe NOOP
         if (this.status == OrderStatus.FILLED) {
             return;
         }
 
-        // Idempotency guard: retry of same execution — NOOP
         if (this.lastAppliedExecutionId != null && this.lastAppliedExecutionId.equals(incomingExecutionId)) {
             return;
         }
 
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.FILLED);
+
         this.lastAppliedExecutionId = incomingExecutionId;
         this.exchangeOrderId = exchangeOrderId;
         this.executedQuantity = executedQty;
@@ -207,24 +249,23 @@ public class Order {
         this.status = OrderStatus.FILLED;
     }
 
-
+    /**
+     * Перегруженный метод fill без exchangeOrderId.
+     */
     public void fill(ExecutionContext context, BigDecimal executedQty, BigDecimal executedPrice) {
         fill(context, this.exchangeOrderId, executedQty, executedPrice);
     }
 
     /**
-     * Принудительный fill для реконсиляции.
-     * Пропускает lastAppliedExecutionId guard, т.к. контекст восстановлен из Order
-     * и executionId совпадает с оригинальным.
+     * Принудительное исполнение ордера (используется в reconciliation).
      */
     public void forceFill(ExecutionContext context, String exchangeOrderId, BigDecimal executedQty, BigDecimal executedPrice) {
-        // Idempotency guard: already terminal FILLED — safe NOOP
         if (this.status == OrderStatus.FILLED) {
             return;
         }
 
-        // NOTE: no lastAppliedExecutionId guard — reconciliation must force through
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.FILLED);
+
         this.lastAppliedExecutionId = context.attempt().executionId();
         this.exchangeOrderId = exchangeOrderId;
         this.executedQuantity = executedQty;
@@ -232,99 +273,131 @@ public class Order {
         this.status = OrderStatus.FILLED;
     }
 
+    /**
+     * Применяет частичное исполнение ордера.
+     */
     public void applyPartialFill(ExecutionContext context, BigDecimal qty, BigDecimal price) {
         UUID incomingExecutionId = context.attempt().executionId();
 
-        // Idempotency guard: already PARTIALLY_FILLED — safe NOOP
         if (this.status == OrderStatus.PARTIALLY_FILLED) {
             return;
         }
 
-        // Idempotency guard: retry of same execution — NOOP
         if (this.lastAppliedExecutionId != null && this.lastAppliedExecutionId.equals(incomingExecutionId)) {
             return;
         }
 
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.PARTIALLY_FILLED);
+
         this.lastAppliedExecutionId = incomingExecutionId;
         this.executedQuantity = qty;
         this.averagePrice = price;
         this.status = OrderStatus.PARTIALLY_FILLED;
     }
 
+    /**
+     * Переводит ордер в RECOVERING.
+     */
     public void markRecovering(ExecutionContext context) {
-        // Idempotency guard: already RECOVERING — safe NOOP
         if (this.status == OrderStatus.RECOVERING) {
             return;
         }
+
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.RECOVERING);
         this.status = OrderStatus.RECOVERING;
     }
 
+    /**
+     * Помечает ордер как принятый биржей.
+     */
     public void markAccepted(ExecutionContext context, String exchangeOrderId) {
-        // Idempotency guard: already SENT_TO_EXCHANGE — safe NOOP
         if (this.status == OrderStatus.SENT_TO_EXCHANGE) {
             return;
         }
 
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.SENT_TO_EXCHANGE);
+
         this.exchangeOrderId = exchangeOrderId;
         this.status = OrderStatus.SENT_TO_EXCHANGE;
     }
 
+    /**
+     * Помечает ордер как отклонённый.
+     */
     public void markAsRejected(ExecutionContext context, String reason) {
-        // Idempotency guard: already REJECTED — safe NOOP
         if (this.status == OrderStatus.REJECTED) {
             return;
         }
+
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.REJECTED);
+
         this.status = OrderStatus.REJECTED;
         this.rejectionReason = reason;
     }
 
+    /**
+     * Отменяет ордер.
+     */
     public void markCancelled(ExecutionContext context) {
-        // Idempotency guard: already CANCELED — safe NOOP
         if (this.status == OrderStatus.CANCELED) {
             return;
         }
+
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.CANCELED);
         this.status = OrderStatus.CANCELED;
     }
 
-
+    /**
+     * Помечает ордер как неизвестный.
+     */
     public void markAsUnknown(ExecutionContext context) {
-        // Idempotency guard: already UNKNOWN — safe NOOP
         if (this.status == OrderStatus.UNKNOWN) {
             return;
         }
+
         OrderStateTransitionPolicy.validateAndPassThrough(context, this.status, OrderStatus.UNKNOWN);
         this.status = OrderStatus.UNKNOWN;
     }
-    // --- Вспомогательные методы ---
 
+    /**
+     * Возвращает оставшееся количество для исполнения.
+     */
     public BigDecimal getRemainingQuantity() {
         BigDecimal executed = executedQuantity == null ? BigDecimal.ZERO : executedQuantity;
         return originalQuantity.subtract(executed);
     }
 
+    /**
+     * Возвращает исходное количество ордера.
+     */
     public BigDecimal getQuantity() {
         return originalQuantity;
     }
 
+    /**
+     * Проверка перехода состояния (внутренняя логика state machine).
+     */
     private void validateTransitionOrThrow(OrderStatus targetStatus) {
         if (this.status == targetStatus) {
             return;
         }
 
         if (OrderStateTransitionPolicy.isTerminal(this.status)) {
-            throw new IllegalStateException(String.format("Cannot transition from terminal %s to %s", this.status, targetStatus));
+            throw new IllegalStateException(
+                    String.format("Cannot transition from terminal %s to %s", this.status, targetStatus)
+            );
         }
 
         if (!OrderStateTransitionPolicy.canTransition(this.status, targetStatus)) {
-            throw new IllegalStateException(String.format("Transition from %s to %s forbidden by policy", this.status, targetStatus));
+            throw new IllegalStateException(
+                    String.format("Transition from %s to %s forbidden by policy", this.status, targetStatus)
+            );
         }
     }
 
+    /**
+     * Устанавливает exchangeOrderId (используется адаптерами биржи).
+     */
     public void setExchangeOrderId(String exchangeOrderId) {
         this.exchangeOrderId = exchangeOrderId;
     }

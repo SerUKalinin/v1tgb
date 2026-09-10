@@ -7,16 +7,20 @@ import org.springframework.scheduling.config.ScheduledTaskRegistrar;
 
 /**
  * Конфигурация планировщика задач.
- * <p>
- * Настраивает пул потоков для выполнения запланированных задач.
+ *
+ * <p>Определяет пул потоков для выполнения всех {@code @Scheduled} задач системы.
+ * Используется для контроля параллелизма фоновых процессов (reconciliation, cleanup и т.д.).</p>
  */
 @Configuration
 public class SchedulerConfig implements SchedulingConfigurer {
 
     /**
-     * Настраивает планировщик задач с пулом из 5 потоков.
+     * Настраивает thread pool для выполнения scheduled-задач.
      *
-     * @param taskRegistrar регистратор запланированных задач
+     * <p>Используется фиксированный пул потоков для предотвращения
+     * неконтролируемого создания потоков при высокой нагрузке.</p>
+     *
+     * @param taskRegistrar регистратор scheduled задач
      */
     @Override
     public void configureTasks(ScheduledTaskRegistrar taskRegistrar) {

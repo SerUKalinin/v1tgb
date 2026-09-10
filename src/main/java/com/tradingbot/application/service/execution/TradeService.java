@@ -20,6 +20,21 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.List;
 
+/**
+ * Сервис обработки торговых сделок.
+ * <p>
+ * Отвечает за:
+ * <ul>
+ *     <li>обработку события исполнения ордера</li>
+ *     <li>создание сущности Trade</li>
+ *     <li>публикацию outbox событий (ORDER_FILLED, TRADE_CREATED)</li>
+ *     <li>уведомление RiskEngine о факте сделки</li>
+ *     <li>предоставление истории торгов</li>
+ * </ul>
+ * <p>
+ * Является частью execution pipeline и не содержит бизнес-логики риск-менеджмента
+ * или построения позиций (делегируется downstream компонентам).
+ */
 @Service
 @Slf4j
 @RequiredArgsConstructor
@@ -31,6 +46,11 @@ public class TradeService {
     private final OrderRepository orderRepository;
     private final RiskEngine riskEngine;
 
+    /**
+     * Обрабатывает факт исполнения ордера и создаёт торговую сделку.
+     *
+     * @param event событие исполнения ордера
+     */
     @Transactional
     public void onOrderFilled(OrderFilledEvent event) {
         log.info("[TRADE-SERVICE] Handling order fill for order: {}", event.getOrderId());
@@ -47,7 +67,9 @@ public class TradeService {
                 "ORDER",
                 "ORDER_FILLED",
                 event
-        );        if (tradeRepository.existsByExchangeTradeId(event.getExternalExecutionId())) {
+        );
+
+        if (tradeRepository.existsByExchangeTradeId(event.getExternalExecutionId())) {
             log.warn("[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.", event.getExternalExecutionId());
             return;
         }
@@ -55,7 +77,7 @@ public class TradeService {
         var order = orderRepository.findById(event.getOrderId())
                 .orElseThrow(() -> new RuntimeException("Order not found: " + event.getOrderId()));
 
-        // 2. Создание сущности сделки
+        // 2. Создание Trade сущности
         TradeEntity entity = new TradeEntity();
         entity.setId(IdentityFactory.deriveEventId(context.attempt().executionId(), "trade"));
         entity.setOrder(order);
@@ -71,7 +93,7 @@ public class TradeService {
 
         TradeEntity saved = tradeRepository.save(entity);
 
-        // 3. Outbox: TRADE_CREATED (продвижение контекста на следующий шаг)
+        // 3. Outbox: TRADE_CREATED
         ExecutionContext tradeContext = context.withNextStep(
                 IdentityFactory.deriveEventId(context.attempt().executionId(), "trade-publish")
         );
@@ -108,10 +130,16 @@ public class TradeService {
                 saved.getExecutedAt()
         ));
 
-        // 5. Projection updates (Equity/Position) are handled asynchronously
-        //    via Outbox consumers — no direct sync calls here.
+        // 5. Projection updates выполняются асинхронно через Outbox consumers
     }
 
+    /**
+     * Получает историю сделок по символу и стратегии.
+     *
+     * @param symbol торговый инструмент
+     * @param strategyId идентификатор стратегии
+     * @return список сделок в хронологическом порядке
+     */
     public List<Trade> getTradeHistory(String symbol, String strategyId) {
         return tradeRepository.findBySymbolAndStrategyIdOrderByExecutedAtAsc(symbol, strategyId)
                 .stream()
@@ -119,6 +147,11 @@ public class TradeService {
                 .toList();
     }
 
+    /**
+     * Возвращает все сделки системы.
+     *
+     * @return список всех сделок, отсортированных по времени исполнения
+     */
     public List<Trade> getAllTrades() {
         return tradeRepository.findAllByOrderByExecutedAtAsc()
                 .stream()

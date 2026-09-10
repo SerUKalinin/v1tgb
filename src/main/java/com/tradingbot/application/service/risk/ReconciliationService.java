@@ -34,19 +34,73 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
+/**
+ * Сервис реконсиляции состояния торговой системы.
+ *
+ * <p>Отвечает за:
+ * <ul>
+ *     <li>синхронизацию балансов с биржей</li>
+ *     <li>восстановление застрявших ордеров</li>
+ *     <li>очистку и восстановление outbox событий</li>
+ *     <li>reconciliation ордеров с состоянием биржи</li>
+ * </ul>
+ *
+ * <p>Является критическим компонентом обеспечения консистентности между:
+ * доменной моделью, биржей и инфраструктурными событиями.
+ */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class ReconciliationService {
+
+    /**
+     * Порт доступа к ордерам в хранилище.
+     */
     private final OrderRepositoryPort orderRepository;
+
+    /**
+     * Репозиторий outbox событий.
+     */
     private final OutboxEventRepository outboxRepository;
+
+    /**
+     * Сервис запросов состояния ордеров на бирже.
+     */
     private final ExchangeOrderQueryService exchangeQueryService;
+
+    /**
+     * Сервис компенсации состояния ордеров (освобождение резервов).
+     */
     private final OrderCompensationService orderCompensationService;
+
+    /**
+     * Движок риск-менеджмента, содержащий актуальное состояние системы.
+     */
     private final RiskEngine riskEngine;
+
+    /**
+     * Сервис уведомлений администратора.
+     */
     private final AdminNotificationService notifications;
+
+    /**
+     * Сервис восстановления позиций.
+     */
     private final PositionRebuildService positionRebuildService;
+
+    /**
+     * Менеджер состояния системы (cold start / ready / recovery).
+     */
     private final SystemStateManager stateManager;
+
+    /**
+     * Валидатор допустимых переходов состояний ордера.
+     */
     private final TransitionValidator transitionValidator;
+
+    /**
+     * Логгер событий исполнения.
+     */
     private final ExecutionLogger executionLogger;
 
     private static final Duration STALE_THRESHOLD = Duration.ofMinutes(2);
@@ -56,29 +110,59 @@ public class ReconciliationService {
 
     private Instant lastReconcileTimestamp = Instant.now();
 
+    /**
+     * Обработка события холодного старта системы.
+     *
+     * @param event событие cold start
+     */
     @EventListener
     public void onColdStart(SystemEvents.ColdStartDetectedEvent event) {
         log.info("[RECON] Handling Cold Start event. Forcing reconciliation...");
         reconcileAll(true);
     }
 
+    /**
+     * Обработка запроса стандартной реконсиляции.
+     *
+     * @param event событие запроса reconciliation
+     */
     @EventListener
     public void onStandardRecon(SystemEvents.StandardReconciliationRequestedEvent event) {
         log.info("[RECON] Handling Standard Reconciliation event.");
         reconcileAll(false);
     }
 
+    /**
+     * Периодическая реконсиляция системы (фоновой процесс).
+     */
     @Scheduled(fixedDelay = 3600000)
     public void reconcileAll() {
         reconcileAll(false);
     }
 
+    /**
+     * Выполняет полную реконсиляцию системы.
+     *
+     * @param force принудительное выполнение без ограничений по времени
+     */
     public void reconcileAll(boolean force) {
         reconcileOutbox();
         reconcilePendingOrders();
         reconcileBalances(force);
     }
 
+    /**
+     * Реконсиляция балансов между биржей и внутренним состоянием.
+     *
+     * <p>При критических расхождениях система:
+     * <ul>
+     *     <li>синхронизирует баланс</li>
+     *     <li>пересобирает позиции</li>
+     *     <li>может инициировать emergency stop</li>
+     * </ul>
+     *
+     * @param force принудительная проверка
+     */
     public void reconcileBalances(boolean force) {
         try {
             BigDecimal exchangeBalance = exchangeQueryService.getAvailableBalance("USDT");
@@ -97,6 +181,7 @@ public class ReconciliationService {
             }
 
             if (internalBalance.signum() == 0 && exchangeBalance.signum() == 0) return;
+
             BigDecimal diff = exchangeBalance.subtract(internalBalance).abs();
             if (diff.signum() == 0) return;
 
@@ -110,7 +195,9 @@ public class ReconciliationService {
             }
 
             if (driftPercent.compareTo(DRIFT_THRESHOLD) > 0) {
-                log.error("[RECON-CRITICAL] CRITICAL balance drift detected: Drift={}%", driftPercent.multiply(new BigDecimal("100")));
+                log.error("[RECON-CRITICAL] CRITICAL balance drift detected: Drift={}%",
+                        driftPercent.multiply(new BigDecimal("100")));
+
                 riskEngine.syncBalance(exchangeBalance);
                 positionRebuildService.rebuildAllPositions();
 
@@ -123,12 +210,17 @@ public class ReconciliationService {
                 riskEngine.syncBalance(exchangeBalance);
                 positionRebuildService.rebuildAllPositions();
             }
+
             lastReconcileTimestamp = now;
+
         } catch (Exception e) {
             log.error("[RECON] Failed to reconcile balances", e);
         }
     }
 
+    /**
+     * Реконсиляция outbox событий (очистка застрявших сообщений).
+     */
     @Scheduled(fixedDelay = 30000)
     @Transactional
     public void reconcileOutbox() {
@@ -145,6 +237,9 @@ public class ReconciliationService {
         }
     }
 
+    /**
+     * Реконсиляция ордеров в промежуточных состояниях.
+     */
     @Scheduled(fixedDelay = 300000)
     public void reconcilePendingOrders() {
         Instant threshold = Instant.now().minus(STALE_THRESHOLD);
@@ -158,12 +253,25 @@ public class ReconciliationService {
         }
     }
 
+    /**
+     * Реконсиляция конкретного ордера.
+     *
+     * @param context контекст исполнения
+     */
     @Transactional
     public void reconcile(ExecutionContext context) {
         orderRepository.findById(UUID.fromString(context.business().orderId()))
                 .ifPresent(order -> syncOrderWithExchange(order, context));
     }
 
+    /**
+     * Синхронизация состояния ордера с биржей.
+     *
+     * <p>Является ключевой точкой обеспечения консистентности между доменной моделью и биржей.
+     *
+     * @param targetOrder целевой ордер
+     * @param context контекст исполнения
+     */
     @Transactional
     public void syncOrderWithExchange(Order targetOrder, ExecutionContext context) {
         try {
@@ -190,43 +298,43 @@ public class ReconciliationService {
             ));
 
             log.info("[RECON] Syncing order {} (status: {}).", order.getId(), order.getStatus());
+
             ExecutionResult exchangeState = exchangeQueryService.getOrderStatus(order.getClientOrderId());
 
-            BinanceStatusMapper.Action action = BinanceStatusMapper.mapToReconciliationAction(exchangeState.getStatus());
+            BinanceStatusMapper.Action action =
+                    BinanceStatusMapper.mapToReconciliationAction(exchangeState.getStatus());
+
             boolean stateChanged = switch (action) {
                 case FORCE_FILL -> {
-                    order.forceFill(context, exchangeState.getExchangeOrderId(), exchangeState.getExecutedQty(), exchangeState.getExecutedPrice());
-                    log.info("[RECON-SUCCESS] Order {} synchronized to FILLED.", order.getId());
+                    order.forceFill(context,
+                            exchangeState.getExchangeOrderId(),
+                            exchangeState.getExecutedQty(),
+                            exchangeState.getExecutedPrice());
                     yield true;
                 }
                 case PARTIALLY_FILL -> {
-                    order.applyPartialFill(context, exchangeState.getExecutedQty(), exchangeState.getExecutedPrice());
-                    log.info("[RECON-SUCCESS] Order {} synchronized to PARTIALLY_FILLED.", order.getId());
+                    order.applyPartialFill(context,
+                            exchangeState.getExecutedQty(),
+                            exchangeState.getExecutedPrice());
                     yield true;
                 }
                 case REJECT -> {
                     order.markAsRejected(context, exchangeState.getErrorMessage());
                     orderCompensationService.releasePartial(order, order.getExecutedQuantity());
-                    log.warn("[RECON-SUCCESS] Order {} synchronized to REJECTED.", order.getId());
                     yield true;
                 }
                 case CANCEL -> {
                     order.markCancelled(context);
                     orderCompensationService.releasePartial(order, order.getExecutedQuantity());
-                    log.warn("[RECON-SUCCESS] Order {} synchronized to CANCELED.", order.getId());
                     yield true;
                 }
                 case MARK_UNKNOWN -> {
                     order.markAsUnknown(context);
-                    log.warn("[RECON-UNKNOWN] Order {} moved to UNKNOWN.", order.getId());
                     yield true;
                 }
-                case NOOP -> {
-                    log.info("[RECON-ACCEPTED] Order {} accepted on exchange but not yet filled.", order.getId());
-                    yield false;
-                }
+                case NOOP -> false;
+
                 case FILL, MARK_ACCEPTED -> {
-                    log.error("[RECON-BUG] Unexpected Action {} in reconciliation path. orderId={}", action, order.getId());
                     order.markAsUnknown(context);
                     yield true;
                 }
@@ -235,6 +343,7 @@ public class ReconciliationService {
             if (stateChanged) {
                 orderRepository.save(order);
             }
+
         } catch (OptimisticLockException e) {
             log.warn("[RECON-CONFLICT] Stale version for order {}. Skipping.", targetOrder.getId());
         } catch (Exception e) {

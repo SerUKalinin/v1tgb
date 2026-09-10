@@ -11,6 +11,11 @@ import java.util.UUID;
 
 /**
  * Результат исполнения торгового ордера.
+ * <p>
+ * Представляет итог выполнения ордера на бирже, включая статус исполнения,
+ * фактически исполненные объёмы, цену, комиссии и идентификаторы на стороне биржи.
+ * <p>
+ * Используется как единая доменная модель результата execution pipeline.
  *
  * <p>Инварианты:
  * <ul>
@@ -43,10 +48,13 @@ public class ExecutionResult {
     String feeAsset;
     Status status;
     String errorMessage;
+
     @Builder.Default
     Instant executedAt = Instant.now();
 
-    /** Кастомный all-args конструктор с валидацией инвариантов. Заменяет @AllArgsConstructor. */
+    /**
+     * Кастомный конструктор с проверкой доменных инвариантов.
+     */
     private ExecutionResult(
             UUID orderId, String clientOrderId, String exchangeOrderId,
             String exchangeTradeId, String symbol, OrderSide side,
@@ -71,22 +79,35 @@ public class ExecutionResult {
         this.executedAt = executedAt;
     }
 
+    /**
+     * Проверка доменных инвариантов результата исполнения.
+     */
     private static void validate(Status status, BigDecimal executedQty, BigDecimal executedPrice) {
         if (status == null) return;
-        boolean needsFillData = status == Status.FILLED || status == Status.PARTIALLY_FILLED;
+
+        boolean needsFillData =
+                status == Status.FILLED || status == Status.PARTIALLY_FILLED;
+
         if (needsFillData && (executedQty == null || executedPrice == null)) {
             throw new IllegalArgumentException(
                     status + " requires non-null executedQty and executedPrice. " +
-                            "Use static factory filled() or partiallyFilled().");
+                            "Use static factory methods filled() or partiallyFilled()."
+            );
         }
     }
 
+    /**
+     * Проверяет, полностью ли исполнен ордер.
+     */
     public boolean isFilled() {
         return status == Status.FILLED;
     }
 
-    // ─── Статические фабрики ──────────────────────────────────────────────────
+    // ───────────────────────────── Фабрики ─────────────────────────────
 
+    /**
+     * Полностью исполненный ордер.
+     */
     public static ExecutionResult filled(
             UUID orderId, String exchangeOrderId, String exchangeTradeId,
             String symbol, OrderSide side,
@@ -108,6 +129,9 @@ public class ExecutionResult {
                 .build();
     }
 
+    /**
+     * Частично исполненный ордер.
+     */
     public static ExecutionResult partiallyFilled(
             UUID orderId, String exchangeOrderId, String symbol, OrderSide side,
             BigDecimal executedQty, BigDecimal executedPrice, String clientOrderId) {
@@ -124,6 +148,9 @@ public class ExecutionResult {
                 .build();
     }
 
+    /**
+     * Ордер принят биржей в обработку.
+     */
     public static ExecutionResult accepted(String exchangeOrderId, String clientOrderId) {
         return ExecutionResult.builder()
                 .exchangeOrderId(exchangeOrderId)
@@ -132,11 +159,8 @@ public class ExecutionResult {
                 .build();
     }
 
-    // ─── Фабрика для динамического построения (BinanceExecutionAdapter) ────────
-
     /**
-     * Фабрика для случаев, когда статус определяется динамически (например, из BinanceStatusMapper).
-     * Валидация FILLED/PARTIALLY_FILLED выполняется в конструкторе.
+     * Универсальная фабрика для адаптеров биржи.
      */
     public static ExecutionResult of(
             UUID orderId, String exchangeOrderId,
@@ -153,6 +177,9 @@ public class ExecutionResult {
                 .build();
     }
 
+    /**
+     * Неопределённое состояние биржи.
+     */
     public static ExecutionResult exchangeStateUnknown(UUID orderId) {
         return ExecutionResult.builder()
                 .orderId(orderId)
@@ -161,6 +188,9 @@ public class ExecutionResult {
                 .build();
     }
 
+    /**
+     * Ордер отклонён.
+     */
     public static ExecutionResult rejected(UUID orderId, String errorMessage) {
         return ExecutionResult.builder()
                 .orderId(orderId)
@@ -169,6 +199,9 @@ public class ExecutionResult {
                 .build();
     }
 
+    /**
+     * Ошибка взаимодействия с биржей.
+     */
     public static ExecutionResult failedIo(UUID orderId, String errorMessage) {
         return ExecutionResult.builder()
                 .orderId(orderId)
@@ -177,6 +210,9 @@ public class ExecutionResult {
                 .build();
     }
 
+    /**
+     * Ордер отменён.
+     */
     public static ExecutionResult canceled(UUID orderId) {
         return ExecutionResult.builder()
                 .orderId(orderId)

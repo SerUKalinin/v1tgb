@@ -15,6 +15,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Сервис метаданных биржи.
+ *
+ * <p>Отвечает за загрузку, кэширование и обновление параметров торговых инструментов
+ * (лот-сайз, шаг цены, минимальный номинал и т.д.), получаемых из Binance API.</p>
+ *
+ * <p>Используется для нормализации ордеров и проверки ограничений перед отправкой на биржу.</p>
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -23,11 +31,22 @@ public class ExchangeMetadataService {
     private final BinanceClient binanceClient;
     private final Map<String, SymbolConstraints> cache = new ConcurrentHashMap<>();
 
+    /**
+     * Инициализация кеша после старта приложения.
+     *
+     * <p>Вызывается автоматически при готовности Spring контекста.</p>
+     */
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
         refreshCache();
     }
 
+    /**
+     * Периодическое обновление кеша метаданных биржи.
+     *
+     * <p>По умолчанию выполняется раз в 6 часов (21600000 мс).</p>
+     * <p>Обновляет параметры всех доступных торговых символов.</p>
+     */
     @Scheduled(fixedRateString = "${exchange.metadata.refresh-rate:21600000}") // Default 6 hours
     public void refreshCache() {
         log.info("[METADATA] Refreshing exchange info cache...");
@@ -48,6 +67,15 @@ public class ExchangeMetadataService {
         }
     }
 
+    /**
+     * Возвращает ограничения торгового символа.
+     *
+     * <p>Сначала выполняется поиск в локальном кеше.
+     * Если данные отсутствуют — выполняется ленивый запрос к API.</p>
+     *
+     * @param symbol торговый символ
+     * @return ограничения символа, если доступны
+     */
     public Optional<SymbolConstraints> getConstraints(String symbol) {
         SymbolConstraints constraints = cache.get(symbol);
         if (constraints == null) {
@@ -57,6 +85,14 @@ public class ExchangeMetadataService {
         return Optional.of(constraints);
     }
 
+    /**
+     * Ленивое получение метаданных символа с биржи.
+     *
+     * <p>Используется как fallback при отсутствии данных в кеше.</p>
+     *
+     * @param symbol торговый символ
+     * @return ограничения символа, если удалось загрузить
+     */
     private Optional<SymbolConstraints> lazyLoadSymbol(String symbol) {
         try {
             Map<String, Object> response = binanceClient.get("/api/v3/exchangeInfo", Map.of("symbol", symbol), Map.class, false);
@@ -72,12 +108,20 @@ public class ExchangeMetadataService {
         return Optional.empty();
     }
 
+    /**
+     * Парсинг параметров символа из ответа Binance и сохранение в кеш.
+     *
+     * <p>Извлекает фильтры LOT_SIZE, PRICE_FILTER и NOTIONAL.</p>
+     *
+     * @param symbolData сырые данные символа из API
+     * @return объект ограничений символа
+     */
     private SymbolConstraints parseAndCacheSymbol(Map<String, Object> symbolData) {
         String symbol = (String) symbolData.get("symbol");
         List<Map<String, Object>> filters = (List<Map<String, Object>>) symbolData.get("filters");
-        
+
         SymbolConstraints.SymbolConstraintsBuilder builder = SymbolConstraints.builder().symbol(symbol);
-        
+
         for (Map<String, Object> filter : filters) {
             String filterType = (String) filter.get("filterType");
             switch (filterType) {
@@ -89,7 +133,7 @@ public class ExchangeMetadataService {
                 case "NOTIONAL" -> builder.minNotional(new BigDecimal((String) filter.get("minNotional")));
             }
         }
-        
+
         SymbolConstraints constraints = builder.build();
         if (constraints.getStepSize() != null) {
             cache.put(symbol, constraints);

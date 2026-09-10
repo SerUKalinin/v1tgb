@@ -28,22 +28,80 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * Outbox consumer, отвечающий за исполнение ордера.
+ * <p>
+ * Является ядром execution pipeline:
+ * <ul>
+ *   <li>claim execution</li>
+ *   <li>отправка ордера на биржу</li>
+ *   <li>commit результата исполнения</li>
+ *   <li>публикация событий исполнения</li>
+ * </ul>
+ * <p>
+ * Обеспечивает идемпотентность, контроль владения executionId и
+ * защиту от повторной обработки событий.
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class OrderExecutionHandler implements OutboxConsumer {
 
+    /**
+     * Порт исполнения ордеров на внешней бирже.
+     */
     private final ExecutionPort executionPort;
+
+    /**
+     * Репозиторий ордеров (порт доменного слоя).
+     */
     private final OrderRepositoryPort orderRepository;
+
+    /**
+     * Менеджер состояния системы (gating execution).
+     */
     private final SystemStateManager stateManager;
+
+    /**
+     * Сервис блокировок исполнения.
+     */
     private final ExecutionLockService lockService;
+
+    /**
+     * Сервис компенсации риска при неуспешном исполнении.
+     */
     private final OrderCompensationService orderCompensationService;
+
+    /**
+     * Outbox сервис для публикации событий.
+     */
     private final OutboxService outboxService;
+
+    /**
+     * Валидатор допустимых переходов состояния ордера.
+     */
     private final TransitionValidator transitionValidator;
+
+    /**
+     * Логгер execution событий.
+     */
     private final ExecutionLogger executionLogger;
+
+    /**
+     * Порт claim execution (идемпотентное резервирование исполнения).
+     */
     private final ExecutionClaimPort executionClaimPort;
+
+    /**
+     * JSON mapper для десериализации событий.
+     */
     private final ObjectMapper objectMapper;
 
+    /**
+     * Обработка события ORDER_CREATED из outbox.
+     * <p>
+     * Выполняет полный lifecycle исполнения ордера.
+     */
     @Override
     public boolean supports(String eventType) {
         return "ORDER_CREATED".equals(eventType);
@@ -55,11 +113,13 @@ public class OrderExecutionHandler implements OutboxConsumer {
         ExecutionContext baseContext = ExecutionContext.from(event);
         ExecutionContext context = baseContext.withTransportRetry();
         ExecutionLogContext.load(context);
+
         try {
             Optional<Order> orderOpt = claimOrder(event, context, payload);
             if (orderOpt.isEmpty()) {
                 return;
             }
+
             Order order = orderOpt.get();
             String lockKey = "EXEC_ORDER_" + order.getId();
 
@@ -99,8 +159,12 @@ public class OrderExecutionHandler implements OutboxConsumer {
         }
     }
 
+    /**
+     * Claim ордера для исполнения (idempotent + transactional boundary).
+     */
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public Optional<Order> claimOrder(OutboxEventEntity event, ExecutionContext context, OrderCreatedEvent payload) {
+
         if (stateManager != null && !stateManager.isReady()) {
             throw new IllegalStateException("System not ready for execution");
         }
@@ -136,15 +200,22 @@ public class OrderExecutionHandler implements OutboxConsumer {
         return orderOpt;
     }
 
+    /**
+     * Финальный commit результата исполнения ордера.
+     * <p>
+     * Обновляет агрегат Order, публикует outbox события,
+     * фиксирует lock и обеспечивает идемпотентность.
+     */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void commitExecution(OutboxEventEntity event, ExecutionContext context, Order order, ExecutionResult result, String lockKey) {
+
         ExecutionOwnershipValidator.validateExecutionOwnership(order, context.attempt().executionId());
 
-        // Idempotency guard: terminal/stable states — safe NOOP
         if (order.getStatus() == OrderStatus.FILLED
                 || order.getStatus() == OrderStatus.PARTIALLY_FILLED
                 || order.getStatus() == OrderStatus.REJECTED
                 || order.getStatus() == OrderStatus.CANCELED) {
+
             log.info("[EXECUTION-IDEMPOTENT-SKIP] Order {} already in terminal state {}. Skipping commit.",
                     order.getId(), order.getStatus());
             return;
@@ -154,17 +225,8 @@ public class OrderExecutionHandler implements OutboxConsumer {
         ExecutionContext completionContext = context.withNextStep(completionEventId);
 
         switch (result.getStatus()) {
-            case FILLED -> order.fill(
-                    context,
-                    result.getExchangeOrderId(),
-                    result.getExecutedQty(),
-                    result.getExecutedPrice()
-            );
-            case PARTIALLY_FILLED -> order.applyPartialFill(
-                    context,
-                    result.getExecutedQty(),
-                    result.getExecutedPrice()
-            );
+            case FILLED -> order.fill(context, result.getExchangeOrderId(), result.getExecutedQty(), result.getExecutedPrice());
+            case PARTIALLY_FILLED -> order.applyPartialFill(context, result.getExecutedQty(), result.getExecutedPrice());
             case ACCEPTED -> order.markAccepted(context, result.getExchangeOrderId());
             case REJECTED -> {
                 order.markAsRejected(context, result.getErrorMessage());
@@ -180,25 +242,35 @@ public class OrderExecutionHandler implements OutboxConsumer {
         orderRepository.save(order);
         publishCompletionEvent(completionContext, order, result);
         lockService.markExecuted(lockKey);
+
         log.info("[EXECUTION-SUCCESS] Order committed. Context: {}", completionContext);
     }
 
+    /**
+     * Публикация completion event в outbox.
+     */
     private void publishCompletionEvent(ExecutionContext completionContext, Order order, ExecutionResult result) {
         String eventType = resolveCompletionEventType(order, result);
         Object payload = OrderExecutedEvent.from(order);
         outboxService.publishEvent(completionContext, "ORDER", eventType, payload);
     }
 
+    /**
+     * Определение типа события завершения исполнения.
+     */
     private String resolveCompletionEventType(Order order, ExecutionResult result) {
         if (result.getStatus() == ExecutionResult.Status.FILLED) {
             boolean hasRealExecution = order.getExecutedQuantity() != null
                     && order.getAveragePrice() != null;
+
             if (!hasRealExecution) {
                 log.error("[INVARIANT-VIOLATION] FILLED result but no execution data. orderId={}, status={}",
                         order.getId(), order.getStatus());
             }
+
             return hasRealExecution ? "ORDER_EXECUTED" : "ORDER_COMPLETED";
         }
+
         return switch (result.getStatus()) {
             case PARTIALLY_FILLED -> "ORDER_PARTIALLY_FILLED";
             case ACCEPTED -> "ORDER_ACCEPTED";
@@ -209,6 +281,9 @@ public class OrderExecutionHandler implements OutboxConsumer {
         };
     }
 
+    /**
+     * Обработка случая, когда ордер уже был обработан ранее.
+     */
     private void handleAlreadyProcessed(OutboxEventEntity event) {
         orderRepository.findById(event.getSignalId()).ifPresent(order -> {
             if (transitionValidator.isProcessed(order.getStatus())) {
