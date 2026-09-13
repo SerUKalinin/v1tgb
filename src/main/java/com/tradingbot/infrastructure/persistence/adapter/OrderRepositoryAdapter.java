@@ -54,30 +54,53 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
      */
     @Override
     @Transactional(propagation = Propagation.REQUIRED)
-    public Optional<Order> claimForExecutionInCurrentTransaction(UUID orderId, ExecutionContext context) {
+    public Optional<Order> claimForExecutionInCurrentTransaction(
+            UUID orderId,
+            ExecutionContext context
+    ) {
         return orderRepository.findByIdForUpdate(orderId).flatMap(entity -> {
+
             if (transitionValidator.isTerminal(entity.getStatus())) {
                 return Optional.empty();
             }
 
-            boolean isStale = transitionValidator.isStale(entity.getStatus(), entity.getExecutionStartedAt());
+            boolean isStale = transitionValidator.isStale(
+                    entity.getStatus(),
+                    entity.getExecutionStartedAt()
+            );
+
             if (entity.getStatus() != OrderStatus.PENDING_EXECUTION && !isStale) {
                 return Optional.empty();
             }
 
             Order order = orderMapper.toDomain(entity);
+
             UUID incomingExecutionId = context.attempt().executionId();
             UUID existingExecutionId = order.getExecutionId();
-            if (existingExecutionId != null && !existingExecutionId.equals(incomingExecutionId)) {
-                log.warn("Execution id mismatch for order {}: existing={}, incoming={}",
-                        orderId, existingExecutionId, incomingExecutionId);
+
+            if (existingExecutionId == null) {
+                throw new IllegalStateException(
+                        "Order " + orderId + " has no executionId"
+                );
             }
 
-            order.assignExecutionOwner(incomingExecutionId);
+            if (!existingExecutionId.equals(incomingExecutionId)) {
+                log.warn(
+                        "Execution id mismatch for order {}: existing={}, incoming={}",
+                        orderId,
+                        existingExecutionId,
+                        incomingExecutionId
+                );
+                return Optional.empty();
+            }
+
             order.markExecuting(context);
+
             orderMapper.updateEntity(order, entity);
             entity.setUpdatedAt(Instant.now());
+
             orderRepository.saveAndFlush(entity);
+
             return Optional.of(order);
         });
     }

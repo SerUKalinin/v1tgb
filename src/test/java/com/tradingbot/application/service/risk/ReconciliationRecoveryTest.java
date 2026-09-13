@@ -50,10 +50,8 @@ class ReconciliationRecoveryTest {
 
     @Test
     void shouldRecoverStuckUnknownOrderToFilled() {
-        // 1. Arrange: Order in UNKNOWN state (e.g. after exchange timeout)
         UUID orderId = UUID.randomUUID();
         UUID signalId = UUID.randomUUID();
-        UUID executionId = UUID.randomUUID();
 
         Order order = Order.createPendingExecution(
                 orderId, "client-1", "BTCUSDT",
@@ -63,8 +61,9 @@ class ReconciliationRecoveryTest {
                 "strat-1", signalId
         );
 
-        // Manually move to UNKNOWN to simulate timeout
-        order.assignExecutionOwner(executionId);
+        UUID executionId = order.getExecutionId();
+
+// Manually move to UNKNOWN to simulate timeout
         ExecutionContext context = ExecutionContext.of(order);
         order.markExecuting(context);
         order.markAsUnknown(context);

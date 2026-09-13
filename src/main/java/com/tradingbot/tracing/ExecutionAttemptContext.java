@@ -63,7 +63,15 @@ public record ExecutionAttemptContext(
     }
 
     public ExecutionAttemptContext nextStep(UUID stepCausationId) {
-        UUID stepExecutionId = IdentityFactory.derive(stepCausationId, "step-" + (this.attemptNumber));
-        return new ExecutionAttemptContext(stepExecutionId, stepCausationId, this.attemptNumber);
+        Objects.requireNonNull(
+                stepCausationId,
+                "stepCausationId cannot be null"
+        );
+
+        return new ExecutionAttemptContext(
+                this.executionId,
+                stepCausationId,
+                this.attemptNumber
+        );
     }
 }

@@ -74,16 +74,17 @@ class ReconciliationServiceIsolationTest {
     void shouldRecoverUnknownOrderToFilled() {
         UUID orderId = UUID.randomUUID();
         UUID signalId = UUID.randomUUID();
-        UUID executionId = UUID.randomUUID();
 
         Order order = Order.createPendingExecution(
                 orderId, "client-123", "BTCUSDT",
                 OrderSide.BUY, OrderType.MARKET,
                 BigDecimal.ONE, BigDecimal.TEN,
-                "strategy-1", signalId);
+                "strategy-1", signalId
+        );
 
-        // Simulate: order was sent to exchange, timed out → UNKNOWN
-        order.assignExecutionOwner(executionId);
+        UUID executionId = order.getExecutionId();
+
+// Simulate: order was sent to exchange, timed out → UNKNOWN
         ExecutionContext context = ExecutionContext.of(order);
         order.markExecuting(context);
         order.markAsUnknown(context);
@@ -111,16 +112,17 @@ class ReconciliationServiceIsolationTest {
     void shouldSkipReconciliationWhenOrderIsAlreadyFilled() {
         UUID orderId = UUID.randomUUID();
         UUID signalId = UUID.randomUUID();
-        UUID executionId = UUID.randomUUID();
 
         Order order = Order.createPendingExecution(
                 orderId, "client-123", "BTCUSDT",
                 OrderSide.BUY, OrderType.MARKET,
                 BigDecimal.ONE, BigDecimal.TEN,
-                "strategy-1", signalId);
+                "strategy-1", signalId
+        );
 
-        // Move to FILLED terminal state
-        order.assignExecutionOwner(executionId);
+        UUID executionId = order.getExecutionId();
+
+// Move to FILLED terminal state
         ExecutionContext context = ExecutionContext.of(order);
         order.markExecuting(context);
         order.fill(context, "ex-123", BigDecimal.ONE, BigDecimal.TEN);
