@@ -20,9 +20,7 @@ import java.util.UUID;
 
 @Repository
 public interface OrderRepository extends JpaRepository<OrderEntity, UUID> {
-    List<OrderEntity> findBySymbol(String symbol);
     Optional<OrderEntity> findByClientOrderId(String clientOrderId);
-    boolean existsBySignalId(UUID signalId);
     @Lock(LockModeType.PESSIMISTIC_WRITE)    @QueryHints({@QueryHint(name = "jakarta.persistence.lock.timeout", value = "-2")})
     @Query("SELECT o FROM OrderEntity o WHERE o.id = :id")
     Optional<OrderEntity> findByIdForUpdate(@Param("id") UUID id);
@@ -33,16 +31,6 @@ public interface OrderRepository extends JpaRepository<OrderEntity, UUID> {
     @Query("SELECT o FROM OrderEntity o WHERE o.status = :status AND o.createdAt < :threshold")
     List<OrderEntity> findStuckOrders(@Param("status") com.tradingbot.common.enums.OrderStatus status, @Param("threshold") Instant threshold);
 
-    @Modifying(clearAutomatically = true)
-    @Transactional
-    @Query("UPDATE OrderEntity o SET o.status = :status, o.exchangeOrderId = :exchangeOrderId, " +
-            "o.executedQuantity = :executedQuantity, o.averagePrice = :averagePrice, o.executionId = :executionId, o.version = o.version + 1 " +
-            "WHERE o.id = :id AND o.version = :version")
-    int updateExecutionState(@Param("id") UUID id,
-                             @Param("status") com.tradingbot.common.enums.OrderStatus status,
-                             @Param("exchangeOrderId") String exchangeOrderId,
-                             @Param("executedQuantity") BigDecimal executedQuantity,
-                             @Param("averagePrice") BigDecimal averagePrice,
-                             @Param("executionId") UUID executionId,
-                             @Param("version") long version);
+    Optional<OrderEntity> findBySignalId(UUID signalId);
+    long countBySignalId(UUID signalId);
 }

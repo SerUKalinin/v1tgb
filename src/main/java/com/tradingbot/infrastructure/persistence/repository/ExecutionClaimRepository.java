@@ -11,4 +11,4 @@ import java.util.UUID;
 public interface ExecutionClaimRepository extends JpaRepository<ExecutionClaimEntity, UUID> {
     boolean existsBySignalId(UUID signalId);
     boolean existsByExecutionId(UUID executionId);
-}
+    long countBySignalId(UUID signalId);}

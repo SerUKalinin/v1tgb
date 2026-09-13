@@ -1,6 +1,9 @@
 package com.tradingbot.domain.risk;
 
-import com.tradingbot.application.risk.RiskStateStore;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -29,9 +32,6 @@ class RiskServiceTest {
     @Mock
     private RiskReservationLogPort riskReservationLogPort;
 
-    @Mock
-    private RiskStateStore riskStateStore;
-
     @InjectMocks
     private RiskService riskService;
 
@@ -42,6 +42,15 @@ class RiskServiceTest {
                 .halted(false)
                 .version(0L)
                 .build();
+    }
+
+    private ExecutionContext createContext(UUID orderId) {
+        UUID signalId = UUID.randomUUID();
+        return new ExecutionContext(
+                IdentityContext.of(signalId),
+                ExecutionAttemptContext.firstAttempt(signalId),
+                BusinessContext.of(orderId.toString())
+        );
     }
 
     @Test
@@ -67,7 +76,6 @@ class RiskServiceTest {
         verify(riskStatePort, never()).save(any());
         verify(riskStatePort, never()).markEventProcessed(any(), any(), any());
         verify(riskReservationLogPort, never()).append(any());
-        verify(riskStateStore, never()).updateCache(any());
     }
 
     @Test
@@ -84,11 +92,10 @@ class RiskServiceTest {
         UUID orderId = UUID.randomUUID();
         BigDecimal amount = new BigDecimal("1000");
 
-        RiskDecision decision = riskService.reserve(orderId, amount);
+        RiskDecision decision = riskService.reserve(createContext(orderId), amount);
 
         assertThat(decision.isApproved()).isTrue();
 
-        verify(riskStatePort).save(any());
         verify(riskStatePort).markEventProcessed(any(), eq(newState), any());
 
         verify(riskReservationLogPort).append(argThat(log ->
@@ -96,8 +103,6 @@ class RiskServiceTest {
                         log.amount().compareTo(amount) == 0 &&
                         log.eventType() == RiskReservationEventType.RESERVE
         ));
-
-        verify(riskStateStore).updateCache(eq(newState));
     }
 
     @Test
@@ -116,6 +121,5 @@ class RiskServiceTest {
 
         verifyNoInteractions(reducer);
         verifyNoInteractions(riskReservationLogPort);
-        verifyNoInteractions(riskStateStore);
     }
 }

@@ -9,7 +9,11 @@ import java.math.BigDecimal;
 import java.time.Instant;
 
 /**
- * Модель свечи (OHLCV).
+ * Модель торговой свечи (OHLCV).
+ * <p>
+ * Представляет агрегированные рыночные данные за фиксированный временной интервал:
+ * open, high, low, close и volume. Используется в аналитике, стратегиях и
+ * торговых решениях.
  */
 @Data
 @Builder
@@ -18,76 +22,84 @@ import java.time.Instant;
 public class Candle {
 
     /**
-     * Торговый символ.
+     * Торговый символ инструмента.
      */
     String symbol;
 
     /**
-     * Цена открытия.
+     * Цена открытия периода.
      */
     BigDecimal open;
 
     /**
-     * Максимальная цена.
+     * Максимальная цена за период.
      */
     BigDecimal high;
 
     /**
-     * Минимальная цена.
+     * Минимальная цена за период.
      */
     BigDecimal low;
 
     /**
-     * Цена закрытия.
+     * Цена закрытия периода.
      */
     BigDecimal close;
 
     /**
-     * Объём торгов.
+     * Объём торгов за период.
      */
     BigDecimal volume;
 
     /**
-     * Время открытия свечи.
+     * Время начала формирования свечи.
      */
     Instant openTime;
 
     /**
-     * Время закрытия свечи.
+     * Время завершения формирования свечи.
      */
     Instant closeTime;
 
     /**
-     * Флаг закрытости свечи.
+     * Признак завершённости свечи.
+     * true — свеча закрыта и не изменяется,
+     * false — свеча ещё формируется.
      */
     boolean isClosed;
 
     /**
      * Возвращает время открытия свечи.
      *
-     * @return время открытия
+     * @return время открытия свечи
      */
     public Instant getOpenTime() {
         return openTime;
     }
 
     /**
-     * Создаёт новую свечу.
+     * Создаёт экземпляр свечи.
      *
      * @param symbol    торговый символ
      * @param open      цена открытия
      * @param high      максимальная цена
      * @param low       минимальная цена
      * @param close     цена закрытия
-     * @param volume    объём
+     * @param volume    объём торгов
      * @param openTime  время открытия
      * @param closeTime время закрытия
-     * @param isClosed  флаг закрытости
+     * @param isClosed  признак завершённости свечи
      * @return новая свеча
      */
-    public static Candle of(String symbol, BigDecimal open, BigDecimal high, BigDecimal low,
-                            BigDecimal close, BigDecimal volume, Instant openTime,
-                            Instant closeTime, boolean isClosed) {
+    public static Candle of(String symbol,
+                            BigDecimal open,
+                            BigDecimal high,
+                            BigDecimal low,
+                            BigDecimal close,
+                            BigDecimal volume,
+                            Instant openTime,
+                            Instant closeTime,
+                            boolean isClosed) {
         return new Candle(symbol, open, high, low, close, volume, openTime, closeTime, isClosed);
     }
 }

@@ -6,9 +6,27 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+/**
+ * Репозиторий для управления idempotency-lock'ами исполнения.
+ *
+ * <p>Обеспечивает атомарную фиксацию стадий выполнения операции
+ * через optimistic/conditional updates на уровне БД.</p>
+ *
+ * <p>Используется для защиты от повторного выполнения одной и той же
+ * бизнес-команды (signal/order/execution pipeline).</p>
+ */
 @Repository
 public interface ExecutionLockRepository extends JpaRepository<ExecutionLockEntity, String> {
 
+    /**
+     * Создаёт lock-запись в состоянии CLAIMED, если её ещё не существует.
+     *
+     * <p>Использует ON CONFLICT DO NOTHING для обеспечения идемпотентности
+     * на уровне базы данных.</p>
+     *
+     * @param key idempotency key (уникальный ключ операции)
+     * @return количество вставленных строк (1 если создан, 0 если уже существует)
+     */
     @Modifying
     @Query(value = """
         INSERT INTO execution_lock (idempotency_key, state, created_at)
@@ -17,6 +35,14 @@ public interface ExecutionLockRepository extends JpaRepository<ExecutionLockEnti
         """, nativeQuery = true)
     int insertLock(@Param("key") String key);
 
+    /**
+     * Переводит lock в состояние EXECUTING.
+     *
+     * <p>Операция выполняется только если текущий статус CLAIMED.</p>
+     *
+     * @param key idempotency key
+     * @return количество обновлённых строк (1 если переход успешен)
+     */
     @Modifying
     @Query(value = """
         UPDATE execution_lock
@@ -26,6 +52,14 @@ public interface ExecutionLockRepository extends JpaRepository<ExecutionLockEnti
         """, nativeQuery = true)
     int updateToExecuting(@Param("key") String key);
 
+    /**
+     * Переводит lock в состояние EXECUTED после успешного завершения операции.
+     *
+     * <p>Операция выполняется только если текущий статус EXECUTING.</p>
+     *
+     * @param key idempotency key
+     * @return количество обновлённых строк (1 если переход успешен)
+     */
     @Modifying
     @Query(value = """
         UPDATE execution_lock

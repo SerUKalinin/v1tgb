@@ -10,8 +10,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Сервис восстановления состояния после перезапуска.
- * Синхронизирует открытые позиции и ордера с биржей.
+ * Сервис восстановления состояния торговой системы после перезапуска.
+ *
+ * <p>Отвечает за первичную синхронизацию состояния позиций и балансов
+ * между локальной системой и биржевым источником данных.</p>
+ *
+ * <p>Используется на этапе cold start / recovery для обеспечения
+ * консистентности состояния после рестарта приложения.</p>
  */
 @Service
 @Slf4j
@@ -22,23 +27,35 @@ public class OrderRecoveryService {
     private final OrderManagementService oms;
 
     /**
-     * Синхронизация позиций с Binance.
-     * В реальном приложении вызывается при старте.
+     * Выполняет восстановление позиций на основе актуальных данных с биржи.
+     *
+     * <p>Алгоритм:
+     * <ul>
+     *     <li>получение балансов с биржи</li>
+     *     <li>сопоставление с локальными символами</li>
+     *     <li>логирование расхождений</li>
+     * </ul>
+     *
+     * <p>Фактическая reconciliation-логика (сверка и корректировка PositionService)
+     * должна выполняться на уровне доменного reconciliation pipeline.</p>
+     *
+     * @param symbols список торговых символов для восстановления
      */
     public void recoverPositions(List<String> symbols) {
         log.info("[RECOVERY] Starting position recovery for symbols: {}", symbols);
-        
+
         try {
             Map<String, BigDecimal> balances = executionPort.getBalances();
 
             for (String symbol : symbols) {
-                // Упрощенно: ищем базовый актив символа (например, BTC для BTCUSDT)
-                String baseAsset = symbol.replace("USDT", ""); 
-                
+                // Упрощенно: извлекаем базовый актив (BTC из BTCUSDT)
+                String baseAsset = symbol.replace("USDT", "");
+
                 if (balances.containsKey(baseAsset)) {
                     BigDecimal total = balances.get(baseAsset);
                     log.info("[RECOVERY] Found balance for {}: total={}", baseAsset, total);
-                    // Здесь должна быть логика сверки с локальной БД и корректировки PositionService
+
+                    // NOTE: здесь должна быть доменная reconciliation логика
                 }
             }
         } catch (Exception e) {

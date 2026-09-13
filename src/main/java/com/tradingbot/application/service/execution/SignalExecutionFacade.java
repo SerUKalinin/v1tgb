@@ -11,10 +11,17 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * <h1>SignalExecutionFacade</h1>
- *
- * <p>Точка входа для обработки торговых сигналов.
- * Обеспечивает бизнес-дедупликацию (SignalClaim) и инициирует создание ордера.
+ * Фасад обработки торговых сигналов.
+ * <p>
+ * Является точкой входа в execution pipeline и отвечает за:
+ * <ul>
+ *     <li>идемпотентность на уровне бизнес-сигналов (SignalClaim)</li>
+ *     <li>инициализацию execution context</li>
+ *     <li>делегирование создания ордера в application layer</li>
+ *     <li>управление жизненным циклом обработки сигнала</li>
+ * </ul>
+ * <p>
+ * Гарантирует, что один сигнал будет обработан только один раз.
  */
 @Slf4j
 @Component
@@ -24,26 +31,35 @@ public class SignalExecutionFacade {
     private final SignalClaimPort signalClaimPort;
     private final OrderApplicationService orderApplicationService;
 
+    /**
+     * Обрабатывает торговый сигнал и инициирует создание ордера.
+     *
+     * @param signal торговый сигнал из доменного слоя
+     */
     @Transactional
     public void execute(SignalEvent signal) {
-        // 1. Бизнес-дедупликация: проверяем, не обрабатывался ли этот сигнал ранее
+
+        // 1. Проверка идемпотентности сигнала
         if (signalClaimPort.exists(signal.getSignalId())) {
             log.debug("[DUPLICATE_SIGNAL] signalId={} ignored", signal.getSignalId());
             return;
         }
 
-        // 2. Инициализация контекста выполнения (Root Identity)
+        // 2. Инициализация execution контекста
         ExecutionContext context = signal.getExecutionContext();
         ExecutionLogContext.load(context);
+
         try {
-            // 3. Фиксация клейма сигнала (SignalClaim protects business creation)
+            // 3. Фиксация сигнала как обработанного
             signalClaimPort.claim(signal.getSignalId());
             log.info("[SIGNAL_CLAIMED] signalId={}", signal.getSignalId());
 
             // 4. Создание ордера и запуск бизнес-цепочки
             orderApplicationService.handleSignal(signal);
             log.info("[ORDER_CREATED] signalId={}", signal.getSignalId());
-        } catch (Exception e) {            log.error("[SIGNAL_PROCESSING_FAILED] signalId={} msg={}",
+
+        } catch (Exception e) {
+            log.error("[SIGNAL_PROCESSING_FAILED] signalId={} msg={}",
                     signal.getSignalId(),
                     e.getMessage(),
                     e);

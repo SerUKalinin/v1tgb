@@ -4,13 +4,18 @@ import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.domain.risk.RiskState;
 import com.tradingbot.domain.risk.RiskStatePort;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.UUID;
@@ -30,30 +35,47 @@ class PartialTransactionRollbackSafetyTest {
     @Autowired
     private RiskStatePort riskStatePort;
 
-    @org.springframework.boot.test.context.TestConfiguration
+    @TestConfiguration
     static class TestConfig {
-        @org.springframework.context.annotation.Bean
-        public TransactionalTestService transactionalTestService() {
-            return new TransactionalTestService();
+        @Bean
+        public TransactionalTestService transactionalTestService(
+                RiskService riskService,
+                OutboxService outboxService
+        ) {
+            return new TransactionalTestService(riskService, outboxService);
         }
     }
 
     public static class TransactionalTestService {
-        @Autowired
-        private RiskService riskService;
-        @Autowired
-        private OutboxService outboxService;
+        private final RiskService riskService;
+        private final OutboxService outboxService;
+
+        public TransactionalTestService(RiskService riskService, OutboxService outboxService) {
+            this.riskService = riskService;
+            this.outboxService = outboxService;
+        }
 
         @Transactional
         public void executeWithFailure(UUID orderId, BigDecimal amount) {
+            ExecutionContext context = createContext(orderId);
+
             // 1. Резервируем капитал
-            riskService.reserve(orderId, amount);
+            riskService.reserve(context, amount);
 
             // 2. Пишем в Outbox
-            outboxService.publishEvent(orderId, "ORDER", "RESERVED", "payload");
+            outboxService.publishEvent(context, "ORDER", "RESERVED", "payload");
 
             // 3. Искусственный сбой
             throw new RuntimeException("Simulated DB failure before commit");
+        }
+
+        private ExecutionContext createContext(UUID orderId) {
+            UUID signalId = UUID.randomUUID();
+            return new ExecutionContext(
+                    IdentityContext.of(signalId),
+                    ExecutionAttemptContext.firstAttempt(signalId),
+                    BusinessContext.of(orderId.toString())
+            );
         }
     }
 
@@ -63,7 +85,7 @@ class PartialTransactionRollbackSafetyTest {
         // Given
         UUID orderId = UUID.randomUUID();
         BigDecimal amount = new BigDecimal("100.00");
-        
+
         RiskState initialState = riskStatePort.get();
         BigDecimal initialReserved = initialState.getReservedMargin();
 
@@ -73,16 +95,18 @@ class PartialTransactionRollbackSafetyTest {
         });
 
         // Then
-        // 1. Проверяем Outbox - событий быть не должно
+        // 1. Проверяем Outbox — событий быть не должно
         long outboxCount = outboxRepository.findAll().stream()
                 .filter(e -> orderId.equals(e.getAggregateId()))
                 .count();
         assertEquals(0, outboxCount, "Outbox event MUST be rolled back");
 
-        // 2. Проверяем Risk State - резерв не должен измениться
+        // 2. Проверяем Risk State — резерв не должен измениться
         RiskState finalState = riskStatePort.get();
-        assertEquals(initialReserved.stripTrailingZeros(), 
-                     finalState.getReservedMargin().stripTrailingZeros(), 
-                     "Risk reservation MUST be rolled back");
+        assertEquals(
+                initialReserved != null ? initialReserved.stripTrailingZeros() : BigDecimal.ZERO.stripTrailingZeros(),
+                finalState.getReservedMargin() != null ? finalState.getReservedMargin().stripTrailingZeros() : BigDecimal.ZERO.stripTrailingZeros(),
+                "Risk reservation MUST be rolled back"
+        );
     }
 }

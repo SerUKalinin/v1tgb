@@ -13,23 +13,48 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Детектор перехода свечи в закрытое состояние.
- * <p>
- * Гарантирует, что каждая свеча будет обработана ровно один раз.
- * Использует {@link ConcurrentHashMap#compute} для потокобезопасности.
+ *
+ * Отвечает за определение факта появления новой закрытой свечи
+ * в потоке рыночных данных.
+ *
+ * Гарантирует, что каждая свеча будет обработана строго один раз,
+ * даже при конкурентной обработке потоков.
+ *
+ * Использует комбинацию:
+ * - in-memory cache (ConcurrentHashMap)
+ * - внешнего репозитория идемпотентности (ProcessedCandleRepository)
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class CandleTransitionDetector {
 
+    /**
+     * Кэш последних обработанных свечей по символу.
+     *
+     * Key: торговый символ (например BTCUSDT)
+     * Value: openTime последней обработанной свечи
+     */
     private final ConcurrentHashMap<String, Instant> lastProcessed = new ConcurrentHashMap<>();
+
+    /**
+     * Репозиторий идемпотентности для гарантии,
+     * что свеча не будет обработана повторно даже после рестарта.
+     */
     private final ProcessedCandleRepository processedCandleRepository;
 
     /**
      * Проверяет, является ли последняя свеча в окне новой закрытой свечой.
      *
+     * Алгоритм:
+     * 1. Проверка готовности окна
+     * 2. Получение последней свечи
+     * 3. Сверка с in-memory состоянием
+     * 4. Фиксация через persistent repository (идемпотентность)
+     * 5. Генерация события при первом обнаружении
+     *
      * @param window окно свечей
-     * @return Optional с событием, если обнаружена новая закрытая свеча
+     * @return Optional события новой закрытой свечи
      */
     public Optional<NewClosedCandleEvent> detect(CandleWindow window) {
         if (!window.isReady()) {
@@ -67,8 +92,14 @@ public class CandleTransitionDetector {
 
         return Optional.empty();
     }
+
     /**
-     * Сбрасывает состояние обработки для указанного символа.
+     * Сбрасывает in-memory состояние обработки для указанного символа.
+     *
+     * Используется при:
+     * - пересинхронизации рынка
+     * - холодном старте
+     * - сбросе состояния стратегии
      *
      * @param symbol торговый символ
      */

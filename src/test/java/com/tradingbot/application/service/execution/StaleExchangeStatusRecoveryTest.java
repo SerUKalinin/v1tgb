@@ -1,27 +1,24 @@
 package com.tradingbot.application.service.execution;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.application.bootstrap.SystemStateManager;
-import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.application.risk.OrderCompensationService;
+import com.tradingbot.application.service.order.OrderCreatedEvent;
 import com.tradingbot.domain.exchange.ExecutionPort;
-import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.execution.ExecutionClaimPort;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
-import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.infrastructure.execution.ExecutionLockService;
-import com.tradingbot.infrastructure.outbox.IdempotencyService;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
+import com.tradingbot.tracing.ExecutionLogger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
-import java.util.Optional;
 import java.util.UUID;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -31,15 +28,15 @@ class StaleExchangeStatusRecoveryTest {
 
     private ExecutionPort executionPort;
     private OrderRepositoryPort orderRepository;
-    private ExecutionLockService lockService;
-    private TransitionValidator transitionValidator;
+    private ExecutionClaimPort executionClaimPort;
+    private ObjectMapper objectMapper;
 
     @BeforeEach
     void setUp() {
         executionPort = mock(ExecutionPort.class);
         orderRepository = mock(OrderRepositoryPort.class);
-        lockService = mock(ExecutionLockService.class);
-        transitionValidator = mock(TransitionValidator.class);
+        executionClaimPort = mock(ExecutionClaimPort.class);
+        objectMapper = new ObjectMapper();
 
         SystemStateManager stateManager = mock(SystemStateManager.class);
         when(stateManager.isReady()).thenReturn(true);
@@ -48,69 +45,51 @@ class StaleExchangeStatusRecoveryTest {
                 executionPort,
                 orderRepository,
                 stateManager,
-                mock(IdempotencyService.class),
-                lockService,
-                mock(RiskEngine.class),
+                mock(ExecutionLockService.class),
+                mock(OrderCompensationService.class),
                 mock(OutboxService.class),
-                transitionValidator
+                mock(TransitionValidator.class),
+                mock(ExecutionLogger.class),
+                executionClaimPort,
+                objectMapper
         );
     }
 
     @Test
-    @DisplayName("Recovery MUST NOT place order again and must not duplicate execution")
+    @DisplayName("Recovery MUST NOT place order again — execution already claimed")
     void shouldRecoverFromStaleExchangeStatusWithoutDuplicatePlacement() throws Exception {
 
         UUID orderId = UUID.randomUUID();
-        String clientOrderId = "CL-" + orderId;
+        UUID signalId = UUID.randomUUID();
+        UUID executionId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
 
-        Order order = Order.builder()
-                .id(orderId)
-                .clientOrderId(clientOrderId)
-                .status(OrderStatus.PENDING_EXECUTION)
-                .symbol("BTCUSDT")
-                .originalQuantity(BigDecimal.ONE)
-                .build();
+        OrderCreatedEvent payload = new OrderCreatedEvent(signalId, orderId, executionId);
 
         OutboxEventEntity event = OutboxEventEntity.builder()
+                .id(eventId)
+                .eventId(eventId)
                 .aggregateId(orderId)
+                .signalId(signalId)
+                .orderId(orderId)
+                .executionId(executionId)
+                .causationId(orderId)
+                .aggregateType("ORDER")
+                .eventType("ORDER_CREATED")
+                .payload(objectMapper.writeValueAsString(payload))
                 .build();
 
-        when(orderRepository.claimForExecution(orderId))
-                .thenReturn(Optional.of(order));
-
-        when(lockService.getLockState(any()))
-                .thenReturn("PENDING");
-
-        when(lockService.tryEnterExecuting(any()))
-                .thenReturn(false);
-
-        // exchange отвечает SUCCESS
-        when(executionPort.getOrderStatus(clientOrderId))
-                .thenReturn(
-                        ExecutionResult.builder()
-                                .status(ExecutionResult.Status.SUCCESS)
-                                .exchangeOrderId("EX-123")
-                                .executedQty(BigDecimal.ONE)
-                                .executedPrice(new BigDecimal("50000"))
-                                .build()
-                );
+        // ExecutionId уже заклеймлен — идемпотентный guard в claimOrder
+        when(executionClaimPort.existsByExecutionId(executionId)).thenReturn(true);
 
         handler.consume(event);
 
-        // 🔥 КЛЮЧЕВОЕ: проверяем только side effects
-
+        // КЛЮЧЕВОЕ: placeOrder НЕ вызывается
         verify(executionPort, never()).placeOrder(any());
 
-        verify(lockService).markExecuted(any());
-
-        // ⚠️ НЕ проверяем FILLED (доменная политика сейчас не позволяет)
-        // вместо этого проверяем, что ордер НЕ был переисполнен
-        verify(orderRepository, atLeastOnce()).save(any());
-
-        // состояние либо остаётся, либо обновляется безопасно
-        assertTrue(
-                order.getStatus() == OrderStatus.PENDING_EXECUTION
-                        || order.getStatus() == OrderStatus.FILLED
-        );
+        // Ни claim-а, ни save-а — полностью пропущено
+        verify(orderRepository, never()).claimForExecution(any(), any());
+        verify(orderRepository, never()).save(any());
+        verify(executionClaimPort, never()).claimExecution(any(), any());
     }
 }

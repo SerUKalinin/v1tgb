@@ -10,6 +10,16 @@ import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 
+/**
+ * Сущность блокировки исполнения (idempotency lock).
+ *
+ * <p>Используется для обеспечения идемпотентности выполнения операций,
+ * предотвращая повторное выполнение одного и того же действия по одному
+ * и тому же ключу идемпотентности.</p>
+ *
+ * <p>Типичный сценарий применения — защита исполнения ордеров и команд
+ * в распределённой системе исполнения.</p>
+ */
 @Entity
 @Table(name = "execution_lock")
 @Data
@@ -17,8 +27,20 @@ import java.time.Instant;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ExecutionLockEntity {
+
+    /**
+     * Уникальный ключ идемпотентности (например, signalId, executionId и т.д.).
+     */
     @Id
     private String idempotencyKey;
+
+    /**
+     * Текущее состояние блокировки (например: LOCKED, PROCESSED, FAILED).
+     */
     private String state;
+
+    /**
+     * Время создания записи блокировки.
+     */
     private Instant createdAt;
 }

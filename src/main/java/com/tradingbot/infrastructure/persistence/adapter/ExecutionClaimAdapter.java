@@ -14,10 +14,17 @@ import java.util.UUID;
 import static org.springframework.transaction.annotation.Propagation.REQUIRES_NEW;
 
 /**
- * <h1>ExecutionClaimAdapter</h1>
+ * Адаптер для управления технической идемпотентностью выполнения.
  *
- * <p>Адаптер для управления технической идемпотентностью исполнения.
- * Гарантирует, что конкретный executionId (попытка) будет выполнен только один раз.
+ * <p>Реализует механизм execution/signal claim на уровне БД для предотвращения:
+ * <ul>
+ *     <li>дублирующего исполнения одного signalId</li>
+ *     <li>дублирующего исполнения одного executionId</li>
+ *     <li>race condition при параллельных попытках обработки</li>
+ * </ul>
+ *
+ * <p>Гарантия достигается через уникальные ограничения в БД + обработку
+ * {@link DataIntegrityViolationException}.
  */
 @Slf4j
 @Component
@@ -26,6 +33,13 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
 
     private final ExecutionClaimRepository repository;
 
+    /**
+     * Захватывает сигнал для исполнения.
+     *
+     * <p>Если сигнал уже был захвачен ранее — операция завершается без ошибок.
+     *
+     * @param signalId идентификатор сигнала
+     */
     @Override
     @Transactional(propagation = REQUIRES_NEW)
     public void claimSignal(UUID signalId) {
@@ -46,6 +60,12 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
         }
     }
 
+    /**
+     * Захватывает executionId для гарантии одноразового исполнения.
+     *
+     * @param executionId уникальный идентификатор исполнения
+     * @param signalId    идентификатор исходного сигнала
+     */
     @Override
     @Transactional(propagation = REQUIRES_NEW)
     public void claimExecution(UUID executionId, UUID signalId) {
@@ -66,16 +86,25 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
         }
     }
 
+    /**
+     * Проверяет существование execution claim по executionId.
+     */
     @Override
     public boolean existsByExecutionId(UUID executionId) {
         return repository.existsByExecutionId(executionId);
     }
 
+    /**
+     * Проверяет существование execution claim по signalId.
+     */
     @Override
     public boolean existsBySignalId(UUID signalId) {
         return repository.existsBySignalId(signalId);
     }
 
+    /**
+     * Определяет, является ли ошибка дубликатом claim по signalId.
+     */
     private boolean isSignalAlreadyClaimed(DataIntegrityViolationException e) {
         Throwable cause = e.getMostSpecificCause();
         if (cause == null || cause.getMessage() == null) {
@@ -87,6 +116,9 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
                 || (message.contains("unique") && message.contains("signal_id"));
     }
 
+    /**
+     * Определяет, является ли ошибка дубликатом claim по executionId.
+     */
     private boolean isExecutionAlreadyClaimed(DataIntegrityViolationException e) {
         Throwable cause = e.getMostSpecificCause();
         if (cause == null || cause.getMessage() == null) {

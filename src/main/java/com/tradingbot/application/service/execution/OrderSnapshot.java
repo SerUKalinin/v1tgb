@@ -12,11 +12,17 @@ import java.util.UUID;
 
 /**
  * Полностью неизменяемый снимок состояния ордера.
- * Используется в TransitionContext для гарантии отсутствия побочных эффектов.
+ * <p>
+ * Используется как DTO уровня исполнения (TransitionContext),
+ * чтобы гарантировать отсутствие побочных эффектов и мутаций доменной модели
+ * при обработке переходов состояния ордера.
+ * <p>
+ * Представляет собой снапшот ключевых параметров ордера в момент создания.
  */
 @Getter
 @Builder
 public final class OrderSnapshot {
+
     private final UUID id;
     private final String clientOrderId;
     private final String symbol;
@@ -29,6 +35,12 @@ public final class OrderSnapshot {
     private final BigDecimal executedQuantity;
     private final BigDecimal averagePrice;
 
+    /**
+     * Создаёт неизменяемый снимок состояния ордера из доменной модели.
+     *
+     * @param order доменный объект ордера
+     * @return неизменяемый OrderSnapshot, отражающий текущее состояние ордера
+     */
     public static OrderSnapshot from(Order order) {
         return OrderSnapshot.builder()
                 .id(order.getId())

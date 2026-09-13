@@ -18,6 +18,19 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.UUID;
 
+/**
+ * Адаптер для работы с состоянием рисков через JPA репозитории.
+ *
+ * <p>Реализует {@link RiskStatePort} и обеспечивает:
+ * <ul>
+ *     <li>Загрузку и сохранение единственного состояния риска ({@link RiskState})</li>
+ *     <li>Отслеживание и логирование обработанных событий риска ({@link RiskEvent})</li>
+ *     <li>Идемпотентное применение событий</li>
+ * </ul></p>
+ *
+ * <p>Использует паттерн singleton entity для RiskState, гарантируя,
+ * что существует только одна запись состояния системы.</p>
+ */
 @Component
 @RequiredArgsConstructor
 @Primary
@@ -29,8 +42,16 @@ public class RiskStateRepositoryAdapter implements RiskStatePort {
     private final RiskStateMapper riskStateMapper;
     private final ObjectMapper objectMapper;
 
+    /** ID единственного агрегата RiskState */
     private static final String AGGREGATE_ID = RiskStateEntity.SINGLETON_ID;
 
+    /**
+     * Возвращает текущее состояние рисков.
+     *
+     * <p>Если запись состояния отсутствует, создается новая с нулевыми значениями.</p>
+     *
+     * @return текущее состояние риска
+     */
     @Override
     @Transactional
     public RiskState get() {
@@ -38,6 +59,13 @@ public class RiskStateRepositoryAdapter implements RiskStatePort {
         return riskStateMapper.toDomain(entity);
     }
 
+    /**
+     * Сохраняет текущее состояние риска.
+     *
+     * <p>Обновляет поля существующей сущности и фиксирует время обновления.</p>
+     *
+     * @param state состояние риска для сохранения
+     */
     @Override
     @Transactional
     public void save(RiskState state) {
@@ -47,11 +75,26 @@ public class RiskStateRepositoryAdapter implements RiskStatePort {
         riskStateRepository.saveAndFlush(entity);
     }
 
+    /**
+     * Проверяет, обработано ли событие риска.
+     *
+     * @param eventId идентификатор события
+     * @return true, если событие уже обработано
+     */
     @Override
     public boolean isEventProcessed(UUID eventId) {
         return eventRepository.existsByEventId(eventId);
     }
 
+    /**
+     * Помечает событие риска как обработанное и сохраняет его в репозиторий.
+     *
+     * <p>Если событие уже существует, обновляет текущее состояние риска.</p>
+     *
+     * @param eventId идентификатор события
+     * @param state текущее состояние риска
+     * @param event событие риска
+     */
     @Override
     @Transactional
     public void markEventProcessed(UUID eventId, RiskState state, RiskEvent event) {
@@ -80,6 +123,13 @@ public class RiskStateRepositoryAdapter implements RiskStatePort {
         }
     }
 
+    /**
+     * Загружает существующее состояние риска или инициализирует новое.
+     *
+     * <p>Используется для реализации singleton pattern и защиты от гонок создания записи.</p>
+     *
+     * @return сущность состояния риска
+     */
     private RiskStateEntity loadOrInit() {
         return riskStateRepository.findByIdForUpdate(AGGREGATE_ID)
                 .orElseGet(() -> {

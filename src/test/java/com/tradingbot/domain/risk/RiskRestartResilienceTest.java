@@ -2,8 +2,13 @@ package com.tradingbot.domain.risk;
 
 import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.application.risk.RiskStateStore;
+import com.tradingbot.domain.risk.RiskState;
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
+import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,10 +38,7 @@ public class RiskRestartResilienceTest {
     private TransactionTemplate transactionTemplate;
 
     private void simulateRestart() {
-        // Очищаем кэш в памяти, имитируя потерю состояния при перезагрузке
         riskStateStore.clearCache();
-        // При следующем вызове riskEngine.getState() или publish() 
-        // состояние будет загружено из БД через RiskRepository
     }
 
     @BeforeEach
@@ -50,13 +52,26 @@ public class RiskRestartResilienceTest {
         });
     }
 
+    /**
+     * Создаёт ExecutionContext, привязанный к конкретному orderId.
+     * orderId извлекается из context.business().orderId() внутри RiskService.
+     */
+    private ExecutionContext createContext(UUID orderId) {
+        UUID signalId = UUID.randomUUID();
+        return new ExecutionContext(
+                IdentityContext.of(signalId),
+                ExecutionAttemptContext.firstAttempt(signalId),
+                BusinessContext.of(orderId.toString())
+        );
+    }
+
     @Test
     void shouldMaintainReservationsAcrossRestartScenario() {
         UUID orderId = UUID.randomUUID();
         BigDecimal reserveAmount = new BigDecimal("1500.00");
 
         // 1. Reserve capital
-        riskEngine.reserve(orderId, reserveAmount);
+        riskEngine.reserve(createContext(orderId), reserveAmount);
 
         // Verify initial state
         RiskState stateBefore = riskEngine.getState();
@@ -65,8 +80,8 @@ public class RiskRestartResilienceTest {
         // 2. Simulate Restart
         simulateRestart();
 
-        // 3. Release capital (должно загрузить состояние из БД и успешно обработать)
-        riskEngine.release(orderId, reserveAmount, "ORDER_FILLED");
+        // 3. Release capital (состояние загрузится из БД)
+        riskEngine.release(createContext(orderId), reserveAmount, "ORDER_FILLED");
 
         // 4. Verify final state
         RiskState stateAfter = riskEngine.getState();
@@ -80,10 +95,13 @@ public class RiskRestartResilienceTest {
         BigDecimal amount = new BigDecimal("1000.00");
 
         // First reserve
-        riskEngine.reserve(orderId, amount);
+        riskEngine.reserve(createContext(orderId), amount);
+
+        // Simulate restart — восстанавливаем состояние из БД
+        simulateRestart();
 
         // Second reserve with same orderId (Idempotency check)
-        riskEngine.reserve(orderId, amount);
+        riskEngine.reserve(createContext(orderId), amount);
 
         RiskState state = getDbState();
         assertThat(state.getReserved()).isEqualByComparingTo(amount); // Не 2000!
@@ -95,11 +113,8 @@ public class RiskRestartResilienceTest {
 
     private RiskState getDbState() {
         return transactionTemplate.execute(status -> {
-            // Используем константу из Entity для поиска
             riskStateRepository.findById(RiskStateEntity.SINGLETON_ID)
                     .orElseThrow(() -> new IllegalStateException("Risk state not found in DB"));
-
-            // Возвращаем актуальное состояние через движок (который загрузит его из репозитория)
             return riskEngine.getState();
         });
     }
