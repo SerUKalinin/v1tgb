@@ -286,10 +286,24 @@ public class OrderExecutionHandler implements OutboxConsumer {
     /**
      * Публикация completion event в outbox.
      */
-    private void publishCompletionEvent(ExecutionContext completionContext, Order order, ExecutionResult result) {
+    private void publishCompletionEvent(
+            ExecutionContext completionContext,
+            Order order,
+            ExecutionResult result
+    ) {
         String eventType = resolveCompletionEventType(order, result);
-        Object payload = OrderExecutedEvent.from(order);
-        outboxService.publishEvent(completionContext, "ORDER", eventType, payload);
+
+        Object payload = OrderExecutedEvent.from(
+                order,
+                result.getExchangeTradeId()
+        );
+
+        outboxService.publishEvent(
+                completionContext,
+                "ORDER",
+                eventType,
+                payload
+        );
     }
 
     /**

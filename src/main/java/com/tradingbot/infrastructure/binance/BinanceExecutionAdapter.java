@@ -175,6 +175,23 @@ public class BinanceExecutionAdapter implements ExecutionPort {
         ExecutionResult.Status mappedStatus =
                 BinanceStatusMapper.mapBinanceStatus(status);
 
+        String exchangeTradeId = extractExchangeTradeId(response);
+
+        if (mappedStatus == ExecutionResult.Status.FILLED) {
+            return ExecutionResult.filled(
+                    order.getId(),
+                    exchangeOrderId,
+                    exchangeTradeId,
+                    order.getSymbol(),
+                    order.getSide(),
+                    executedQty,
+                    executedPrice,
+                    BigDecimal.ZERO,
+                    "USDT",
+                    order.getClientOrderId()
+            );
+        }
+
         return ExecutionResult.of(
                 order.getId(),
                 exchangeOrderId,
@@ -185,6 +202,29 @@ public class BinanceExecutionAdapter implements ExecutionPort {
                         ? null
                         : status
         );
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractExchangeTradeId(Map response) {
+        Object fillsObject = response.get("fills");
+
+        if (!(fillsObject instanceof java.util.List<?> fills)) {
+            return null;
+        }
+
+        for (Object fillObject : fills) {
+            if (!(fillObject instanceof Map<?, ?> fill)) {
+                continue;
+            }
+
+            Object tradeId = fill.get("tradeId");
+
+            if (tradeId != null && !tradeId.toString().isBlank()) {
+                return tradeId.toString();
+            }
+        }
+
+        return null;
     }
 
     @SuppressWarnings("unchecked")

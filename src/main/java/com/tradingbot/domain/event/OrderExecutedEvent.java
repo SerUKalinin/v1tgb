@@ -42,6 +42,7 @@ public class OrderExecutedEvent {
     BigDecimal price;
     OrderStatus status;
     String rejectionReason;
+    String exchangeTradeId;
 
     Instant timestamp;
 
@@ -54,7 +55,7 @@ public class OrderExecutedEvent {
      * @param order доменный ордер
      * @return OrderExecutedEvent
      */
-    public static OrderExecutedEvent from(Order order) {
+    public static OrderExecutedEvent from(Order order, String exchangeTradeId) {
 
         ExecutionContext context = ExecutionContext.of(order);
 
@@ -68,6 +69,7 @@ public class OrderExecutedEvent {
                 .price(order.getAveragePrice())
                 .status(order.getStatus())
                 .rejectionReason(order.getRejectionReason())
+                .exchangeTradeId(exchangeTradeId)
                 .timestamp(Instant.now())
                 .build();
     }
