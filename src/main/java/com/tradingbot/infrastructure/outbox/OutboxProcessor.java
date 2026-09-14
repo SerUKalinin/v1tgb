@@ -130,36 +130,50 @@ public class OutboxProcessor implements ApplicationContextAware {
 
             for (Map.Entry<UUID, List<OutboxEventEntity>> entry : groupedEvents.entrySet()) {
                 UUID aggregateId = entry.getKey();
+                List<OutboxEventEntity> aggregateEvents = entry.getValue();
 
-                executionLogger.log(com.tradingbot.tracing.ExecutionLogFactory.forEvent(
-                        aggregateId,
-                        aggregateId,
-                        aggregateId,
-                        com.tradingbot.tracing.ExecutionEventType.OUTBOX_CLAIM_START,
-                        "CLAIMED",
-                        "Claimed outbox aggregate " + aggregateId
-                ));
+                OutboxEventEntity firstEvent = aggregateEvents.get(0);
+
+                executionLogger.log(
+                        com.tradingbot.tracing.ExecutionLogFactory.forEvent(
+                                firstEvent.getExecutionId(),
+                                firstEvent.getOrderId(),
+                                firstEvent.getSignalId(),
+                                com.tradingbot.tracing.ExecutionEventType.OUTBOX_CLAIM_START,
+                                "CLAIMED",
+                                "Claimed outbox aggregate " + aggregateId
+                        )
+                );
 
                 if (shuttingDown) break;
 
                 // Проверка на параллельную обработку одного агрегата
                 if (!activeAggregates.add(aggregateId)) {
-                    log.debug("[OUTBOX] Aggregate {} is already being processed, skipping batch", aggregateId);
+                    log.debug(
+                            "[OUTBOX] Aggregate {} is already being processed, skipping batch",
+                            aggregateId
+                    );
                     continue;
                 }
 
                 try {
-                    List<OutboxEventEntity> aggregateEvents = entry.getValue();
-
                     // Проверка целостности последовательности событий
                     if (outboxRepository.existsUnprocessedBefore(
                             aggregateId,
-                            aggregateEvents.get(0).getSequenceNumber())) {
-                        log.warn("[OUTBOX] Gap detected for aggregate {}, skipping batch", aggregateId);
+                            aggregateEvents.get(0).getSequenceNumber()
+                    )) {
+                        log.warn(
+                                "[OUTBOX] Gap detected for aggregate {}, skipping batch",
+                                aggregateId
+                        );
                         continue;
                     }
 
-                    log.debug("[OUTBOX] Processing {} events for aggregate {}", aggregateEvents.size(), aggregateId);
+                    log.debug(
+                            "[OUTBOX] Processing {} events for aggregate {}",
+                            aggregateEvents.size(),
+                            aggregateId
+                    );
 
                     for (OutboxEventEntity event : aggregateEvents) {
                         if (shuttingDown) break;
@@ -172,11 +186,15 @@ public class OutboxProcessor implements ApplicationContextAware {
             }
 
         } catch (org.springframework.dao.InvalidDataAccessResourceUsageException e) {
-            if (shuttingDown || (e.getMessage() != null && e.getMessage().contains("outbox_events"))) {
+            if (shuttingDown
+                    || (e.getMessage() != null
+                    && e.getMessage().contains("outbox_events"))) {
+
                 log.debug("[OUTBOX] Shutdown or missing table");
             } else {
                 log.error("[OUTBOX] Database error: {}", e.getMessage());
             }
+
         } catch (Exception e) {
             if (shuttingDown) {
                 log.debug("[OUTBOX] Error during shutdown: {}", e.getMessage());
