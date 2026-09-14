@@ -4,6 +4,7 @@ import com.tradingbot.tracing.ExecutionContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
+import com.tradingbot.tracing.IdentityFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -46,18 +47,48 @@ public class OutboxService {
      * @param payload       объект события для сериализации
      */
     @Transactional
-    public void publishEvent(ExecutionContext context, String aggregateType, String eventType, Object payload) {
+    public void publishEvent(
+            ExecutionContext context,
+            String aggregateType,
+            String eventType,
+            Object payload
+    ) {
         try {
-            // Outbox = прямое отражение ExecutionContext
-            UUID eventId = context.attempt().executionId();
+            UUID executionId = context.attempt().executionId();
 
-            // Проверка на дубликат перед вставкой (идемпотентность по executionId)
+            /*
+             * executionId = identity всего execution lifecycle.
+             *
+             * eventId = identity конкретного события внутри lifecycle.
+             *
+             * Один executionId может иметь несколько событий:
+             * ORDER_CREATED, ORDER_ACCEPTED, ORDER_EXECUTED,
+             * ORDER_REJECTED, ORDER_CANCELED и т.д.
+             */
+            UUID eventId =
+                    IdentityFactory.deriveEventId(
+                            executionId,
+                            eventType
+                    );
+
+            /*
+             * Идемпотентность должна работать по identity
+             * конкретного Outbox-события, а не по execution lifecycle.
+             */
             if (outboxRepository.existsById(eventId)) {
-                log.info("[OUTBOX-SKIP] Event with executionId {} already exists. Skipping.", eventId);
+                log.info(
+                        "[OUTBOX-SKIP] Event already exists. eventId={}, executionId={}, eventType={}",
+                        eventId,
+                        executionId,
+                        eventType
+                );
                 return;
             }
 
-            long nextSequence = outboxRepository.getNextSequenceNumber(context.aggregateId());
+            long nextSequence =
+                    outboxRepository.getNextSequenceNumber(
+                            context.aggregateId()
+                    );
 
             OutboxEventEntity event = OutboxEventEntity.builder()
                     .id(eventId)
@@ -71,15 +102,42 @@ public class OutboxService {
                     .createdAt(Instant.now())
                     .schemaVersion(1)
                     .signalId(context.signalId())
-                    .orderId(UUID.fromString(context.business().orderId()))
-                    .executionId(context.attempt().executionId())
-                    .causationId(context.attempt().causationId())
-                    .correlationId(context.identity().correlationId())
+                    .orderId(
+                            UUID.fromString(
+                                    context.business().orderId()
+                            )
+                    )
+                    .executionId(executionId)
+                    .causationId(
+                            context.attempt().causationId()
+                    )
+                    .correlationId(
+                            context.identity().correlationId()
+                    )
                     .build();
+
             outboxRepository.save(event);
+
+            log.debug(
+                    "[OUTBOX-PUBLISHED] eventId={}, executionId={}, eventType={}, aggregateId={}",
+                    eventId,
+                    executionId,
+                    eventType,
+                    context.aggregateId()
+            );
+
         } catch (Exception e) {
-            log.error("[OUTBOX-STRICT-ERROR] Context: {}, Event: {}", context, eventType, e);
-            throw new RuntimeException("Outbox publication failed due to identity/causality violation", e);
+            log.error(
+                    "[OUTBOX-STRICT-ERROR] Context: {}, Event: {}",
+                    context,
+                    eventType,
+                    e
+            );
+
+            throw new RuntimeException(
+                    "Outbox publication failed due to identity/causality violation",
+                    e
+            );
         }
     }
 }
