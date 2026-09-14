@@ -177,15 +177,20 @@ public class RiskService {
     public void publish(RiskEvent event) {
         RiskState state = riskStatePort.get();
 
-        if (state.isHalted() && !(event instanceof RiskEvent.TradingHalted)) {
+        if (state.isHalted()
+                && !(event instanceof RiskEvent.TradingHalted)) {
             return;
         }
 
         UUID eventId;
         try {
-            eventId = UUID.fromString(event.getEventId());
+            eventId = UUID.fromString(
+                    event.getEventId()
+            );
         } catch (IllegalArgumentException e) {
-            eventId = UUID.nameUUIDFromBytes(event.getEventId().getBytes());
+            eventId = UUID.nameUUIDFromBytes(
+                    event.getEventId().getBytes()
+            );
         }
 
         if (riskStatePort.isEventProcessed(eventId)) {
@@ -193,19 +198,56 @@ public class RiskService {
         }
 
         BigDecimal reservedBefore = null;
+
         if (event instanceof RiskEvent.CapitalReleased e) {
-            reservedBefore = state.getActiveReservations().get(e.orderId());
+            reservedBefore =
+                    state.getActiveReservations()
+                            .get(e.orderId());
+
+        } else if (event instanceof RiskEvent.CapitalConsumed e) {
+            reservedBefore =
+                    state.getActiveReservations()
+                            .get(e.orderId());
         }
 
-        RiskState newState = reducer.reduce(state, event);
-        riskStatePort.markEventProcessed(eventId, newState, event);
+        RiskState newState =
+                reducer.reduce(
+                        state,
+                        event
+                );
+
+        riskStatePort.markEventProcessed(
+                eventId,
+                newState,
+                event
+        );
 
         if (event instanceof RiskEvent.CapitalReserved e) {
-            logReservation(e.orderId(), RiskReservationEventType.RESERVE, e.amount());
+            logReservation(
+                    e.orderId(),
+                    RiskReservationEventType.RESERVE,
+                    e.amount()
+            );
         }
 
-        if (event instanceof RiskEvent.CapitalReleased e && reservedBefore != null) {
-            logReservation(e.orderId(), RiskReservationEventType.RELEASE, reservedBefore);
+        if (event instanceof RiskEvent.CapitalReleased e
+                && reservedBefore != null) {
+
+            logReservation(
+                    e.orderId(),
+                    RiskReservationEventType.RELEASE,
+                    reservedBefore
+            );
+        }
+
+        if (event instanceof RiskEvent.CapitalConsumed e
+                && reservedBefore != null) {
+
+            logReservation(
+                    e.orderId(),
+                    RiskReservationEventType.CONSUME,
+                    reservedBefore
+            );
         }
     }
 
@@ -253,6 +295,82 @@ public class RiskService {
         riskStatePort.markEventProcessed(eventId, newState, event);
         logReservation(orderId, RiskReservationEventType.RELEASE, amount);
         log.info("[RISK] Released {} for order {}, reason: {}", amount, orderId, reason);
+    }
+
+    /**
+     * Помечает reservation как использованную фактическим исполнением ордера.
+     *
+     * <p>
+     * В отличие от RELEASE этот метод не возвращает капитал
+     * в available balance. Он только удаляет reservation
+     * из activeReservations.
+     * </p>
+     *
+     * @param context execution context ордера
+     * @param reason причина использования reservation
+     */
+    public void consumeReservation(
+            ExecutionContext context,
+            String reason
+    ) {
+        UUID orderId =
+                UUID.fromString(
+                        context.business().orderId()
+                );
+
+        RiskState state =
+                riskStatePort.get();
+
+        BigDecimal reservedAmount =
+                state.getActiveReservations()
+                        .get(orderId);
+
+        if (reservedAmount == null) {
+            log.warn(
+                    "[RISK] No active reservation to consume for order {}",
+                    orderId
+            );
+            return;
+        }
+
+        UUID eventId =
+                IdentityFactory.deriveEventId(
+                        orderId,
+                        "capital-consumed"
+                );
+
+        RiskEvent.CapitalConsumed event =
+                new RiskEvent.CapitalConsumed(
+                        eventId.toString(),
+                        orderId,
+                        reservedAmount,
+                        reason
+                );
+
+        RiskState newState =
+                reducer.reduce(
+                        state,
+                        event
+                );
+
+        riskStatePort.markEventProcessed(
+                eventId,
+                newState,
+                event
+        );
+
+        logReservation(
+                orderId,
+                RiskReservationEventType.CONSUME,
+                reservedAmount
+        );
+
+        log.info(
+                "[RISK] Consumed reservation {} for order {}, reason: {}",
+                reservedAmount,
+                orderId,
+                reason
+        );
     }
 
     /**

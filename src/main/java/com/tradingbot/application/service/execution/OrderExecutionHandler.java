@@ -224,18 +224,56 @@ public class OrderExecutionHandler implements OutboxConsumer {
         ExecutionContext completionContext = context.withNextStep(completionEventId);
 
         switch (result.getStatus()) {
-            case FILLED -> order.fill(context, result.getExchangeOrderId(), result.getExecutedQty(), result.getExecutedPrice());
-            case PARTIALLY_FILLED -> order.applyPartialFill(context, result.getExecutedQty(), result.getExecutedPrice());
-            case ACCEPTED -> order.markAccepted(context, result.getExchangeOrderId());
-            case REJECTED -> {
-                order.markAsRejected(context, result.getErrorMessage());
-                orderCompensationService.releasePartial(order, order.getExecutedQuantity());
+            case FILLED -> {
+                order.fill(
+                        context,
+                        result.getExchangeOrderId(),
+                        result.getExecutedQty(),
+                        result.getExecutedPrice()
+                );
+
+                orderCompensationService.consumeReservation(
+                        order,
+                        "Order fully filled"
+                );
             }
+
+            case PARTIALLY_FILLED ->
+                    order.applyPartialFill(
+                            context,
+                            result.getExecutedQty(),
+                            result.getExecutedPrice()
+                    );
+
+            case ACCEPTED ->
+                    order.markAccepted(
+                            context,
+                            result.getExchangeOrderId()
+                    );
+
+            case REJECTED -> {
+                order.markAsRejected(
+                        context,
+                        result.getErrorMessage()
+                );
+
+                orderCompensationService.releasePartial(
+                        order,
+                        order.getExecutedQuantity()
+                );
+            }
+
             case CANCELED -> {
                 order.markCancelled(context);
-                orderCompensationService.releasePartial(order, order.getExecutedQuantity());
+
+                orderCompensationService.releasePartial(
+                        order,
+                        order.getExecutedQuantity()
+                );
             }
-            case EXCHANGE_STATE_UNKNOWN -> order.markAsUnknown(context);
+
+            case EXCHANGE_STATE_UNKNOWN ->
+                    order.markAsUnknown(context);
         }
 
         orderRepository.save(order);

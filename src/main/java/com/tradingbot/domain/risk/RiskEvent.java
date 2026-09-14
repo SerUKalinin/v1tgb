@@ -109,4 +109,39 @@ public interface RiskEvent {
         @Override public Instant getTimestamp() { return timestamp; }
         @Override public String getEventId() { return eventId; }
     }
+
+    /**
+     * Событие использования зарезервированного капитала
+     * фактическим исполнением ордера.
+     *
+     * <p>CONSUME удаляет reservation,
+     * но НЕ возвращает amount в available balance.
+     */
+    record CapitalConsumed(
+            String eventId,
+            java.util.UUID orderId,
+            BigDecimal amount,
+            String reason,
+            Instant timestamp
+    ) implements RiskEvent {
+
+        public CapitalConsumed(
+                String eventId,
+                java.util.UUID orderId,
+                BigDecimal amount,
+                String reason
+        ) {
+            this(eventId, orderId, amount, reason, Instant.now());
+        }
+
+        @Override
+        public Instant getTimestamp() {
+            return timestamp;
+        }
+
+        @Override
+        public String getEventId() {
+            return eventId;
+        }
+    }
 }

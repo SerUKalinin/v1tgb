@@ -60,6 +60,7 @@ public class RiskStateReducer {
                 case RiskEvent.TradingHalted e -> handleTradingHalted(currentState, e);
                 case RiskEvent.CapitalReserved e -> handleCapitalReserved(currentState, e);
                 case RiskEvent.CapitalReleased e -> handleCapitalReleased(currentState, e);
+                case RiskEvent.CapitalConsumed e -> handleCapitalConsumed(currentState, e);
                 default -> currentState;
             };
 
@@ -207,6 +208,48 @@ public class RiskStateReducer {
 
         return state.toBuilder()
                 .balance(MoneyMath.add(state.getBalance(), amountToRelease))
+                .activeReservations(Map.copyOf(newReservations))
+                .lastUpdateTimestamp(event.timestamp())
+                .build();
+    }
+
+    private RiskState handleCapitalConsumed(
+            RiskState state,
+            RiskEvent.CapitalConsumed event
+    ) {
+        BigDecimal reservedAmount =
+                state.getActiveReservations().get(event.orderId());
+
+        if (reservedAmount == null) {
+            log.warn(
+                    "[RiskReducer] Idempotency: No active reservation for order {}. Consume ignored.",
+                    event.orderId()
+            );
+
+            return state;
+        }
+
+        log.info(
+                "[RiskReducer] Consuming {} for order {} (Reason: {})",
+                reservedAmount,
+                event.orderId(),
+                event.reason()
+        );
+
+        Map<UUID, BigDecimal> newReservations =
+                new HashMap<>(state.getActiveReservations());
+
+        newReservations.remove(event.orderId());
+
+        /*
+         * КРИТИЧНО:
+         *
+         * balance НЕ изменяется.
+         *
+         * При FILLED зарезервированный капитал уже считается
+         * использованным исполнением.
+         */
+        return state.toBuilder()
                 .activeReservations(Map.copyOf(newReservations))
                 .lastUpdateTimestamp(event.timestamp())
                 .build();

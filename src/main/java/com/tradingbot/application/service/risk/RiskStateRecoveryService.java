@@ -129,10 +129,21 @@ public class RiskStateRecoveryService {
                 reservationLogRepository.findAllByOrderBySequenceIdAsc();
 
         for (RiskReservationLogEntity l : logs) {
-            if ("RESERVE".equals(l.getEventType())) {
-                reservations.put(l.getOrderId(), l.getAmount());
-            } else if ("RELEASE".equals(l.getEventType())) {
-                reservations.remove(l.getOrderId());
+            String eventType = l.getEventType();
+
+            if ("RESERVE".equals(eventType)) {
+                reservations.put(
+                        l.getOrderId(),
+                        l.getAmount()
+                );
+                continue;
+            }
+
+            if ("RELEASE".equals(eventType)
+                    || "CONSUME".equals(eventType)) {
+                reservations.remove(
+                        l.getOrderId()
+                );
             }
         }
 

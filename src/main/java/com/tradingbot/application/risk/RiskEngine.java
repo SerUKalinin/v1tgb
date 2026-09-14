@@ -53,6 +53,23 @@ public class RiskEngine {
     public void release(ExecutionContext context, BigDecimal amount, String reason) {
         riskService.release(context, amount, reason);
     }
+    /**
+     * Помечает reservation как использованную фактическим исполнением ордера.
+     *
+     * <p>
+     * CONSUME удаляет reservation, но не возвращает
+     * средства в available balance.
+     * </p>
+     */
+    public void consumeReservation(
+            ExecutionContext context,
+            String reason
+    ) {
+        riskService.consumeReservation(
+                context,
+                reason
+        );
+    }
 
     /**
      * Оценивает сигнал и возвращает соответствующий заказ, если он сформирован.

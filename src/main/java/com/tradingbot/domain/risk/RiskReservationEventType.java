@@ -16,5 +16,13 @@ public enum RiskReservationEventType {
     /**
      * Освобождение ранее зарезервированного капитала.
      */
-    RELEASE
-}
+    RELEASE,
+
+    /**
+     * Резерв был использован фактическим исполнением ордера.
+     *
+     * В отличие от RELEASE не возвращает сумму в available balance.
+     * Только удаляет reservation из activeReservations.
+     */
+    CONSUME
+    }

@@ -22,7 +22,8 @@ public record RiskReservationLog(
         String clientOrderId,
 
         /**
-         * Тип события резервирования (RESERVE / RELEASE).
+         * Тип события резервирования:
+         * RESERVE / RELEASE / CONSUME.
          */
         RiskReservationEventType eventType,
 

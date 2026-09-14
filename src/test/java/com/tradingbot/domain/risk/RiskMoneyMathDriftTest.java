@@ -56,4 +56,44 @@ public class RiskMoneyMathDriftTest {
         assertThat(state.getDailyPnl()).isEqualByComparingTo(expectedPnl);
         assertThat(state.getTotalEquity()).isEqualByComparingTo(new BigDecimal("10000.000000000000001000"));
     }
+
+    @Test
+    void consumeMustRemoveReservationWithoutReturningCapital() {
+        UUID orderId = UUID.randomUUID();
+
+        RiskState state = RiskState.builder()
+                .balance(new BigDecimal("9900"))
+                .totalEquity(new BigDecimal("10000"))
+                .maxEquity(new BigDecimal("10000"))
+                .dailyPnl(BigDecimal.ZERO)
+                .activeReservations(
+                        Map.of(
+                                orderId,
+                                new BigDecimal("100")
+                        )
+                )
+                .symbolExposures(Map.of())
+                .processedEventIds(Set.of())
+                .build();
+
+        RiskEvent.CapitalConsumed event =
+                new RiskEvent.CapitalConsumed(
+                        UUID.randomUUID().toString(),
+                        orderId,
+                        new BigDecimal("100"),
+                        "Order fully filled"
+                );
+
+        RiskState result =
+                reducer.reduce(
+                        state,
+                        event
+                );
+
+        assertThat(result.getActiveReservations())
+                .doesNotContainKey(orderId);
+
+        assertThat(result.getBalance())
+                .isEqualByComparingTo("9900");
+    }
 }

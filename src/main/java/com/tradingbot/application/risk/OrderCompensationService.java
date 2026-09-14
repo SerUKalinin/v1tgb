@@ -73,5 +73,31 @@ public class OrderCompensationService {
                 releaseAmount,
                 reason
         );
+
+
+    }
+
+    /**
+     * Фиксирует использование reservation фактическим исполнением ордера.
+     *
+     * <p>
+     * В отличие от release reservation капитал
+     * не возвращается в available balance.
+     * </p>
+     *
+     * @param order полностью исполненный ордер
+     * @param reason причина consume
+     */
+    public void consumeReservation(
+            Order order,
+            String reason
+    ) {
+        ExecutionContext context =
+                ExecutionContext.of(order);
+
+        riskEngine.consumeReservation(
+                context,
+                reason
+        );
     }
 }
