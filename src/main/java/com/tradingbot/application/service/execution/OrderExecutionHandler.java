@@ -3,7 +3,9 @@ package com.tradingbot.application.service.execution;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.application.risk.RiskEngine;
-import com.tradingbot.application.service.order.OrderCreatedEvent;import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.application.risk.OrderCompensationService;
+import com.tradingbot.application.service.order.OrderCreatedEvent;
+import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.event.OrderExecutedEvent;
 import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.execution.ExecutionClaimPort;
@@ -11,7 +13,6 @@ import com.tradingbot.domain.execution.ExecutionOwnershipValidator;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
-import com.tradingbot.domain.policy.OrderStateTransitionPolicy;
 import com.tradingbot.domain.policy.TransitionValidator;
 import com.tradingbot.infrastructure.execution.ExecutionLockService;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
@@ -28,49 +29,97 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * <h1>OrderExecutionHandler</h1>
- *
- * <p>Обработчик исполнения ордеров с поддержкой детерминированной идентичности.
- * Реализует цикл CLAIM -> EXECUTE -> COMMIT для обеспечения технической идемпотентности.
+ * Outbox consumer, отвечающий за исполнение ордера.
+ * <p>
+ * Является ядром execution pipeline:
+ * <ul>
+ *   <li>claim execution</li>
+ *   <li>отправка ордера на биржу</li>
+ *   <li>commit результата исполнения</li>
+ *   <li>публикация событий исполнения</li>
+ * </ul>
+ * <p>
+ * Обеспечивает идемпотентность, контроль владения executionId и
+ * защиту от повторной обработки событий.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class OrderExecutionHandler implements OutboxConsumer {
 
+    /**
+     * Порт исполнения ордеров на внешней бирже.
+     */
     private final ExecutionPort executionPort;
+
+    /**
+     * Репозиторий ордеров (порт доменного слоя).
+     */
     private final OrderRepositoryPort orderRepository;
+
+    /**
+     * Менеджер состояния системы (gating execution).
+     */
     private final SystemStateManager stateManager;
+
+    /**
+     * Сервис блокировок исполнения.
+     */
     private final ExecutionLockService lockService;
-    private final RiskEngine riskEngine;
+
+    /**
+     * Сервис компенсации риска при неуспешном исполнении.
+     */
+    private final OrderCompensationService orderCompensationService;
+
+    /**
+     * Outbox сервис для публикации событий.
+     */
     private final OutboxService outboxService;
+
+    /**
+     * Валидатор допустимых переходов состояния ордера.
+     */
     private final TransitionValidator transitionValidator;
+
+    /**
+     * Логгер execution событий.
+     */
     private final ExecutionLogger executionLogger;
+
+    /**
+     * Порт claim execution (идемпотентное резервирование исполнения).
+     */
     private final ExecutionClaimPort executionClaimPort;
+
+    /**
+     * JSON mapper для десериализации событий.
+     */
     private final ObjectMapper objectMapper;
 
-    @Override    public boolean supports(String eventType) {
+    /**
+     * Обработка события ORDER_CREATED из outbox.
+     * <p>
+     * Выполняет полный lifecycle исполнения ордера.
+     */
+    @Override
+    public boolean supports(String eventType) {
         return "ORDER_CREATED".equals(eventType);
     }
 
     @Override
     public void consume(OutboxEventEntity event) throws Exception {
-        // Десериализация в строго типизированный record
         OrderCreatedEvent payload = objectMapper.readValue(event.getPayload(), OrderCreatedEvent.class);
-
-        // Восстановление базового контекста из события
         ExecutionContext baseContext = ExecutionContext.from(event);
-
-        // TRANSPORT RETRY: Сохраняем тот же executionId для идемпотентности при повторах из Outbox
         ExecutionContext context = baseContext.withTransportRetry();
         ExecutionLogContext.load(context);
+
         try {
-            // PHASE 1: CLAIM (TX1 - REQUIRES_NEW)
-            // Проверяем и фиксируем право на выполнение данной попытки (executionId)
             Optional<Order> orderOpt = claimOrder(event, context, payload);
             if (orderOpt.isEmpty()) {
                 return;
             }
+
             Order order = orderOpt.get();
             String lockKey = "EXEC_ORDER_" + order.getId();
 
@@ -82,8 +131,6 @@ public class OrderExecutionHandler implements OutboxConsumer {
                     "Order claimed and execution starting"
             ));
 
-            // PHASE 2: EXTERNAL IO (NO TX)
-            // Выполнение сетевого запроса к бирже вне транзакции
             ExecutionResult result;
             try {
                 log.info("[EXECUTION-START] Placing order. Context: {}", context);
@@ -93,8 +140,6 @@ public class OrderExecutionHandler implements OutboxConsumer {
                 return;
             }
 
-            // PHASE 3: COMMIT (TX2)
-            // Фиксация результата исполнения в БД
             try {
                 commitExecution(event, context, order, result, lockKey);
             } catch (Exception e) {
@@ -114,8 +159,12 @@ public class OrderExecutionHandler implements OutboxConsumer {
         }
     }
 
+    /**
+     * Claim ордера для исполнения (idempotent + transactional boundary).
+     */
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public Optional<Order> claimOrder(OutboxEventEntity event, ExecutionContext context, OrderCreatedEvent payload) {
+
         if (stateManager != null && !stateManager.isReady()) {
             throw new IllegalStateException("System not ready for execution");
         }
@@ -131,7 +180,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
         if (signalId == null) {
             throw new IllegalStateException("Invariant violation: signalId is null in OrderCreatedEvent. SignalId is required for execution claim.");
         }
-        // Техническая идемпотентность: проверка по executionId (eventId-based запрещена)
+
         if (executionClaimPort.existsByExecutionId(executionId)) {
             log.info("[EXECUTION-SKIP] executionId {} already claimed. Skipping IO.", executionId);
             return Optional.empty();
@@ -140,10 +189,8 @@ public class OrderExecutionHandler implements OutboxConsumer {
         log.info("[EXECUTION-CLAIM-START] Attempting to claim execution. executionId={}, signalId={}, orderId={}",
                 executionId, signalId, orderId);
 
-        // Фиксируем клейм перед вызовом биржи. signalId обязателен.
         executionClaimPort.claimExecution(executionId, signalId);
 
-        // Блокируем ордер в БД
         Optional<Order> orderOpt = orderRepository.claimForExecution(orderId, context);
         if (orderOpt.isEmpty()) {
             handleAlreadyProcessed(event);
@@ -153,47 +200,90 @@ public class OrderExecutionHandler implements OutboxConsumer {
         return orderOpt;
     }
 
-    @Transactional
+    /**
+     * Финальный commit результата исполнения ордера.
+     * <p>
+     * Обновляет агрегат Order, публикует outbox события,
+     * фиксирует lock и обеспечивает идемпотентность.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void commitExecution(OutboxEventEntity event, ExecutionContext context, Order order, ExecutionResult result, String lockKey) {
-        // Проверка владения executionId перед коммитом
+
         ExecutionOwnershipValidator.validateExecutionOwnership(order, context.attempt().executionId());
 
-        // Переход в графе причинности для события завершения
+        if (order.getStatus() == OrderStatus.FILLED
+                || order.getStatus() == OrderStatus.PARTIALLY_FILLED
+                || order.getStatus() == OrderStatus.REJECTED
+                || order.getStatus() == OrderStatus.CANCELED) {
+
+            log.info("[EXECUTION-IDEMPOTENT-SKIP] Order {} already in terminal state {}. Skipping commit.",
+                    order.getId(), order.getStatus());
+            return;
+        }
+
         UUID completionEventId = IdentityFactory.deriveEventId(context.attempt().executionId(), "execution-completion");
         ExecutionContext completionContext = context.withNextStep(completionEventId);
 
-        if (result.getStatus() == ExecutionResult.Status.SUCCESS) {
-            order.fill(
-                    context,
-                    result.getExchangeOrderId(),
-                    result.getExecutedQty(),
-                    result.getExecutedPrice()
-            );
-        } else if (result.getStatus() == ExecutionResult.Status.REJECTED) {
-            order.markAsRejected(context, result.getErrorMessage());
-        } else if (result.getStatus() == ExecutionResult.Status.TIMEOUT) {
-            order.markAsUnknown(context);
-            log.warn("[EXECUTION-TIMEOUT] Order moved to UNKNOWN. Context: {}", context);
-        }
-
-        if (OrderStateTransitionPolicy.isTerminal(order.getStatus())) {
-            order.clearExecutionOwner();
+        switch (result.getStatus()) {
+            case FILLED -> order.fill(context, result.getExchangeOrderId(), result.getExecutedQty(), result.getExecutedPrice());
+            case PARTIALLY_FILLED -> order.applyPartialFill(context, result.getExecutedQty(), result.getExecutedPrice());
+            case ACCEPTED -> order.markAccepted(context, result.getExchangeOrderId());
+            case REJECTED -> {
+                order.markAsRejected(context, result.getErrorMessage());
+                orderCompensationService.releasePartial(order, order.getExecutedQuantity());
+            }
+            case CANCELED -> {
+                order.markCancelled(context);
+                orderCompensationService.releasePartial(order, order.getExecutedQuantity());
+            }
+            case EXCHANGE_STATE_UNKNOWN -> order.markAsUnknown(context);
         }
 
         orderRepository.save(order);
-
-        // Публикация события об исполнении
-        outboxService.publishEvent(
-                completionContext,
-                "ORDER",
-                "ORDER_EXECUTED",
-                OrderExecutedEvent.from(order)
-        );
-
+        publishCompletionEvent(completionContext, order, result);
         lockService.markExecuted(lockKey);
+
         log.info("[EXECUTION-SUCCESS] Order committed. Context: {}", completionContext);
     }
 
+    /**
+     * Публикация completion event в outbox.
+     */
+    private void publishCompletionEvent(ExecutionContext completionContext, Order order, ExecutionResult result) {
+        String eventType = resolveCompletionEventType(order, result);
+        Object payload = OrderExecutedEvent.from(order);
+        outboxService.publishEvent(completionContext, "ORDER", eventType, payload);
+    }
+
+    /**
+     * Определение типа события завершения исполнения.
+     */
+    private String resolveCompletionEventType(Order order, ExecutionResult result) {
+        if (result.getStatus() == ExecutionResult.Status.FILLED) {
+            boolean hasRealExecution = order.getExecutedQuantity() != null
+                    && order.getAveragePrice() != null;
+
+            if (!hasRealExecution) {
+                log.error("[INVARIANT-VIOLATION] FILLED result but no execution data. orderId={}, status={}",
+                        order.getId(), order.getStatus());
+            }
+
+            return hasRealExecution ? "ORDER_EXECUTED" : "ORDER_COMPLETED";
+        }
+
+        return switch (result.getStatus()) {
+            case PARTIALLY_FILLED -> "ORDER_PARTIALLY_FILLED";
+            case ACCEPTED -> "ORDER_ACCEPTED";
+            case REJECTED -> "ORDER_REJECTED";
+            case EXCHANGE_STATE_UNKNOWN -> "ORDER_TIMEOUT";
+            case CANCELED -> "ORDER_CANCELED";
+            default -> "ORDER_COMPLETED";
+        };
+    }
+
+    /**
+     * Обработка случая, когда ордер уже был обработан ранее.
+     */
     private void handleAlreadyProcessed(OutboxEventEntity event) {
         orderRepository.findById(event.getSignalId()).ifPresent(order -> {
             if (transitionValidator.isProcessed(order.getStatus())) {

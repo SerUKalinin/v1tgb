@@ -10,20 +10,36 @@ import java.util.List;
 
 /**
  * Роутер событий Outbox.
- * Находится в слое application и отвечает за маршрутизацию событий к конкретным обработчикам.
+ *
+ * Отвечает за распределение событий из Outbox между соответствующими обработчиками (consumers).
+ * Является частью application слоя и реализует механизм dispatching событий
+ * на основе их типа.
+ *
+ * Используется внутри OutboxProcessor для делегирования обработки бизнес-событий.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class OutboxEventRouter {
 
+    /**
+     * Список всех зарегистрированных consumers Outbox-событий.
+     *
+     * Spring автоматически инжектирует все бины, реализующие OutboxConsumer.
+     */
     private final List<OutboxConsumer> consumers;
 
     /**
-     * Маршрутизирует событие соответствующему потребителю.
-     * 
+     * Маршрутизирует событие соответствующему consumer'у по типу события.
+     *
+     * Алгоритм:
+     * 1. Определить тип события
+     * 2. Найти все consumers, поддерживающие данный тип
+     * 3. Передать событие в consume()
+     * 4. Зафиксировать факт отсутствия обработчиков (warning)
+     *
      * @param event сущность события из Outbox
-     * @throws Exception если обработчик выбросил исключение (для retry-логики)
+     * @throws Exception если consumer выбросил исключение (для retry-логики на уровне OutboxProcessor)
      */
     public void route(OutboxEventEntity event) throws Exception {
         String eventType = event.getEventType();

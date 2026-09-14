@@ -1,8 +1,12 @@
 package com.tradingbot.application.service.execution;
 
 import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.common.enums.OrderType;
+import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.entity.TradeEntity;
+import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
 import org.junit.jupiter.api.DisplayName;
@@ -33,7 +37,7 @@ class PositionRebuildFromTradesTest {
     private PositionRepository positionRepository;
 
     @Autowired
-    private com.tradingbot.infrastructure.persistence.repository.OrderRepository orderRepository;
+    private OrderRepository orderRepository;
 
     @Test
     @Transactional
@@ -43,26 +47,30 @@ class PositionRebuildFromTradesTest {
         String symbol = "BTCUSDT";
         String strategyId = "STRAT-1";
 
-        // Создаем родительский ордер для трейдов (обязательно для TradeEntity)
-        com.tradingbot.infrastructure.persistence.entity.OrderEntity order = new com.tradingbot.infrastructure.persistence.entity.OrderEntity();
-        order.setId(UUID.randomUUID());
-        order.setClientOrderId("ORD-" + UUID.randomUUID());
-        order.setSymbol(symbol);
-        order.setStrategyId(strategyId);
-        order.setSide(com.tradingbot.common.enums.OrderSide.BUY);
-        order.setType(com.tradingbot.common.enums.OrderType.MARKET);
-        order.setStatus(com.tradingbot.common.enums.OrderStatus.FILLED);
-        order.setQuantity(new BigDecimal("2.0"));
+        // OrderEntity через builder (id/clientOrderId/strategyId/signalId заблокированы setter'ами)
+        OrderEntity order = OrderEntity.builder()
+                .id(UUID.randomUUID())
+                .clientOrderId("ORD-" + UUID.randomUUID())
+                .signalId(UUID.randomUUID())
+                .symbol(symbol)
+                .strategyId(strategyId)
+                .side(OrderSide.BUY)
+                .type(OrderType.MARKET)
+                .status(OrderStatus.FILLED)
+                .quantity(new BigDecimal("2.0"))
+                .version(0L)
+                .executionAttempts(0)
+                .build();
         orderRepository.saveAndFlush(order);
 
         // 1. BUY 1 BTC @ 50000
         createTrade(order, symbol, strategyId, OrderSide.BUY, "1.0", "50000");
-        // 2. BUY 1 BTC @ 60000 (Avg Price should be 55000)
+        // 2. BUY 1 BTC @ 60000 (Avg Price = 55000)
         createTrade(order, symbol, strategyId, OrderSide.BUY, "1.0", "60000");
         // 3. SELL 0.5 BTC @ 70000 (Realized PnL: (70000-55000)*0.5 = 7500)
         createTrade(order, symbol, strategyId, OrderSide.SELL, "0.5", "70000");
 
-        // Очищаем позиции перед тестом
+        // Очищаем позиции перед rebuild
         positionRepository.deleteAll();
         positionRepository.flush();
 
@@ -80,31 +88,20 @@ class PositionRebuildFromTradesTest {
         assertEquals(0, new BigDecimal("7500").compareTo(position.getRealizedPnl()), "PnL mismatch");
     }
 
-    private void createTrade(com.tradingbot.infrastructure.persistence.entity.OrderEntity order, String symbol, String strategyId, OrderSide side, String qty, String price) {
+    private void createTrade(OrderEntity order, String symbol, String strategyId,
+                             OrderSide side, String qty, String price) {
         TradeEntity trade = TradeEntity.builder()
                 .id(UUID.randomUUID())
                 .order(order)
+                .clientOrderId(order.getClientOrderId())
                 .symbol(symbol)
                 .strategyId(strategyId)
                 .side(side)
                 .quantity(new BigDecimal(qty))
                 .price(new BigDecimal(price))
-                .executedAt(Instant.now())
-                .clientOrderId(order.getClientOrderId())
                 .exchangeTradeId("EX-" + UUID.randomUUID())
+                .executedAt(Instant.now())
                 .build();
         tradeRepository.saveAndFlush(trade);
     }
-    private void createTrade(String symbol, String strategyId, OrderSide side, String qty, String price) {
-        tradeRepository.saveAndFlush(TradeEntity.builder()
-                .id(UUID.randomUUID())
-                .symbol(symbol)
-                .strategyId(strategyId)
-                .side(side)
-                .quantity(new BigDecimal(qty))
-                .price(new BigDecimal(price))
-                .executedAt(Instant.now())
-                .clientOrderId("CL-" + UUID.randomUUID())
-                .exchangeTradeId("EX-" + UUID.randomUUID())
-                .build());
-    }}
+}

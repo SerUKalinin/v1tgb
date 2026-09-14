@@ -1,5 +1,6 @@
 package com.tradingbot;
 
+import com.tradingbot.domain.risk.RiskStatePort;                          // ← ДОБАВИТЬ
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
 import com.tradingbot.infrastructure.telegram.TradingTelegramBot;
@@ -19,12 +20,20 @@ public abstract class BaseIntegrationTest {
 
     @Autowired
     protected RiskStateRepository riskStateRepository;
+
+    @MockBean
+    protected TradingTelegramBot tradingTelegramBot;
+
+    @MockBean
+    protected RiskStatePort riskStatePort;                                // ← ДОБАВИТЬ
+
     @BeforeEach
     @Transactional
     void setUpRiskState() {
         if (riskStateRepository.findById(RiskStateEntity.SINGLETON_ID).isEmpty()) {
             RiskStateEntity riskState = new RiskStateEntity();
-            riskState.setId(RiskStateEntity.SINGLETON_ID);            riskState.setTotalEquity(BigDecimal.ZERO);
+            riskState.setId(RiskStateEntity.SINGLETON_ID);
+            riskState.setTotalEquity(BigDecimal.ZERO);
             riskState.setAvailableBalance(BigDecimal.ZERO);
             riskState.setReservedMargin(BigDecimal.ZERO);
             riskState.setHalted(false);

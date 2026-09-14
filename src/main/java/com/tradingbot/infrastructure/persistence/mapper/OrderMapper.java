@@ -36,7 +36,8 @@ public class OrderMapper {
                 entity.getExecutedQuantity(),
                 entity.getAveragePrice(),
                 entity.getRejectionReason(),
-                entity.getExecutionAttempts()
+                entity.getExecutionAttempts(),
+                entity.getLastAppliedExecutionId()
         );
     }
 
@@ -64,6 +65,7 @@ public class OrderMapper {
                 .executedQuantity(order.getExecutedQuantity() != null ? order.getExecutedQuantity() : BigDecimal.ZERO)
                 .averagePrice(order.getAveragePrice() != null ? order.getAveragePrice() : BigDecimal.ZERO)
                 .rejectionReason(order.getRejectionReason())
+                .lastAppliedExecutionId(order.getLastAppliedExecutionId())
                 .build();
     }
 
@@ -73,11 +75,13 @@ public class OrderMapper {
         // Обновляем только mutable бизнес-поля
         entity.setStatus(order.getStatus());
         entity.setUpdatedAt(order.getUpdatedAt());
+        entity.setExecutionId(order.getExecutionId());
         entity.setExchangeOrderId(order.getExchangeOrderId());
         entity.setExecutionStartedAt(order.getExecutionStartedAt());
         entity.setExecutionAttempts(order.getExecutionAttempts());
         entity.setExecutedQuantity(order.getExecutedQuantity() != null ? order.getExecutedQuantity() : BigDecimal.ZERO);
         entity.setAveragePrice(order.getAveragePrice() != null ? order.getAveragePrice() : BigDecimal.ZERO);
         entity.setRejectionReason(order.getRejectionReason());
+        entity.setLastAppliedExecutionId(order.getLastAppliedExecutionId());
     }
 }

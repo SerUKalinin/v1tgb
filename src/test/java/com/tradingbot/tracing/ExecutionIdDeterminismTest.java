@@ -1,7 +1,14 @@
 package com.tradingbot.tracing;
 
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.common.enums.OrderType;
 import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.UUID;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class ExecutionIdDeterminismTest {
@@ -32,18 +39,37 @@ class ExecutionIdDeterminismTest {
     void testExecutionContextOfOrderIsDeterministic() {
         UUID signalId = UUID.randomUUID();
         UUID orderId = UUID.randomUUID();
-        
-        // Mock-like behavior for Order (simplified)
-        com.tradingbot.domain.model.Order order = com.tradingbot.domain.model.Order.builder()
-                .id(orderId)
-                .signalId(signalId)
-                .executionAttempts(1)
-                .build();
+        UUID executionId = IdentityFactory.deriveExecution(orderId, 1);
+
+        // Order.reconstruct с уже назначенным executionId
+        com.tradingbot.domain.model.Order order = com.tradingbot.domain.model.Order.reconstruct(
+                orderId,
+                "bot_" + orderId.toString().replace("-", ""),
+                "BTCUSDT",
+                OrderSide.BUY,
+                OrderType.MARKET,
+                BigDecimal.ONE,
+                new BigDecimal("50000"),
+                "strat-1",
+                signalId,
+                OrderStatus.EXECUTING,
+                1L,
+                Instant.now(),
+                Instant.now(),
+                executionId,
+                Instant.now(),
+                null,
+                null,
+                null,
+                null,
+                1,
+                null
+        );
 
         ExecutionContext ctx1 = ExecutionContext.of(order);
         ExecutionContext ctx2 = ExecutionContext.of(order);
 
         assertEquals(ctx1.attempt().executionId(), ctx2.attempt().executionId());
-        assertEquals(IdentityFactory.deriveExecution(orderId, 1), ctx1.attempt().executionId());
+        assertEquals(executionId, ctx1.attempt().executionId());
     }
 }

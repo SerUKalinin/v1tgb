@@ -25,23 +25,37 @@ import java.util.UUID;
 
 /**
  * Сервис управления торговыми позициями.
- * Использует Partitioning Lock для обеспечения детерминированности и исключения гонок.
+ * <p>
+ * Отвечает за:
+ * <ul>
+ *     <li>локальное кэширование позиций</li>
+ *     <li>обновление позиции на основе торговых сделок</li>
+ *     <li>обеспечение потокобезопасности через partition lock</li>
+ *     <li>идемпотентность обработки событий</li>
+ * </ul>
  */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class PositionService {
+
     private final PositionRepository repository;
     private final PositionMapper mapper;
     private final PartitionLockManager lockManager;
     private final PositionReducer reducer;
     private final IdempotencyService idempotencyService;
+
     private final Map<String, Position> positions = new ConcurrentHashMap<>();
 
     private String getCacheKey(String symbol, String strategyId) {
         return strategyId + ":" + symbol;
     }
 
+    /**
+     * Загружает позиции из базы данных в локальный in-memory cache.
+     * <p>
+     * Выполняется после старта приложения.
+     */
     @PostConstruct
     public void loadPositions() {
         log.info("[POSITIONS] Loading positions from database...");
@@ -58,18 +72,27 @@ public class PositionService {
     }
 
     /**
-     * Обновляет состояние позиции на основе сделки.
-     * Теперь вызывается через Outbox Consumer (PositionProjectionHandler).
+     * Обновляет позицию на основе торговой сделки.
+     * <p>
+     * Гарантирует:
+     * <ul>
+     *     <li>идемпотентность обработки TradeCreatedEvent</li>
+     *     <li>потокобезопасность через partition lock</li>
+     *     <li>синхронизацию cache + database</li>
+     * </ul>
+     *
+     * @param event событие создания сделки
      */
     @Transactional
     public void updatePosition(TradeCreatedEvent event) {
         String lockKey = event.getStrategyId() + ":" + event.getSymbol();
         ReentrantLock lock = lockManager.getLock(lockKey);
         lock.lock();
+
         try {
             log.info("[POSITIONS] Updating projection for trade {} on {}", event.getTradeId(), lockKey);
 
-            // 1. Production-grade Idempotency Guard (Global Processed Events)
+            // Idempotency guard
             if (idempotencyService.isAlreadyProcessed(event.getTradeId())) {
                 log.warn("[POSITIONS] Trade {} already processed globally. Skipping.", event.getTradeId());
                 return;
@@ -78,18 +101,17 @@ public class PositionService {
             PositionEntity entity = repository.findBySymbolAndStrategyId(event.getSymbol(), event.getStrategyId())
                     .orElseGet(() -> createNewPositionEntity(event));
 
-            // 2. Pure State Transition & Entity Update
             entity.applyTrade(event.getQuantity(), event.getPrice(), event.getTradeId());
-            
-            // Update additional fields not handled by applyTrade if necessary
-            // (In a real scenario, reducer logic would be fully moved to Entity)
+
             entity.updateStopLoss(event.getStopLoss());
             entity.updateTakeProfit(event.getTakeProfit());
 
-            // 4. Save & Sync Cache
             repository.save(entity);
+
             idempotencyService.markAsProcessed(event.getTradeId(), "PositionService");
+
             positions.put(lockKey, mapper.toDomain(entity));
+
         } finally {
             lock.unlock();
         }
@@ -117,7 +139,6 @@ public class PositionService {
         Position cached = positions.get(key);
         if (cached != null) return cached;
 
-        // Fallback: try to load from DB if cache is empty (e.g. during integration tests)
         return repository.findBySymbolAndStrategyId(symbol, strategyId)
                 .map(entity -> {
                     Position domain = mapper.toDomain(entity);
@@ -130,7 +151,7 @@ public class PositionService {
     public BigDecimal calculatePnL(String symbol, String strategyId, BigDecimal currentPrice) {
         Position position = positions.get(getCacheKey(symbol, strategyId));
         if (position == null || position.getNetQuantity().signum() == 0) return BigDecimal.ZERO;
-        
+
         return currentPrice.subtract(position.getAvgEntryPrice())
                 .multiply(position.getNetQuantity())
                 .setScale(8, RoundingMode.HALF_UP);

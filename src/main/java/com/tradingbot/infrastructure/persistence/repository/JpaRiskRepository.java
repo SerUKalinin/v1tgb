@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.UUID;
 
+@Repository
 @RequiredArgsConstructor
 @Slf4j
 public class JpaRiskRepository implements RiskStatePort {

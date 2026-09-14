@@ -26,40 +26,92 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class OutboxProcessor implements ApplicationContextAware {
 
-private final OutboxEventRepository outboxRepository;
-    private final OutboxEventRouter router;
-    private final OutboxRetryPolicy retryPolicy;
-    private final DeadLetterAlertService alertService;
-    private final com.tradingbot.tracing.ExecutionLogger executionLogger;
-    private ApplicationContext applicationContext;
-    private final java.util.Set<UUID> activeAggregates = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /**
+     * Репозиторий outbox-событий для выборки, блокировки и обновления статусов.
+     */
+    private final OutboxEventRepository outboxRepository;
 
+    /**
+     * Роутер, отвечающий за маршрутизацию событий к соответствующим обработчикам.
+     */
+    private final OutboxEventRouter router;
+
+    /**
+     * Политика повторных попыток обработки событий.
+     */
+    private final OutboxRetryPolicy retryPolicy;
+
+    /**
+     * Сервис уведомлений о попадании событий в DLQ (dead letter queue).
+     */
+    private final DeadLetterAlertService alertService;
+
+    /**
+     * Логгер исполнительных событий (для трассировки обработки outbox).
+     */
+    private final com.tradingbot.tracing.ExecutionLogger executionLogger;
+
+    /**
+     * Spring ApplicationContext для получения проксированного self-bean.
+     */
+    private ApplicationContext applicationContext;
+
+    /**
+     * Набор агрегатов, которые сейчас обрабатываются в текущем инстансе,
+     * используется для предотвращения параллельной обработки одного агрегата.
+     */
+    private final java.util.Set<UUID> activeAggregates =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * Флаг включения outbox-процессора (из конфигурации приложения).
+     */
     @Value("${app.outbox.enabled:true}")
     private boolean enabled;
 
+    /**
+     * Флаг завершения работы системы (graceful shutdown).
+     */
     private volatile boolean shuttingDown = false;
 
+    /**
+     * Вызывается при завершении работы приложения.
+     * Переводит процессор в режим остановки.
+     */
     @jakarta.annotation.PreDestroy
     public void shutdown() {
         this.shuttingDown = true;
         log.info("[OUTBOX] Получен сигнал завершения. Остановка процессора...");
     }
 
+    /**
+     * Устанавливает Spring ApplicationContext для доступа к proxy-bean.
+     */
     @Override
     public void setApplicationContext(ApplicationContext applicationContext) {
         this.applicationContext = applicationContext;
     }
 
+    /**
+     * Возвращает проксированный self-bean для корректной работы @Transactional методов.
+     */
     private OutboxProcessor self() {
         return applicationContext.getBean(OutboxProcessor.class);
     }
 
+    /**
+     * Периодический запуск обработки outbox-событий.
+     */
     @Scheduled(fixedDelayString = "${app.outbox.scan-interval:500}")
     public void scheduledProcess() {
         if (!enabled || shuttingDown) return;
         processOutbox();
     }
 
+    /**
+     * Основной цикл обработки outbox.
+     * Забирает батч событий, группирует по агрегатам и обрабатывает последовательно.
+     */
     public void processOutbox() {
         try {
             // 1. Захват батча в отдельной транзакции
@@ -68,7 +120,7 @@ private final OutboxEventRepository outboxRepository;
 
             log.info("[OUTBOX] Processing batch of {} events.", events.size());
 
-            // Группируем события по aggregate_id для последовательной обработки
+            // Группировка по aggregateId для последовательной обработки
             Map<UUID, List<OutboxEventEntity>> groupedEvents = events.stream()
                     .collect(java.util.stream.Collectors.groupingBy(
                             OutboxEventEntity::getAggregateId,
@@ -86,9 +138,11 @@ private final OutboxEventRepository outboxRepository;
                         com.tradingbot.tracing.ExecutionEventType.OUTBOX_CLAIM_START,
                         "CLAIMED",
                         "Claimed outbox aggregate " + aggregateId
-                ));                if (shuttingDown) break;
+                ));
 
-                // Guard: если aggregateId уже обрабатывается другим потоком в этом инстансе — skip
+                if (shuttingDown) break;
+
+                // Проверка на параллельную обработку одного агрегата
                 if (!activeAggregates.add(aggregateId)) {
                     log.debug("[OUTBOX] Aggregate {} is already being processed, skipping batch", aggregateId);
                     continue;
@@ -96,25 +150,30 @@ private final OutboxEventRepository outboxRepository;
 
                 try {
                     List<OutboxEventEntity> aggregateEvents = entry.getValue();
-                    
-                    // Guard: Проверка на наличие "дыр" в последовательности
-                    if (outboxRepository.existsUnprocessedBefore(aggregateId, aggregateEvents.get(0).getSequenceNumber())) {
-                        log.warn("[OUTBOX] Gap detected for aggregate {}, skipping batch to maintain order", aggregateId);
+
+                    // Проверка целостности последовательности событий
+                    if (outboxRepository.existsUnprocessedBefore(
+                            aggregateId,
+                            aggregateEvents.get(0).getSequenceNumber())) {
+                        log.warn("[OUTBOX] Gap detected for aggregate {}, skipping batch", aggregateId);
                         continue;
                     }
 
-                    log.debug("[OUTBOX] Processing {} events for aggregate {}", aggregateEvents.size(), aggregateId);                    
+                    log.debug("[OUTBOX] Processing {} events for aggregate {}", aggregateEvents.size(), aggregateId);
+
                     for (OutboxEventEntity event : aggregateEvents) {
                         if (shuttingDown) break;
                         self().processSingleEvent(event);
                     }
+
                 } finally {
                     activeAggregates.remove(aggregateId);
                 }
             }
+
         } catch (org.springframework.dao.InvalidDataAccessResourceUsageException e) {
             if (shuttingDown || (e.getMessage() != null && e.getMessage().contains("outbox_events"))) {
-                log.debug("[OUTBOX] Table not found or shutting down (normal during context shutdown/init)");
+                log.debug("[OUTBOX] Shutdown or missing table");
             } else {
                 log.error("[OUTBOX] Database error: {}", e.getMessage());
             }
@@ -122,50 +181,50 @@ private final OutboxEventRepository outboxRepository;
             if (shuttingDown) {
                 log.debug("[OUTBOX] Error during shutdown: {}", e.getMessage());
             } else {
-                log.error("[OUTBOX] Unexpected error in processOutbox: {}", e.getMessage());
+                log.error("[OUTBOX] Unexpected error: {}", e.getMessage());
             }
         }
-    }    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    }
+
+    /**
+     * Обработка одного outbox-события в новой транзакции.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void processSingleEvent(OutboxEventEntity event) {
         if (event.getStatus() == OutboxStatus.DEAD) return;
 
-        // Защита от транзакционных аномалий
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
-            log.error("[OUTBOX] CRITICAL: No transaction active in processSingleEvent for event {}", event.getId());
+            log.error("[OUTBOX] No transaction active for event {}", event.getId());
             throw new IllegalStateException("Transaction required for outbox processing");
         }
 
-        // Защита от retry storm
         if (event.getAttemptCount() > 5) {
-            log.warn("[OUTBOX] High attempt count ({}) for event {}. Applying backoff.",
-                    event.getAttemptCount(), event.getId());
+            log.warn("[OUTBOX] High attempt count for event {}", event.getId());
         }
 
-        log.debug("[OUTBOX] Starting event {}. TX: {}", event.getId(),
-                TransactionSynchronizationManager.getCurrentTransactionName());
-
         try {
-            // 1. Выполнение бизнес-логики (Routing)
             router.route(event);
 
-            // 2. Фиксация успеха (в отдельной транзакции, чтобы избежать конфликтов с блокировками)
             self().finalizeProcessed(event.getId());
             log.info("[OUTBOX] Event {} processed successfully", event.getId());
 
         } catch (Exception e) {
             log.error("[OUTBOX] Error processing event {}: {}", event.getId(), e.getMessage());
-            // Гарантированно сохраняем ошибку и инкрементируем счетчик в новой транзакции
             self().handleFailureInternal(event.getId(), e.getMessage());
-        }    }
+        }
+    }
 
+    /**
+     * Захват батча событий из БД с блокировкой.
+     */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public List<OutboxEventEntity> claimBatch() {
         String ownerId = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
         Instant now = Instant.now();
         Instant lockUntil = now.plusSeconds(30);
 
-        // Использует native query с FOR UPDATE SKIP LOCKED
         List<OutboxEventEntity> events = outboxRepository.claimBatchWithLock(50, now);
+
         events.forEach(e -> {
             e.setStatus(OutboxStatus.PROCESSING);
             e.setLockOwner(ownerId);
@@ -175,13 +234,14 @@ private final OutboxEventRepository outboxRepository;
             e.setLeaseUntil(lockUntil);
             e.setAttemptCount(e.getAttemptCount() + 1);
             e.setUpdatedAt(now);
-
-            log.info("[OUTBOX_LEASE_ACQUIRED] eventId={} claimedBy={} claimedAt={} leaseUntil={} executionId={}",
-                    e.getId(), ownerId, now, lockUntil, e.getAggregateId());
         });
+
         return outboxRepository.saveAllAndFlush(events);
     }
 
+    /**
+     * Обработка ошибки события и управление retry / DLQ логикой.
+     */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void handleFailureInternal(UUID eventId, String errorMessage) {
         outboxRepository.findById(eventId).ifPresent(event -> {
@@ -192,18 +252,20 @@ private final OutboxEventRepository outboxRepository;
 
             if (retryPolicy.shouldRetry(event)) {
                 event.setStatus(OutboxStatus.FAILED);
-                // Exponential backoff: 2, 4, 8, 16, 32... seconds
                 long delaySeconds = (long) Math.pow(2, retries);
                 event.setNextAttemptAt(Instant.now().plusSeconds(delaySeconds));
-                log.info("[OUTBOX] Event {} marked for retry ({}) in {}s", eventId, retries, delaySeconds);
             } else {
                 event.setStatus(OutboxStatus.DEAD);
-                log.error("[OUTBOX] Event {} moved to DEAD letter (retries exhausted). Reason: {}", eventId, errorMessage);
                 alertService.sendAlert(event);
             }
+
             outboxRepository.saveAndFlush(event);
         });
     }
+
+    /**
+     * Финализация успешно обработанного события.
+     */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void finalizeProcessed(UUID eventId) {
         outboxRepository.findById(eventId).ifPresent(event -> {
@@ -212,4 +274,5 @@ private final OutboxEventRepository outboxRepository;
             event.setLastError(null);
             outboxRepository.saveAndFlush(event);
         });
-    }}
+    }
+}

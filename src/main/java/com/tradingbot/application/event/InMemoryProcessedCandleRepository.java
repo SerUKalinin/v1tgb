@@ -8,20 +8,32 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Реализация репозитория обработанных свечей с хранением в памяти.
- * <p>
- * Использует {@link ConcurrentHashMap} для потокобезопасности.
+ *
+ * Используется как in-memory механизм идемпотентности для предотвращения
+ * повторной обработки одной и той же свечи в рамках одного запуска приложения.
+ *
+ * Потокобезопасность обеспечивается за счёт {@link ConcurrentHashMap}.
  */
 @Component
 public class InMemoryProcessedCandleRepository implements ProcessedCandleRepository {
 
-    private final Map<String, Instant>   storage = new ConcurrentHashMap<>();
+    /**
+     * Хранилище обработанных свечей.
+     *
+     * Key: composite key (symbol:openTime)
+     * Value: время открытия свечи (openTime)
+     */
+    private final Map<String, Instant> storage = new ConcurrentHashMap<>();
 
     /**
      * Отмечает свечу как обработанную.
      *
-     * @param symbol   торговый символ
+     * Если запись уже существует, метод вернёт false.
+     * Если свеча новая — она будет зафиксирована и метод вернёт true.
+     *
+     * @param symbol торговый символ
      * @param openTime время открытия свечи
-     * @return true, если свеча не была обработана ранее, false в противном случае
+     * @return true если свеча обработана впервые, иначе false
      */
     @Override
     public boolean markAsProcessed(String symbol, Instant openTime) {

@@ -11,6 +11,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * Периодическая задача очистки outbox-таблицы.
+ *
+ * <p>Удаляет уже обработанные события, которые старше заданного порога времени,
+ * чтобы предотвращать бесконтрольный рост таблицы outbox.</p>
+ *
+ * <p>Используется как housekeeping-задача для поддержки здоровья системы.</p>
+ */
 @Component
 @RequiredArgsConstructor
 @Slf4j
@@ -18,6 +26,13 @@ public class OutboxCleanupJob {
 
     private final OutboxEventRepository repository;
 
+    /**
+     * Выполняет очистку обработанных outbox-событий.
+     *
+     * <p>Удаляет записи старше 24 часов, которые уже были обработаны.</p>
+     *
+     * <p>Запускается периодически с интервалом 1 час.</p>
+     */
     @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.HOURS)
     @Transactional
     public void cleanup() {

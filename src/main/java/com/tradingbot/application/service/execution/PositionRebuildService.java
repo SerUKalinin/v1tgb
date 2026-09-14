@@ -18,6 +18,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+/**
+ * Сервис пересборки позиций из истории сделок.
+ * <p>
+ * Используется для восстановления актуального состояния позиций при старте приложения
+ * на основе полной истории торговых операций (Trade ledger).
+ * <p>
+ * Реализует детерминированный пересчет состояния портфеля.
+ */
 @Service
 @Slf4j
 @RequiredArgsConstructor
@@ -28,14 +36,15 @@ public class PositionRebuildService {
 
     /**
      * Полный пересчет всех позиций из истории сделок.
-     * Вызывается автоматически при полной готовности приложения.
+     * <p>
+     * Запускается автоматически после старта приложения (ApplicationReadyEvent).
+     * Выполняет полную реконструкцию состояния позиций из торговой истории.
      */
     @EventListener(ApplicationReadyEvent.class)
     @Transactional
     public void rebuildAllPositions() {
         log.info("[REBUILD] Starting full position rebuild from trade history...");
 
-        // 1. Получаем все сделки, отсортированные по времени
         List<Trade> allTrades = tradeService.getAllTrades();
         if (allTrades.isEmpty()) {
             log.info("[REBUILD] No trades found. Clearing positions cache.");
@@ -43,14 +52,11 @@ public class PositionRebuildService {
             return;
         }
 
-        // 2. Группируем сделки по ключу (symbol + strategyId)
         Map<String, List<Trade>> tradesByGroup = allTrades.stream()
                 .collect(Collectors.groupingBy(t -> t.getSymbol() + ":" + t.getStrategyId()));
 
-        // 3. Очищаем текущий кэш позиций
         positionRepository.deleteAllInBatch();
 
-        // 4. Пересчитываем каждую группу
         for (Map.Entry<String, List<Trade>> entry : tradesByGroup.entrySet()) {
             String[] parts = entry.getKey().split(":");
             String symbol = parts[0];
@@ -59,7 +65,7 @@ public class PositionRebuildService {
             PositionEntity position = calculatePosition(symbol, strategyId, entry.getValue());
             positionRepository.save(position);
 
-            log.info("[REBUILD] Restored position for {}:{}. Qty: {}, AvgPrice: {}", 
+            log.info("[REBUILD] Restored position for {}:{}. Qty: {}, AvgPrice: {}",
                     symbol, strategyId, position.getQuantity(), position.getEntryPrice());
         }
 
@@ -68,7 +74,14 @@ public class PositionRebuildService {
 
     /**
      * Математическое ядро пересчета позиции.
-     * Реализует расчет средней цены входа (Average Entry Price).
+     * <p>
+     * Реализует алгоритм средней цены входа (Moving Average Cost Basis)
+     * и расчет реализованного PnL на основе последовательности сделок.
+     *
+     * @param symbol торговый инструмент
+     * @param strategyId идентификатор стратегии
+     * @param trades список сделок в хронологическом порядке
+     * @return восстановленная позиция
      */
     private PositionEntity calculatePosition(String symbol, String strategyId, List<Trade> trades) {
         BigDecimal netQuantity = BigDecimal.ZERO;
@@ -87,8 +100,9 @@ public class PositionRebuildService {
                 netQuantity = netQuantity.subtract(trade.getQuantity());
 
                 if (boughtQuantity.compareTo(BigDecimal.ZERO) > 0) {
-                    // Пропорционально уменьшаем базу стоимости покупок (Moving Average)
-                    BigDecimal sellRatio = trade.getQuantity().divide(boughtQuantity, 12, RoundingMode.HALF_UP);
+                    BigDecimal sellRatio = trade.getQuantity()
+                            .divide(boughtQuantity, 12, RoundingMode.HALF_UP);
+
                     BigDecimal soldCostBasis = boughtCost.multiply(sellRatio);
 
                     boughtCost = boughtCost.subtract(soldCostBasis);
@@ -113,4 +127,5 @@ public class PositionRebuildService {
                 .updatedAt(Instant.now())
                 .version(0L)
                 .build();
-    }}
+    }
+}

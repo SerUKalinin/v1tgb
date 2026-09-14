@@ -1,7 +1,8 @@
 package com.tradingbot.infrastructure.outbox;
 
 import com.tradingbot.BaseIntegrationTest;
-import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.tracing.BusinessContext;
@@ -29,12 +30,17 @@ class OutboxIdempotencyIntegrationTest extends BaseIntegrationTest {
         ExecutionContext context = ExecutionContext.of(signalId)
                 .withBusiness(BusinessContext.of(orderId.toString()));
 
-        Order payload = Order.builder()
-                .id(orderId)
-                .signalId(signalId)
-                .symbol("BTCUSDT")
-                .quantity(BigDecimal.ONE)
-                .build();
+        Order payload = Order.createPendingExecution(
+                orderId,
+                "bot_" + orderId.toString().replace("-", ""),
+                "BTCUSDT",
+                OrderSide.BUY,
+                OrderType.MARKET,
+                BigDecimal.ONE,
+                new BigDecimal("50000"),
+                "test-strategy",
+                signalId
+        );
 
         // 1. Первая публикация
         outboxService.publishEvent(context, "ORDER", "ORDER_CREATED", payload);
@@ -43,7 +49,7 @@ class OutboxIdempotencyIntegrationTest extends BaseIntegrationTest {
         // 2. Повторная публикация с тем же контекстом (тот же executionId)
         outboxService.publishEvent(context, "ORDER", "ORDER_CREATED", payload);
 
-        assertEquals(countAfterFirst, outboxRepository.count(), 
-            "Outbox must not contain duplicate events for the same executionId");
+        assertEquals(countAfterFirst, outboxRepository.count(),
+                "Outbox must not contain duplicate events for the same executionId");
     }
 }
