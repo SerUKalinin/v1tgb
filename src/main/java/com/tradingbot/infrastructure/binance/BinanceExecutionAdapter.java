@@ -166,9 +166,14 @@ public class BinanceExecutionAdapter implements ExecutionPort {
     private ExecutionResult mapToExecutionResult(Order order, Map response) {
         String status = (String) response.get("status");
         String exchangeOrderId = response.get("orderId").toString();
-        BigDecimal executedQty = new BigDecimal((String) response.get("executedQty"));
-        BigDecimal executedPrice = new BigDecimal((String) response.get("price"));
-        ExecutionResult.Status mappedStatus = BinanceStatusMapper.mapBinanceStatus(status);
+
+        BigDecimal executedQty =
+                new BigDecimal((String) response.get("executedQty"));
+
+        BigDecimal executedPrice = extractExecutedPrice(response);
+
+        ExecutionResult.Status mappedStatus =
+                BinanceStatusMapper.mapBinanceStatus(status);
 
         return ExecutionResult.of(
                 order.getId(),
@@ -176,8 +181,55 @@ public class BinanceExecutionAdapter implements ExecutionPort {
                 executedQty,
                 executedPrice,
                 mappedStatus,
-                BinanceStatusMapper.isTerminalBinanceStatus(status) ? null : status
+                BinanceStatusMapper.isTerminalBinanceStatus(status)
+                        ? null
+                        : status
         );
+    }
+
+    @SuppressWarnings("unchecked")
+    private BigDecimal extractExecutedPrice(Map response) {
+        Object fillsObject = response.get("fills");
+
+        if (fillsObject instanceof java.util.List<?> fills && !fills.isEmpty()) {
+            BigDecimal totalQty = BigDecimal.ZERO;
+            BigDecimal totalQuoteQty = BigDecimal.ZERO;
+
+            for (Object fillObject : fills) {
+                if (!(fillObject instanceof Map<?, ?> fill)) {
+                    continue;
+                }
+
+                Object priceObject = fill.get("price");
+                Object qtyObject = fill.get("qty");
+
+                if (priceObject == null || qtyObject == null) {
+                    continue;
+                }
+
+                BigDecimal price = new BigDecimal(priceObject.toString());
+                BigDecimal qty = new BigDecimal(qtyObject.toString());
+
+                totalQty = totalQty.add(qty);
+                totalQuoteQty = totalQuoteQty.add(price.multiply(qty));
+            }
+
+            if (totalQty.signum() > 0) {
+                return totalQuoteQty.divide(
+                        totalQty,
+                        8,
+                        java.math.RoundingMode.HALF_UP
+                );
+            }
+        }
+
+        Object priceObject = response.get("price");
+
+        if (priceObject == null) {
+            return BigDecimal.ZERO;
+        }
+
+        return new BigDecimal(priceObject.toString());
     }
 
     private ExecutionResult mapStatusResponse(OrderStatusResponse response) {
