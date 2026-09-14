@@ -30,17 +30,10 @@ public interface OrderRepositoryPort {
      */
     Optional<Order> claimForExecution(UUID orderId, ExecutionContext context);
 
-    /**
-     * Захватывает ордер для исполнения в рамках текущей транзакции.
-     * <p>
-     * Используется для сценариев, где требуется строгая транзакционная
-     * согласованность без повторного захвата в разных потоках.
-     *
-     * @param orderId идентификатор ордера
-     * @param context execution контекст
-     * @return ордер, если захват успешен
-     */
-    Optional<Order> claimForExecutionInCurrentTransaction(UUID orderId, ExecutionContext context);
+    Optional<Order> claimForExecutionInCurrentTransaction(
+            UUID orderId,
+            ExecutionContext context
+    );
 
     /**
      * Захватывает ордер для процесса реконсиляции.
@@ -58,21 +51,12 @@ public interface OrderRepositoryPort {
      */
     Optional<Order> findById(UUID orderId);
 
-    /**
-     * Находит "зависшие" ордера в указанных статусах.
-     * <p>
-     * Используется для recovery/reconciliation механизмов.
-     *
-     * @param statuses  список статусов для поиска
-     * @param threshold временной порог (например, устаревшие записи)
-     * @return список ордеров, требующих обработки
-     */
-    List<Order> findStuckOrdersInStatuses(Set<OrderStatus> statuses, Instant threshold);
+    List<Order> findStuckOrdersInStatuses(
+            Set<OrderStatus> statuses,
+            Instant threshold
+    );
 
-    /**
-     * Сохраняет состояние ордера.
-     *
-     * @param order доменный ордер
-     */
+    Set<UUID> findOrderIdsByStatusIn(Set<OrderStatus> statuses);
+
     void save(Order order);
 }

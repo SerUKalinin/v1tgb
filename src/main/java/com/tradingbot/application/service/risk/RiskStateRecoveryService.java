@@ -3,7 +3,9 @@ package com.tradingbot.application.service.risk;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.application.risk.RiskEngine;
-import com.tradingbot.application.service.risk.RiskReconciler;
+import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.domain.model.OrderRepositoryPort;
+import com.tradingbot.domain.policy.OrderStateTransitionPolicy;
 import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.domain.risk.RiskState;
@@ -47,6 +49,7 @@ public class RiskStateRecoveryService {
     private final RiskReconciler riskReconciler;
     private final ExchangeOrderQueryService exchangeQueryService;
     private final SystemStateManager stateManager;
+    private final OrderRepositoryPort orderRepositoryPort;
 
     private static final String AGGREGATE_ID = RiskStateEntity.SINGLETON_ID;
     private static final String CAPITAL_ASSET = "USDT";
@@ -122,7 +125,17 @@ public class RiskStateRecoveryService {
             state = reducer.reduce(state, event, true);
         }
 
-        // 3. RESERVATION REBUILD (SOURCE OF TRUTH)
+        // 3. RESERVATION REBUILD
+//
+// Reservation log является источником истины для:
+// - размера reservation
+// - порядка RESERVE / RELEASE / CONSUME
+//
+// Текущий OrderStatus является источником истины для:
+// - того, может ли reservation существовать после recovery.
+//
+// Это необходимо, чтобы исторический RESERVE от уже terminal order
+// не resurrect'ил reservation после рестарта.
         Map<UUID, BigDecimal> reservations = new HashMap<>();
 
         List<RiskReservationLogEntity> logs =
@@ -147,12 +160,29 @@ public class RiskStateRecoveryService {
             }
         }
 
+// Только эти состояния могут иметь живую reservation.
+//
+// FILLED / REJECTED / CANCELED / ERROR являются terminal.
+// Поэтому их старые RESERVE записи должны быть отброшены
+// даже если исторический RELEASE/CONSUME отсутствует.
+        Set<OrderStatus> activeStatuses =
+                OrderStateTransitionPolicy.getReconcilableStatuses();
+
+        Set<UUID> activeOrderIds =
+                orderRepositoryPort.findOrderIdsByStatusIn(activeStatuses);
+
+        reservations.keySet().retainAll(activeOrderIds);
+
         state = state.toBuilder()
                 .activeReservations(Map.copyOf(reservations))
                 .build();
 
-        log.info("[RISK-RECOVERY] reservations={}, reserved={}",
-                reservations.size(), state.getReserved());
+        log.info(
+                "[RISK-RECOVERY] reservations={}, reserved={}, activeOrders={}",
+                reservations.size(),
+                state.getReserved(),
+                activeOrderIds.size()
+        );
 
         // 4. RECONCILIATION WITH EXCHANGE
         state = reconcileWithExchange(state);
@@ -195,7 +225,10 @@ public class RiskStateRecoveryService {
                 case "TradingHalted" -> RiskEvent.TradingHalted.class;
                 case "CapitalReserved" -> RiskEvent.CapitalReserved.class;
                 case "CapitalReleased" -> RiskEvent.CapitalReleased.class;
-                default -> throw new IllegalArgumentException("unknown event: " + entity.getEventType());
+                case "CapitalConsumed" -> RiskEvent.CapitalConsumed.class;
+                default -> throw new IllegalArgumentException(
+                        "unknown event: " + entity.getEventType()
+                );
             };
 
             return objectMapper.readValue(entity.getPayload(), type);

@@ -173,6 +173,12 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
         return orderRepository.findById(orderId).map(orderMapper::toDomain);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Set<UUID> findOrderIdsByStatusIn(Set<OrderStatus> statuses) {
+        return orderRepository.findOrderIdsByStatusIn(statuses);
+    }
+
     /**
      * Находит "зависшие" ордера в указанных статусах, старше указанного порога времени.
      *

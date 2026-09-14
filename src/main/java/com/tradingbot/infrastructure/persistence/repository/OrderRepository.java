@@ -16,21 +16,61 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @Repository
 public interface OrderRepository extends JpaRepository<OrderEntity, UUID> {
+
     Optional<OrderEntity> findByClientOrderId(String clientOrderId);
-    @Lock(LockModeType.PESSIMISTIC_WRITE)    @QueryHints({@QueryHint(name = "jakarta.persistence.lock.timeout", value = "-2")})
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @QueryHints({
+            @QueryHint(
+                    name = "jakarta.persistence.lock.timeout",
+                    value = "-2"
+            )
+    })
     @Query("SELECT o FROM OrderEntity o WHERE o.id = :id")
     Optional<OrderEntity> findByIdForUpdate(@Param("id") UUID id);
 
-    @Query("SELECT o FROM OrderEntity o WHERE o.status IN :statuses AND o.createdAt < :threshold")
-    List<OrderEntity> findStuckOrdersInStatuses(@Param("statuses") java.util.Collection<com.tradingbot.common.enums.OrderStatus> statuses, @Param("threshold") Instant threshold);
+    @Query("""
+            SELECT o
+            FROM OrderEntity o
+            WHERE o.status IN :statuses
+              AND o.createdAt < :threshold
+            """)
+    List<OrderEntity> findStuckOrdersInStatuses(
+            @Param("statuses")
+            java.util.Collection<com.tradingbot.common.enums.OrderStatus> statuses,
+            @Param("threshold")
+            Instant threshold
+    );
 
-    @Query("SELECT o FROM OrderEntity o WHERE o.status = :status AND o.createdAt < :threshold")
-    List<OrderEntity> findStuckOrders(@Param("status") com.tradingbot.common.enums.OrderStatus status, @Param("threshold") Instant threshold);
+    @Query("""
+            SELECT o
+            FROM OrderEntity o
+            WHERE o.status = :status
+              AND o.createdAt < :threshold
+            """)
+    List<OrderEntity> findStuckOrders(
+            @Param("status")
+            com.tradingbot.common.enums.OrderStatus status,
+            @Param("threshold")
+            Instant threshold
+    );
+
+    @Query("""
+            SELECT o.id
+            FROM OrderEntity o
+            WHERE o.status IN :statuses
+            """)
+    Set<UUID> findOrderIdsByStatusIn(
+            @Param("statuses")
+            Set<com.tradingbot.common.enums.OrderStatus> statuses
+    );
 
     Optional<OrderEntity> findBySignalId(UUID signalId);
+
     long countBySignalId(UUID signalId);
 }
