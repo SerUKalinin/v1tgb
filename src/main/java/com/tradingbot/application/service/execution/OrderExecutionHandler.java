@@ -110,8 +110,7 @@ public class OrderExecutionHandler implements OutboxConsumer {
     @Override
     public void consume(OutboxEventEntity event) throws Exception {
         OrderCreatedEvent payload = objectMapper.readValue(event.getPayload(), OrderCreatedEvent.class);
-        ExecutionContext baseContext = ExecutionContext.from(event);
-        ExecutionContext context = baseContext.withTransportRetry();
+        ExecutionContext context = ExecutionContext.from(event);
         ExecutionLogContext.load(context);
 
         try {
