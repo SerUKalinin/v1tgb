@@ -30,44 +30,66 @@ public class OrderApplicationService {
 
     @Transactional
     public void handleSignal(SignalEvent signal) {
-        ExecutionContext context = signal.getExecutionContext();
-        log.info("[TRACE_FLOW] ENTER ORDER_CREATED signalId={}", context.signalId());
+        ExecutionContext signalContext = signal.getExecutionContext();
+
+        log.info(
+                "[TRACE_FLOW] ENTER ORDER_CREATED signalId={}",
+                signalContext.signalId()
+        );
 
         // 1. Проверка рисков и создание модели ордера через RiskEngine
-        Optional<Order> orderOpt = riskEngine.evaluateSignal(context, signal);
+        Optional<Order> orderOpt = riskEngine.evaluateSignal(
+                signalContext,
+                signal
+        );
+
         if (orderOpt.isEmpty()) {
-            log.warn("Order creation rejected by RiskService for signalId={}", context.signalId());
+            log.warn(
+                    "Order creation rejected by RiskService for signalId={}",
+                    signalContext.signalId()
+            );
             return;
         }
 
         Order order = orderOpt.get();
 
-        // 2. Защита от коррапта идентичности (инвариант: orderId != signalId)
-        if (order.getId().toString().equals(context.signalId().toString())) {
-            throw new IllegalStateException("Security violation: orderId must not equal signalId");
+        // 2. Инвариант идентичности: signalId и orderId — разные identity
+        if (order.getId().equals(signalContext.signalId())) {
+            throw new IllegalStateException(
+                    "Security violation: orderId must not equal signalId"
+            );
         }
 
-        // 3. Создание бизнес-контекста ордера (новая SSOT ветка)
-        ExecutionContext orderContext = context.withBusiness(BusinessContext.of(order.getId().toString()));
+        /*
+         * 3. Order execution identity SSOT.
+         *
+         * Нельзя переиспользовать signalContext через withBusiness(...),
+         * потому что он сохраняет ExecutionAttemptContext сигнала.
+         *
+         * Order имеет собственный immutable executionId.
+         */
+        ExecutionContext orderContext = ExecutionContext.of(order);
 
-        // 4. Сохранение в БД
+        // 4. Persist ордера
         OrderEntity entity = orderMapper.toEntity(order);
         entity.setCreatedAt(Instant.now());
         orderRepository.save(entity);
 
-        // 5. Публикация события в Outbox с использованием строго типизированного DTO
+        /*
+         * 5. ORDER_CREATED обязан использовать executionId самого Order.
+         */
         outboxService.publishEvent(
                 orderContext,
                 "ORDER",
                 "ORDER_CREATED",
                 new OrderCreatedEvent(
-                        orderContext.signalId(),
+                        order.getSignalId(),
                         order.getId(),
-                        orderContext.attempt().executionId()
+                        order.getExecutionId()
                 )
         );
 
-        // 6. Логирование трассировки исполнения
+        // 6. Execution tracing
         executionLogger.log(
                 ExecutionLogFactory.from(
                         order,
@@ -78,6 +100,10 @@ public class OrderApplicationService {
                 )
         );
 
-        log.info("[TRACE_FLOW] EXIT ORDER_CREATED orderId={}", order.getId());
+        log.info(
+                "[TRACE_FLOW] EXIT ORDER_CREATED orderId={} executionId={}",
+                order.getId(),
+                order.getExecutionId()
+        );
     }
 }
