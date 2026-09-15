@@ -218,7 +218,7 @@ public class OrderExecutionCommitService {
         }
 
         return switch (result.getStatus()) {
-            case PARTIALLY_FILLED -> "ORDER_PARTIALLY_FILLED";
+            case PARTIALLY_FILLED -> "ORDER_EXECUTED";
             case ACCEPTED -> "ORDER_ACCEPTED";
             case REJECTED -> "ORDER_REJECTED";
             case EXCHANGE_STATE_UNKNOWN -> "ORDER_TIMEOUT";

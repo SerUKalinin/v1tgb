@@ -1,21 +1,27 @@
 package com.tradingbot.application;
 
-import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.application.bootstrap.TradingSystemBootstrapper;
 import com.tradingbot.application.service.execution.SignalExecutionFacade;
+import com.tradingbot.application.service.risk.ReconciliationService;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.position.PositionStatus;
 import com.tradingbot.infrastructure.outbox.OutboxProcessor;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
+import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
+import com.tradingbot.infrastructure.persistence.entity.TradeEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
+import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
 import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
+import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,17 +46,22 @@ import static org.mockito.Mockito.when;
         }
 )
 @ActiveProfiles("test")
-class PartialFillRiskStateIntegrationTest
-        extends BaseIntegrationTest {
+class PartialFillDownstreamIntegrationTest {
 
     @Autowired
     private OrderRepository orderRepository;
 
     @Autowired
-    private OutboxEventRepository outboxRepository;
+    private OutboxEventRepository outboxEventRepository;
 
     @Autowired
     private RiskStateRepository riskStateRepository;
+
+    @Autowired
+    private PositionRepository positionRepository;
+
+    @Autowired
+    private TradeRepository tradeRepository;
 
     @Autowired
     private SignalExecutionFacade signalExecutionFacade;
@@ -76,7 +87,20 @@ class PartialFillRiskStateIntegrationTest
         when(systemStateManager.isReady())
                 .thenReturn(true);
 
+        /*
+         * Сначала удаляем зависимые сущности:
+         *
+         * TradeEntity -> OrderEntity
+         *
+         * Поэтому Trade нужно удалить до Order.
+         */
+        tradeRepository.deleteAll();
+        positionRepository.deleteAll();
+        outboxEventRepository.deleteAll();
+        orderRepository.deleteAll();
         riskStateRepository.deleteAll();
+
+        riskStateRepository.flush();
 
         RiskStateEntity riskState =
                 new RiskStateEntity();
@@ -111,10 +135,13 @@ class PartialFillRiskStateIntegrationTest
     }
 
     @Test
-    void shouldKeepOnlyRemainingReservationAfterPartialFill() {
+    void shouldCreateTradeAndPositionAfterPartialFill() {
 
         UUID signalId =
                 UUID.randomUUID();
+
+        String strategyId =
+                "PARTIAL-FILL-DOWNSTREAM-TEST";
 
         SignalEvent signal =
                 new SignalEvent(
@@ -126,9 +153,18 @@ class PartialFillRiskStateIntegrationTest
                         BigDecimal.ZERO,
                         BigDecimal.ZERO,
                         Instant.now(),
-                        "PARTIAL-FILL-TEST"
+                        strategyId
                 );
 
+        /*
+         * Реальный application flow:
+         *
+         * Signal
+         * -> Risk
+         * -> Reservation
+         * -> Order
+         * -> ORDER_CREATED
+         */
         signalExecutionFacade.execute(
                 signal
         );
@@ -141,35 +177,21 @@ class PartialFillRiskStateIntegrationTest
 
         assertNotNull(orderId);
 
-        RiskStateEntity afterReservation =
-                getRiskState();
-
-        assertBigDecimal(
-                "10000",
-                afterReservation.getTotalEquity(),
-                "totalEquity после reservation"
-        );
-
-        assertBigDecimal(
-                "9900",
-                afterReservation.getAvailableBalance(),
-                "availableBalance после reservation"
-        );
-
-        assertBigDecimal(
-                "100",
-                afterReservation.getReservedMargin(),
-                "reservedMargin после reservation"
-        );
-
+        /*
+         * Биржа отвечает частичным исполнением.
+         *
+         * Важно:
+         * exchangeTradeId должен быть заполнен,
+         * иначе OrderExecutedEventHandler не создаст Trade.
+         */
         when(
-                executionPort.placeOrder(any())
+                executionPort.placeOrder(any(Order.class))
         ).thenAnswer(invocation -> {
 
-            var order =
+            Order order =
                     invocation.getArgument(
                             0,
-                            com.tradingbot.domain.model.Order.class
+                            Order.class
                     );
 
             return ExecutionResult.partiallyFilled(
@@ -184,10 +206,20 @@ class PartialFillRiskStateIntegrationTest
             );
         });
 
+        /*
+         * Процессим:
+         *
+         * ORDER_CREATED
+         * -> claim
+         * -> EXECUTING
+         * -> ExecutionPort
+         * -> PARTIALLY_FILLED
+         * -> ORDER_EXECUTED
+         */
         drainOutbox();
 
         OrderEntity partialOrder =
-                waitForStatus(
+                waitForOrderStatus(
                         signalId,
                         OrderStatus.PARTIALLY_FILLED
                 );
@@ -205,79 +237,115 @@ class PartialFillRiskStateIntegrationTest
         assertBigDecimal(
                 "0.3",
                 partialOrder.getExecutedQuantity(),
-                "executedQuantity"
+                "order.executedQuantity"
         );
 
-        BigDecimal remainingQuantity =
-                partialOrder.getQuantity()
-                        .subtract(
-                                partialOrder.getExecutedQuantity()
-                        );
-
-        assertBigDecimal(
-                "0.7",
-                remainingQuantity,
-                "remainingQuantity"
-        );
-
-        RiskStateEntity afterPartialFill =
-                getRiskState();
-
-        assertBigDecimal(
-                "10000",
-                afterPartialFill.getTotalEquity(),
-                "totalEquity после partial fill"
+        assertNotNull(
+                partialOrder.getExecutionId()
         );
 
         /*
-         * Reservation уже был вычтен из availableBalance
-         * на этапе CapitalReserved.
+         * Теперь downstream:
          *
-         * Partial fill не должен повторно менять balance.
+         * ORDER_EXECUTED
+         * -> OrderExecutedEventHandler
+         * -> TradeService
+         * -> TRADE_CREATED
+         * -> PositionProjectionHandler
          */
+        drainOutbox();
+
+        TradeEntity trade =
+                waitForTrade(orderId);
+
+        assertNotNull(trade);
+
+        assertNotNull(
+                trade.getOrder()
+        );
+
+        assertEquals(
+                orderId,
+                trade.getOrder().getId()
+        );
+
+        assertEquals(
+                "BTCUSDT",
+                trade.getSymbol()
+        );
+
         assertBigDecimal(
-                "9900",
-                afterPartialFill.getAvailableBalance(),
-                "availableBalance после partial fill"
+                "0.3",
+                trade.getQuantity(),
+                "trade.quantity"
+        );
+
+        assertBigDecimal(
+                "100",
+                trade.getPrice(),
+                "trade.price"
+        );
+
+        assertEquals(
+                "TEST-EXCHANGE-TRADE-" + orderId,
+                trade.getExchangeTradeId()
+        );
+
+        assertEquals(
+                strategyId,
+                trade.getStrategyId()
         );
 
         /*
-         * Из первоначальных 100 USDT:
-         *
-         * 30 USDT фактически исполнено;
-         * 70 USDT остаётся зарезервировано.
+         * PositionProjectionHandler должен обработать TRADE_CREATED.
          */
-        assertBigDecimal(
-                "70",
-                afterPartialFill.getReservedMargin(),
-                "reservedMargin после partial fill"
-        );
-    }
-
-    private RiskStateEntity getRiskState() {
-
-        return riskStateRepository
-                .findById(
-                        RiskStateEntity.SINGLETON_ID
-                )
-                .orElseThrow(
-                        () -> new AssertionError(
-                                "RiskState должен существовать"
-                        )
+        PositionEntity position =
+                waitForPosition(
+                        "BTCUSDT",
+                        strategyId
                 );
+
+        assertNotNull(position);
+
+        assertEquals(
+                "BTCUSDT",
+                position.getSymbol()
+        );
+
+        assertEquals(
+                strategyId,
+                position.getStrategyId()
+        );
+
+        assertBigDecimal(
+                "0.3",
+                position.getQuantity(),
+                "position.quantity"
+        );
+
+        assertBigDecimal(
+                "100",
+                position.getEntryPrice(),
+                "position.entryPrice"
+        );
+
+        assertEquals(
+                "OPEN",
+                position.getStatus()
+        );
     }
 
     private OrderEntity waitForOrder(
             UUID signalId
     ) {
 
-        return waitForStatus(
+        return waitForOrderStatus(
                 signalId,
                 null
         );
     }
 
-    private OrderEntity waitForStatus(
+    private OrderEntity waitForOrderStatus(
             UUID signalId,
             OrderStatus expectedStatus
     ) {
@@ -334,30 +402,113 @@ class PartialFillRiskStateIntegrationTest
         return current;
     }
 
-    private void drainOutbox() {
+    private TradeEntity waitForTrade(
+            UUID orderId
+    ) {
 
-        for (int i = 0; i < 10; i++) {
+        Instant deadline =
+                Instant.now()
+                        .plus(
+                                Duration.ofSeconds(15)
+                        );
 
-            outboxProcessor.processOutbox();
+        while (
+                Instant.now().isBefore(deadline)
+        ) {
 
-            if (
-                    outboxRepository
-                            .findAll()
+            TradeEntity trade =
+                    tradeRepository
+                            .findAllByOrderByExecutedAtAsc()
                             .stream()
-                            .noneMatch(
-                                    event ->
-                                            event.getStatus()
-                                                    != OutboxStatus.PROCESSED
-                                                    && event.getStatus()
-                                                    != OutboxStatus.DEAD
+                            .filter(item ->
+                                    item.getOrder() != null
+                                            && orderId.equals(
+                                            item.getOrder().getId()
+                                    )
                             )
-            ) {
-                return;
+                            .findFirst()
+                            .orElse(null);
+
+            if (trade != null) {
+                return trade;
             }
+
+            sleep(100);
         }
 
         fail(
-                "Outbox chain не удалось полностью обработать за 10 проходов"
+                "Trade не создан за 15 секунд. " +
+                        "orderId=" + orderId
+        );
+
+        return null;
+    }
+
+    private PositionEntity waitForPosition(
+            String symbol,
+            String strategyId
+    ) {
+
+        Instant deadline =
+                Instant.now()
+                        .plus(
+                                Duration.ofSeconds(15)
+                        );
+
+        while (
+                Instant.now().isBefore(deadline)
+        ) {
+
+            PositionEntity position =
+                    positionRepository
+                            .findBySymbolAndStrategyId(
+                                    symbol,
+                                    strategyId
+                            )
+                            .orElse(null);
+
+            if (position != null) {
+                return position;
+            }
+
+            sleep(100);
+        }
+
+        fail(
+                "Position не создана за 15 секунд. " +
+                        "symbol=" + symbol +
+                        ", strategyId=" + strategyId
+        );
+
+        return null;
+    }
+
+    private void drainOutbox() {
+
+        for (int i = 0; i < 20; i++) {
+
+            outboxProcessor.processOutbox();
+
+            boolean hasPending =
+                    outboxEventRepository
+                            .findAll()
+                            .stream()
+                            .anyMatch(event ->
+                                    event.getStatus()
+                                            != OutboxStatus.PROCESSED
+                                            && event.getStatus()
+                                            != OutboxStatus.DEAD
+                            );
+
+            if (!hasPending) {
+                return;
+            }
+
+            sleep(100);
+        }
+
+        fail(
+                "Outbox chain не удалось полностью обработать за 20 проходов"
         );
     }
 

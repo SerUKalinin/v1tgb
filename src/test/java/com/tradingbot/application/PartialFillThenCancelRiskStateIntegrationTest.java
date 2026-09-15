@@ -4,18 +4,22 @@ import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.application.bootstrap.TradingSystemBootstrapper;
 import com.tradingbot.application.service.execution.SignalExecutionFacade;
+import com.tradingbot.application.service.risk.ReconciliationService;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.SignalType;
-import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.domain.exchange.ExecutionPort;
+import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.model.OrderRepositoryPort;
+import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.infrastructure.outbox.OutboxProcessor;
-import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
+import com.tradingbot.domain.exchange.ExecutionPort;
+import com.tradingbot.tracing.ExecutionContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,15 +40,19 @@ import static org.mockito.Mockito.when;
 
 @SpringBootTest(
         properties = {
-                "app.outbox.enabled=true"
+                "app.outbox.enabled=true",
+                "spring.task.scheduling.enabled=false"
         }
 )
 @ActiveProfiles("test")
-class PartialFillRiskStateIntegrationTest
+class PartialFillThenCancelRiskStateIntegrationTest
         extends BaseIntegrationTest {
 
     @Autowired
     private OrderRepository orderRepository;
+
+    @Autowired
+    private OrderRepositoryPort orderRepositoryPort;
 
     @Autowired
     private OutboxEventRepository outboxRepository;
@@ -58,6 +66,9 @@ class PartialFillRiskStateIntegrationTest
     @Autowired
     private OutboxProcessor outboxProcessor;
 
+    @Autowired
+    private ReconciliationService reconciliationService;
+
     @MockBean
     private TradingSystemBootstrapper tradingSystemBootstrapper;
 
@@ -66,6 +77,9 @@ class PartialFillRiskStateIntegrationTest
 
     @MockBean
     private ExecutionPort executionPort;
+
+    @MockBean
+    private ExchangeOrderQueryService exchangeQueryService;
 
     @BeforeEach
     void prepareTestEnvironment() {
@@ -111,7 +125,7 @@ class PartialFillRiskStateIntegrationTest
     }
 
     @Test
-    void shouldKeepOnlyRemainingReservationAfterPartialFill() {
+    void shouldReleaseOnlyRemainingReservationAfterPartialFillAndCancel() {
 
         UUID signalId =
                 UUID.randomUUID();
@@ -126,9 +140,13 @@ class PartialFillRiskStateIntegrationTest
                         BigDecimal.ZERO,
                         BigDecimal.ZERO,
                         Instant.now(),
-                        "PARTIAL-FILL-TEST"
+                        "PARTIAL-FILL-CANCEL-TEST"
                 );
 
+        /*
+         * 1. Production path:
+         * SIGNAL -> RISK -> RESERVATION -> ORDER_CREATED
+         */
         signalExecutionFacade.execute(
                 signal
         );
@@ -141,6 +159,13 @@ class PartialFillRiskStateIntegrationTest
 
         assertNotNull(orderId);
 
+        /*
+         * После reservation:
+         *
+         * totalEquity      = 10000
+         * availableBalance = 9900
+         * reservedMargin   = 100
+         */
         RiskStateEntity afterReservation =
                 getRiskState();
 
@@ -162,6 +187,13 @@ class PartialFillRiskStateIntegrationTest
                 "reservedMargin после reservation"
         );
 
+        /*
+         * 2. Биржа возвращает PARTIALLY_FILLED:
+         *
+         * original quantity = 1.0
+         * executed quantity = 0.3
+         * remaining         = 0.7
+         */
         when(
                 executionPort.placeOrder(any())
         ).thenAnswer(invocation -> {
@@ -205,7 +237,7 @@ class PartialFillRiskStateIntegrationTest
         assertBigDecimal(
                 "0.3",
                 partialOrder.getExecutedQuantity(),
-                "executedQuantity"
+                "executedQuantity после partial fill"
         );
 
         BigDecimal remainingQuantity =
@@ -217,9 +249,15 @@ class PartialFillRiskStateIntegrationTest
         assertBigDecimal(
                 "0.7",
                 remainingQuantity,
-                "remainingQuantity"
+                "remainingQuantity после partial fill"
         );
 
+        /*
+         * После partial fill reservation:
+         *
+         * availableBalance = 9900
+         * reservedMargin   = 70
+         */
         RiskStateEntity afterPartialFill =
                 getRiskState();
 
@@ -229,28 +267,134 @@ class PartialFillRiskStateIntegrationTest
                 "totalEquity после partial fill"
         );
 
-        /*
-         * Reservation уже был вычтен из availableBalance
-         * на этапе CapitalReserved.
-         *
-         * Partial fill не должен повторно менять balance.
-         */
         assertBigDecimal(
                 "9900",
                 afterPartialFill.getAvailableBalance(),
                 "availableBalance после partial fill"
         );
 
-        /*
-         * Из первоначальных 100 USDT:
-         *
-         * 30 USDT фактически исполнено;
-         * 70 USDT остаётся зарезервировано.
-         */
         assertBigDecimal(
                 "70",
                 afterPartialFill.getReservedMargin(),
                 "reservedMargin после partial fill"
+        );
+
+        /*
+         * executionId должен остаться тем же самым
+         * при переходе через reconciliation.
+         */
+        Order partialDomainOrder =
+                orderRepositoryPort
+                        .findById(orderId)
+                        .orElseThrow(
+                                () -> new AssertionError(
+                                        "Domain Order не найден после partial fill"
+                                )
+                        );
+
+        UUID executionId =
+                partialDomainOrder.getExecutionId();
+
+        assertNotNull(
+                executionId,
+                "executionId должен существовать после partial fill"
+        );
+
+        ExecutionContext context =
+                ExecutionContext.of(
+                        partialDomainOrder
+                );
+
+        /*
+         * 3. Симулируем реальное состояние биржи:
+         *
+         * ордер был частично исполнен и затем отменён.
+         */
+        when(
+                exchangeQueryService.getOrderStatus(
+                        partialDomainOrder.getClientOrderId()
+                )
+        ).thenReturn(
+                ExecutionResult.canceled(
+                        orderId
+                )
+        );
+
+        /*
+         * 4. Запускаем настоящую reconciliation-ветку:
+         *
+         * PARTIALLY_FILLED
+         *      ->
+         * CANCELED
+         *      +
+         * releasePartial()
+         */
+        reconciliationService.reconcile(
+                context
+        );
+
+        /*
+         * 5. Проверяем состояние Order.
+         */
+        Order canceledOrder =
+                orderRepositoryPort
+                        .findById(orderId)
+                        .orElseThrow(
+                                () -> new AssertionError(
+                                        "Domain Order не найден после CANCEL reconciliation"
+                                )
+                        );
+
+        assertEquals(
+                OrderStatus.CANCELED,
+                canceledOrder.getStatus(),
+                "Order должен перейти PARTIALLY_FILLED -> CANCELED"
+        );
+
+        assertBigDecimal(
+                "0.3",
+                canceledOrder.getExecutedQuantity(),
+                "executedQuantity не должен измениться после CANCEL"
+        );
+
+        assertEquals(
+                executionId,
+                canceledOrder.getExecutionId(),
+                "executionId не должен измениться после CANCEL"
+        );
+
+        /*
+         * 6. Главное финансовое утверждение.
+         *
+         * Было:
+         * balance = 9900
+         * reserve = 70
+         *
+         * Освобождаем только remaining = 0.7 * 100 = 70.
+         *
+         * Должно стать:
+         * balance = 9970
+         * reserve = 0
+         */
+        RiskStateEntity afterCancel =
+                getRiskState();
+
+        assertBigDecimal(
+                "10000",
+                afterCancel.getTotalEquity(),
+                "totalEquity после CANCEL"
+        );
+
+        assertBigDecimal(
+                "9970",
+                afterCancel.getAvailableBalance(),
+                "availableBalance после CANCEL"
+        );
+
+        assertBigDecimal(
+                "0",
+                afterCancel.getReservedMargin(),
+                "reservedMargin после CANCEL"
         );
     }
 
@@ -340,18 +484,19 @@ class PartialFillRiskStateIntegrationTest
 
             outboxProcessor.processOutbox();
 
-            if (
+            boolean hasPendingEvents =
                     outboxRepository
                             .findAll()
                             .stream()
-                            .noneMatch(
+                            .anyMatch(
                                     event ->
                                             event.getStatus()
-                                                    != OutboxStatus.PROCESSED
+                                                    != com.tradingbot.infrastructure.outbox.OutboxStatus.PROCESSED
                                                     && event.getStatus()
-                                                    != OutboxStatus.DEAD
-                            )
-            ) {
+                                                    != com.tradingbot.infrastructure.outbox.OutboxStatus.DEAD
+                            );
+
+            if (!hasPendingEvents) {
                 return;
             }
         }
