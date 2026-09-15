@@ -9,11 +9,13 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "signals",
+@Table(
+        name = "signals",
         indexes = {
                 @Index(name = "idx_signals_timestamp", columnList = "timestamp"),
                 @Index(name = "idx_signals_strategy_id", columnList = "strategy_id")
-        })
+        }
+)
 @Getter
 @Setter
 @NoArgsConstructor
@@ -21,18 +23,18 @@ import java.util.UUID;
 @Builder
 public class SignalEntity {
 
- @Id
- private UUID id;
+    @Id
+    private UUID id;
 
- @Column(nullable = false)
- private String symbol;
+    @Column(nullable = false)
+    private String symbol;
 
- @Enumerated(EnumType.STRING)
- @Column(nullable = false)
- private SignalType type;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private SignalType type;
 
- @Column(nullable = false, precision = 38, scale = 18)
- private BigDecimal price;
+    @Column(nullable = false, precision = 38, scale = 18)
+    private BigDecimal price;
 
     @Column(name = "take_profit_1")
     private BigDecimal takeProfit1;
@@ -49,21 +51,6 @@ public class SignalEntity {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
- @Column(nullable = false)
- private Instant timestamp;
-
- @PrePersist
- protected void onCreate() {
-    if (id == null) {
-        id = UUID.randomUUID();
- }
-
-    if (createdAt == null) {
-        createdAt = Instant.now();
- }
-
-    if (timestamp == null) {
-        timestamp = Instant.now();
- }
- }
+    @Column(nullable = false)
+    private Instant timestamp;
 }

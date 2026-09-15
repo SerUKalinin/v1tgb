@@ -316,6 +316,9 @@ public class Order {
         );
 
         this.status = OrderStatus.EXECUTING;
+        this.executionStartedAt = Instant.now();
+        this.executionAttempts++;
+        this.updatedAt = Instant.now();
     }
 
     /**
