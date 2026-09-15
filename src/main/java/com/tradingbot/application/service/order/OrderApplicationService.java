@@ -3,12 +3,15 @@ package com.tradingbot.application.service.order;
 import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.model.Order;
-import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
-import com.tradingbot.tracing.*;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.ExecutionEventType;
+import com.tradingbot.tracing.ExecutionLogFactory;
+import com.tradingbot.tracing.ExecutionLogger;
+import com.tradingbot.tracing.ExecutionStateMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -29,11 +32,12 @@ public class OrderApplicationService {
     private final ExecutionLogger executionLogger;
 
     @Transactional
-    public void handleSignal(SignalEvent signal) {
+    public boolean handleSignal(SignalEvent signal) {
+
         ExecutionContext signalContext = signal.getExecutionContext();
 
         log.info(
-                "[TRACE_FLOW] ENTER ORDER_CREATED signalId={}",
+                "[TRACE_FLOW] ENTER ORDER_EVALUATION signalId={}",
                 signalContext.signalId()
         );
 
@@ -43,17 +47,19 @@ public class OrderApplicationService {
                 signal
         );
 
+        // 2. Risk отклонил сигнал — Order не существует
         if (orderOpt.isEmpty()) {
             log.warn(
-                    "Order creation rejected by RiskService for signalId={}",
+                    "[TRACE_FLOW] ORDER_REJECTED signalId={}",
                     signalContext.signalId()
             );
-            return;
+            return false;
         }
 
         Order order = orderOpt.get();
 
-        // 2. Инвариант идентичности: signalId и orderId — разные identity
+        // 3. Инвариант идентичности:
+        //    signalId и orderId — разные identity
         if (order.getId().equals(signalContext.signalId())) {
             throw new IllegalStateException(
                     "Security violation: orderId must not equal signalId"
@@ -61,7 +67,7 @@ public class OrderApplicationService {
         }
 
         /*
-         * 3. Order execution identity SSOT.
+         * 4. Order execution identity SSOT.
          *
          * Нельзя переиспользовать signalContext через withBusiness(...),
          * потому что он сохраняет ExecutionAttemptContext сигнала.
@@ -70,13 +76,13 @@ public class OrderApplicationService {
          */
         ExecutionContext orderContext = ExecutionContext.of(order);
 
-        // 4. Persist ордера
+        // 5. Persist ордера
         OrderEntity entity = orderMapper.toEntity(order);
         entity.setCreatedAt(Instant.now());
         orderRepository.save(entity);
 
         /*
-         * 5. ORDER_CREATED обязан использовать executionId самого Order.
+         * 6. ORDER_CREATED обязан использовать executionId самого Order.
          */
         outboxService.publishEvent(
                 orderContext,
@@ -89,7 +95,7 @@ public class OrderApplicationService {
                 )
         );
 
-        // 6. Execution tracing
+        // 7. Execution tracing
         executionLogger.log(
                 ExecutionLogFactory.from(
                         order,
@@ -105,5 +111,7 @@ public class OrderApplicationService {
                 order.getId(),
                 order.getExecutionId()
         );
+
+        return true;
     }
 }

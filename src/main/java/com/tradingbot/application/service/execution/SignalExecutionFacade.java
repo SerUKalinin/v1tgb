@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Фасад обработки торговых сигналов.
+ *
  * <p>
  * Является точкой входа в execution pipeline и отвечает за:
  * <ul>
@@ -20,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
  *     <li>делегирование создания ордера в application layer</li>
  *     <li>управление жизненным циклом обработки сигнала</li>
  * </ul>
+ *
  * <p>
  * Гарантирует, что один сигнал будет обработан только один раз.
  */
@@ -41,7 +43,10 @@ public class SignalExecutionFacade {
 
         // 1. Проверка идемпотентности сигнала
         if (signalClaimPort.exists(signal.getSignalId())) {
-            log.debug("[DUPLICATE_SIGNAL] signalId={} ignored", signal.getSignalId());
+            log.debug(
+                    "[DUPLICATE_SIGNAL] signalId={} ignored",
+                    signal.getSignalId()
+            );
             return;
         }
 
@@ -52,18 +57,38 @@ public class SignalExecutionFacade {
         try {
             // 3. Фиксация сигнала как обработанного
             signalClaimPort.claim(signal.getSignalId());
-            log.info("[SIGNAL_CLAIMED] signalId={}", signal.getSignalId());
 
-            // 4. Создание ордера и запуск бизнес-цепочки
-            orderApplicationService.handleSignal(signal);
-            log.info("[ORDER_CREATED] signalId={}", signal.getSignalId());
+            log.info(
+                    "[SIGNAL_CLAIMED] signalId={}",
+                    signal.getSignalId()
+            );
+
+            // 4. Risk evaluation + создание Order
+            boolean created = orderApplicationService.handleSignal(signal);
+
+            // 5. Логируем результат честно:
+            //    ORDER_CREATED только если Order реально существует
+            if (created) {
+                log.info(
+                        "[ORDER_CREATED] signalId={}",
+                        signal.getSignalId()
+                );
+            } else {
+                log.info(
+                        "[ORDER_REJECTED] signalId={}",
+                        signal.getSignalId()
+                );
+            }
 
         } catch (Exception e) {
-            log.error("[SIGNAL_PROCESSING_FAILED] signalId={} msg={}",
+            log.error(
+                    "[SIGNAL_PROCESSING_FAILED] signalId={} msg={}",
                     signal.getSignalId(),
                     e.getMessage(),
-                    e);
+                    e
+            );
             throw e;
+
         } finally {
             ExecutionLogContext.clear();
         }

@@ -10,6 +10,7 @@ import com.tradingbot.infrastructure.persistence.repository.UserRepository;
 import com.tradingbot.infrastructure.telegram.TradingTelegramBot;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -71,6 +72,7 @@ public class SignalRouter {
      *
      * @param signal доменное событие сигнала стратегии
      */
+    @EventListener
     public void route(SignalEvent signal) {
         log.info("[ROUTER] Routing signal: {} {}", signal.getSymbol(), signal.getType());
 

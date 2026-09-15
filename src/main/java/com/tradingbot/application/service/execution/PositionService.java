@@ -101,14 +101,30 @@ public class PositionService {
             PositionEntity entity = repository.findBySymbolAndStrategyId(event.getSymbol(), event.getStrategyId())
                     .orElseGet(() -> createNewPositionEntity(event));
 
-            entity.applyTrade(event.getQuantity(), event.getPrice(), event.getTradeId());
+            BigDecimal signedQuantity = switch (event.getSide()) {
+                case BUY -> event.getQuantity();
+                case SELL -> event.getQuantity().negate();
+            };
 
-            entity.updateStopLoss(event.getStopLoss());
-            entity.updateTakeProfit(event.getTakeProfit());
+            entity.applyTrade(
+                    signedQuantity,
+                    event.getPrice(),
+                    event.getTradeId()
+            );
+
+            entity.updateStopLoss(
+                    event.getStopLoss()
+            );
+
+            entity.updateTakeProfit(
+                    event.getTakeProfit()
+            );
 
             repository.save(entity);
 
-            idempotencyService.markAsProcessed(event.getTradeId(), "PositionService");
+            idempotencyService.markAsProcessed(
+                    event.getTradeId(),
+                    "PositionService");
 
             positions.put(lockKey, mapper.toDomain(entity));
 
