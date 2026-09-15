@@ -84,27 +84,62 @@ public class PositionService {
      * @param event событие создания сделки
      */
     @Transactional
-    public void updatePosition(TradeCreatedEvent event) {
-        String lockKey = event.getStrategyId() + ":" + event.getSymbol();
-        ReentrantLock lock = lockManager.getLock(lockKey);
+    public void updatePosition(
+            UUID eventId,
+            TradeCreatedEvent event
+    ) {
+        if (eventId == null) {
+            throw new IllegalArgumentException(
+                    "eventId cannot be null"
+            );
+        }
+
+        String lockKey =
+                event.getStrategyId()
+                        + ":"
+                        + event.getSymbol();
+
+        ReentrantLock lock =
+                lockManager.getLock(lockKey);
+
         lock.lock();
 
         try {
-            log.info("[POSITIONS] Updating projection for trade {} on {}", event.getTradeId(), lockKey);
+            log.info(
+                    "[POSITIONS] Updating projection for event {} trade {} on {}",
+                    eventId,
+                    event.getTradeId(),
+                    lockKey
+            );
 
-            // Idempotency guard
-            if (idempotencyService.isAlreadyProcessed(event.getTradeId())) {
-                log.warn("[POSITIONS] Trade {} already processed globally. Skipping.", event.getTradeId());
+            /*
+             * Idempotency относится к Outbox event,
+             * а не к business tradeId.
+             */
+            if (idempotencyService.isAlreadyProcessed(eventId)) {
+                log.warn(
+                        "[POSITIONS] Event {} already processed. Skipping trade {}.",
+                        eventId,
+                        event.getTradeId()
+                );
                 return;
             }
 
-            PositionEntity entity = repository.findBySymbolAndStrategyId(event.getSymbol(), event.getStrategyId())
-                    .orElseGet(() -> createNewPositionEntity(event));
+            PositionEntity entity =
+                    repository
+                            .findBySymbolAndStrategyId(
+                                    event.getSymbol(),
+                                    event.getStrategyId()
+                            )
+                            .orElseGet(
+                                    () -> createNewPositionEntity(event)
+                            );
 
-            BigDecimal signedQuantity = switch (event.getSide()) {
-                case BUY -> event.getQuantity();
-                case SELL -> event.getQuantity().negate();
-            };
+            BigDecimal signedQuantity =
+                    switch (event.getSide()) {
+                        case BUY -> event.getQuantity();
+                        case SELL -> event.getQuantity().negate();
+                    };
 
             entity.applyTrade(
                     signedQuantity,
@@ -122,11 +157,19 @@ public class PositionService {
 
             repository.save(entity);
 
+            /*
+             * Business mutation и idempotency marker
+             * находятся в одной transaction.
+             */
             idempotencyService.markAsProcessed(
-                    event.getTradeId(),
-                    "PositionService");
+                    eventId,
+                    "PositionService"
+            );
 
-            positions.put(lockKey, mapper.toDomain(entity));
+            positions.put(
+                    lockKey,
+                    mapper.toDomain(entity)
+            );
 
         } finally {
             lock.unlock();
