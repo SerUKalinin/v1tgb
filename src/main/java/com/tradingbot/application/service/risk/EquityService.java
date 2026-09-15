@@ -3,6 +3,8 @@ package com.tradingbot.application.service.risk;
 import com.tradingbot.application.service.execution.PositionService;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Position;
+import com.tradingbot.domain.risk.RiskState;
+import com.tradingbot.domain.risk.RiskStatePort;
 import com.tradingbot.infrastructure.persistence.entity.EquitySnapshotEntity;
 import com.tradingbot.infrastructure.persistence.repository.EquitySnapshotRepository;
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
@@ -15,26 +17,19 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Сервис управления equity (капиталом) стратегии.
  *
- * <p>Отвечает за формирование и хранение снимков состояния капитала (equity snapshots),
- * включая реализованный и нереализованный PnL на основе позиций и сделок.</p>
+ * <p>
+ * Формирует equity snapshots на основе canonical RiskState
+ * и текущей Position projection.
+ * </p>
  *
- * <p>Используется как часть risk/subsystem слоя для мониторинга финансового состояния
- * торговых стратегий.</p>
- *
- * <h2>Основные функции:</h2>
- * <ul>
- *     <li>Обработка события создания сделки (TradeCreatedEvent)</li>
- *     <li>Поддержание баланса стратегии (in-memory cache)</li>
- *     <li>Расчет unrealized PnL на основе открытых позиций</li>
- *     <li>Формирование snapshot-ов equity</li>
- *     <li>Расчет общего realized PnL</li>
- * </ul>
+ * <p>
+ * Финансовый баланс НЕ хранится в памяти этого сервиса.
+ * Источником истины для quote capital является RiskStatePort.
+ * </p>
  */
 @Service
 @Slf4j
@@ -44,103 +39,166 @@ public class EquityService {
     private final EquitySnapshotRepository equityRepository;
     private final PositionService positionService;
     private final TradeRepository tradeRepository;
+    private final RiskStatePort riskStatePort;
 
     /**
-     * In-memory баланс стратегий.
-     * Используется как быстрый кэш базового капитала между snapshot-ами.
-     */
-    private final Map<String, BigDecimal> strategyBalances = new ConcurrentHashMap<>();
-
-    /**
-     * Начальный баланс стратегии по умолчанию.
-     */
-    private static final BigDecimal INITIAL_BALANCE = new BigDecimal("10000");
-
-    /**
-     * Обрабатывает событие создания сделки и инициирует обновление equity snapshot.
-     *
-     * <p>Создаёт ExecutionContext для трассировки и обновляет внутренний баланс стратегии,
-     * после чего формирует snapshot текущего состояния equity.</p>
+     * Обрабатывает событие создания сделки и формирует
+     * актуальный equity snapshot.
      *
      * @param event событие создания сделки
      */
     @Transactional
-    public void onTradeCreated(TradeCreatedEvent event) {
-        ExecutionContext context = ExecutionContext.of(
-                event.getIdentity(),
-                event.getAttempt(),
-                event.getBusiness()
+    public void onTradeCreated(
+            TradeCreatedEvent event
+    ) {
+        ExecutionContext context =
+                ExecutionContext.of(
+                        event.getIdentity(),
+                        event.getAttempt(),
+                        event.getBusiness()
+                );
+
+        log.info(
+                "[EQUITY] Updating equity for strategy {} after trade {}",
+                event.getStrategyId(),
+                event.getTradeId()
         );
 
-        log.info("[EQUITY] Updating balance for strategy {} after trade {}",
+        createSnapshot(
                 event.getStrategyId(),
-                event.getTradeId());
-
-        strategyBalances.putIfAbsent(event.getStrategyId(), INITIAL_BALANCE);
-
-        createSnapshot(event.getStrategyId(), event.getSymbol(), event.getPrice());
+                event.getSymbol(),
+                event.getPrice()
+        );
     }
 
     /**
-     * Создаёт snapshot состояния equity для указанной стратегии.
+     * Создаёт snapshot состояния equity.
      *
-     * <p>Equity рассчитывается как:
+     * <p>
+     * Balance берётся исключительно из canonical RiskState.
+     * Никакого in-memory initial balance здесь нет.
+     * </p>
+     *
      * <pre>
      * equity = balance + unrealizedPnL
      * </pre>
-     * где unrealizedPnL вычисляется на основе текущей позиции.</p>
      *
      * @param strategyId идентификатор стратегии
      * @param symbol торговый символ
      * @param currentPrice текущая рыночная цена
      */
-    public void createSnapshot(String strategyId, String symbol, BigDecimal currentPrice) {
-        BigDecimal balance = strategyBalances.getOrDefault(strategyId, INITIAL_BALANCE);
+    public void createSnapshot(
+            String strategyId,
+            String symbol,
+            BigDecimal currentPrice
+    ) {
+        RiskState riskState =
+                riskStatePort.get();
 
-        Position position = positionService.getPosition(symbol, strategyId);
+        BigDecimal balance =
+                riskState.getBalance();
 
-        BigDecimal unrealizedPnl = BigDecimal.ZERO;
-
-        if (position != null && position.getNetQuantity().signum() != 0) {
-            unrealizedPnl = currentPrice.subtract(position.getAvgEntryPrice())
-                    .multiply(position.getNetQuantity());
+        if (balance == null) {
+            throw new IllegalStateException(
+                    "RiskState balance cannot be null"
+            );
         }
 
-        BigDecimal equity = balance.add(unrealizedPnl);
+        Position position =
+                positionService.getPosition(
+                        symbol,
+                        strategyId
+                );
 
-        EquitySnapshotEntity snapshot = EquitySnapshotEntity.builder()
-                .strategyId(strategyId)
-                .timestamp(Instant.now())
-                .balance(balance)
-                .unrealizedPnl(unrealizedPnl)
-                .equity(equity)
-                .build();
+        BigDecimal unrealizedPnl =
+                BigDecimal.ZERO;
+
+        if (position != null
+                && position.getNetQuantity() != null
+                && position.getNetQuantity().signum() != 0) {
+
+            if (position.getAvgEntryPrice() == null) {
+                throw new IllegalStateException(
+                        "Open position has null avgEntryPrice: "
+                                + symbol
+                                + ":"
+                                + strategyId
+                );
+            }
+
+            if (currentPrice == null) {
+                throw new IllegalStateException(
+                        "Current price cannot be null for equity snapshot: "
+                                + symbol
+                );
+            }
+
+            unrealizedPnl =
+                    currentPrice
+                            .subtract(
+                                    position.getAvgEntryPrice()
+                            )
+                            .multiply(
+                                    position.getNetQuantity()
+                            );
+        }
+
+        BigDecimal equity =
+                balance.add(
+                        unrealizedPnl
+                );
+
+        EquitySnapshotEntity snapshot =
+                EquitySnapshotEntity.builder()
+                        .strategyId(strategyId)
+                        .timestamp(Instant.now())
+                        .balance(balance)
+                        .unrealizedPnl(unrealizedPnl)
+                        .equity(equity)
+                        .build();
 
         equityRepository.save(snapshot);
 
-        log.info("[EQUITY] Snapshot saved for {}: Equity={}, Balance={}, UPnL={}",
-                strategyId, equity, balance, unrealizedPnl);
+        log.info(
+                "[EQUITY] Snapshot saved for {}: Equity={}, Balance={}, UPnL={}, RiskVersion={}",
+                strategyId,
+                equity,
+                balance,
+                unrealizedPnl,
+                riskState.getVersion()
+        );
     }
 
     /**
-     * Рассчитывает суммарный реализованный PnL по всем сделкам.
+     * Рассчитывает суммарный реализованный PnL
+     * по истории сделок.
      *
-     * <p>Используется упрощённая модель расчёта на основе направления сделки.</p>
+     * <p>
+     * Это отдельная историческая метрика и не является
+     * источником текущего cash balance.
+     * </p>
      *
      * @return суммарный realized PnL
      */
     public BigDecimal calculateTotalRealizedPnL() {
         return tradeRepository.findAll().stream()
-                .map(t -> {
-                    BigDecimal sign = t.getSide().name().equals("BUY")
-                            ? BigDecimal.valueOf(-1)
-                            : BigDecimal.valueOf(1);
+                .map(trade -> {
+                    BigDecimal sign =
+                            trade.getSide().name().equals("BUY")
+                                    ? BigDecimal.valueOf(-1)
+                                    : BigDecimal.ONE;
 
-                    return t.getPrice()
-                            .multiply(t.getQuantity())
+                    return trade.getPrice()
+                            .multiply(trade.getQuantity())
                             .multiply(sign);
                 })
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .setScale(2, RoundingMode.HALF_UP);
+                .reduce(
+                        BigDecimal.ZERO,
+                        BigDecimal::add
+                )
+                .setScale(
+                        2,
+                        RoundingMode.HALF_UP
+                );
     }
 }
