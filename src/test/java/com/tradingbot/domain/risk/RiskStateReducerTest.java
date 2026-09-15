@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RiskStateReducerTest {
 
     @Test
-    void shouldCreditBalanceForCapitalCredited() {
+    void shouldCreditBalanceAndTotalEquityForCapitalCredited() {
         UUID orderId = UUID.randomUUID();
 
         RiskState initialState =
@@ -47,6 +47,16 @@ class RiskStateReducerTest {
         assertThat(result.getBalance())
                 .isEqualByComparingTo(
                         new BigDecimal("9999.35104")
+                );
+
+        assertThat(result.getTotalEquity())
+                .isEqualByComparingTo(
+                        new BigDecimal("10099.35104")
+                );
+
+        assertThat(result.getMaxEquity())
+                .isEqualByComparingTo(
+                        new BigDecimal("10099.35104")
                 );
 
         assertThat(result.getActiveReservations())
@@ -104,6 +114,16 @@ class RiskStateReducerTest {
                         new BigDecimal("9850")
                 );
 
+        assertThat(result.getTotalEquity())
+                .isEqualByComparingTo(
+                        new BigDecimal("10050")
+                );
+
+        assertThat(result.getMaxEquity())
+                .isEqualByComparingTo(
+                        new BigDecimal("10050")
+                );
+
         assertThat(result.getActiveReservations())
                 .containsEntry(
                         reservedOrderId,
@@ -112,6 +132,9 @@ class RiskStateReducerTest {
 
         assertThat(result.getProcessedEventIds())
                 .contains(event.getEventId());
+
+        assertThat(result.isHalted())
+                .isFalse();
     }
 
     @Test
@@ -157,8 +180,21 @@ class RiskStateReducerTest {
                         new BigDecimal("9900")
                 );
 
+        assertThat(result.getTotalEquity())
+                .isEqualByComparingTo(
+                        new BigDecimal("10000")
+                );
+
+        assertThat(result.getMaxEquity())
+                .isEqualByComparingTo(
+                        new BigDecimal("10000")
+                );
+
         assertThat(result.getProcessedEventIds())
                 .containsExactly(eventId);
+
+        assertThat(result.isHalted())
+                .isFalse();
     }
 
     @Test
@@ -200,6 +236,11 @@ class RiskStateReducerTest {
         assertThat(result.getBalance())
                 .isEqualByComparingTo(
                         new BigDecimal("9900")
+                );
+
+        assertThat(result.getTotalEquity())
+                .isEqualByComparingTo(
+                        new BigDecimal("10000")
                 );
     }
 }

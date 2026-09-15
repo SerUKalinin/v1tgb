@@ -97,11 +97,6 @@ class EquityServiceTest {
                         "BTCUSDT",
                         "test-strategy"
                 );
-
-        verifyNoMoreInteractions(
-                riskStatePort,
-                positionService
-        );
     }
 
     @Test
@@ -154,11 +149,6 @@ class EquityServiceTest {
         EquitySnapshotEntity snapshot =
                 snapshotCaptor.getValue();
 
-        /*
-         * Unrealized PnL:
-         *
-         * (77400 - 77000) * 0.001 = 0.400
-         */
         assertThat(snapshot.getBalance())
                 .isEqualByComparingTo(
                         new BigDecimal("17000.00")

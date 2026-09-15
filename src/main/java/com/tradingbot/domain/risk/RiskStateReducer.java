@@ -569,13 +569,27 @@ public class RiskStateReducer {
                 event.reason()
         );
 
+        BigDecimal newBalance =
+                MoneyMath.add(
+                        state.getBalance(),
+                        event.amount()
+                );
+
+        BigDecimal newTotalEquity =
+                MoneyMath.add(
+                        state.getTotalEquity(),
+                        event.amount()
+                );
+
+        BigDecimal newMaxEquity =
+                newTotalEquity.max(
+                        state.getMaxEquity()
+                );
+
         return state.toBuilder()
-                .balance(
-                        MoneyMath.add(
-                                state.getBalance(),
-                                event.amount()
-                        )
-                )
+                .balance(newBalance)
+                .totalEquity(newTotalEquity)
+                .maxEquity(newMaxEquity)
                 .lastUpdateTimestamp(
                         event.timestamp()
                 )
