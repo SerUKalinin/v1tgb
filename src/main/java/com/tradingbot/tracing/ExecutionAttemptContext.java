@@ -74,4 +74,15 @@ public record ExecutionAttemptContext(
                 this.attemptNumber
         );
     }
+
+    public static ExecutionAttemptContext firstAttempt(
+            UUID executionId,
+            UUID causationId
+    ) {
+        return new ExecutionAttemptContext(
+                executionId,
+                causationId,
+                1
+        );
+    }
 }

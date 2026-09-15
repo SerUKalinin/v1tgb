@@ -52,7 +52,14 @@ public class OrderFilledEvent extends DomainEvent {
             BigDecimal quantity,
             BigDecimal price
     ) {
-        super(identity, attempt, business, 1);
+        super(
+                identity,
+                attempt,
+                business,
+                "ORDER_FILLED",
+                1
+        );
+
         this.orderId = orderId;
         this.externalExecutionId = externalExecutionId;
         this.symbol = symbol;

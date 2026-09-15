@@ -11,81 +11,128 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.util.UUID;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class OrderEntityPersistenceTest {
 
     private final OrderMapper orderMapper = new OrderMapper();
 
     @Test
-    void testOrderEntityCanBeCreatedWithoutExecutionIdInPendingState() {
-        UUID orderId = UUID.randomUUID();
-        UUID signalId = UUID.randomUUID();
+    void testOrderEntityPersistsExecutionIdForPendingOrder() {
+        UUID orderId =
+                UUID.fromString(
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+                );
 
-        Order order = Order.createPendingExecution(
-                orderId,
-                "bot_" + orderId.toString().replace("-", ""),
-                "BTCUSDT",
-                OrderSide.BUY,
-                OrderType.MARKET,
-                BigDecimal.ONE,
-                new BigDecimal("50000"),
-                "strat-1",
-                signalId
+        UUID signalId =
+                UUID.fromString(
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+                );
+
+        Order order =
+                Order.createPendingExecution(
+                        orderId,
+                        "client-order-1",
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        OrderType.MARKET,
+                        new BigDecimal("0.001"),
+                        new BigDecimal("77000"),
+                        "SMA_STUB",
+                        signalId
+                );
+
+        OrderEntity entity =
+                orderMapper.toEntity(order);
+
+        assertNotNull(
+                order.getExecutionId(),
+                "ExecutionId must be assigned when PENDING_EXECUTION order is created"
         );
 
-        OrderEntity entity = orderMapper.toEntity(order);
+        assertNotNull(
+                entity.getExecutionId(),
+                "OrderEntity must contain executionId for PENDING_EXECUTION order"
+        );
 
-        assertNull(entity.getExecutionId(), "ExecutionId should be null for new PENDING order");
-        assertEquals(OrderStatus.PENDING_EXECUTION, entity.getStatus());
-        assertEquals(orderId, entity.getId());
+        assertEquals(
+                order.getExecutionId(),
+                entity.getExecutionId(),
+                "Mapper must persist the same executionId from Order"
+        );
+
+        assertEquals(
+                OrderStatus.PENDING_EXECUTION,
+                entity.getStatus()
+        );
+
+        assertEquals(
+                orderId,
+                entity.getId()
+        );
+
+        assertEquals(
+                signalId,
+                entity.getSignalId()
+        );
     }
 
     @Test
-    void testOrderMapperPropagatesExecutionId() {
-        UUID orderId = UUID.randomUUID();
-        UUID signalId = UUID.randomUUID();
-        UUID executionId = UUID.randomUUID();
+    void testOrderEntityCanRestoreExecutionId() {
+        UUID orderId =
+                UUID.fromString(
+                        "cccccccc-cccc-cccc-cccc-cccccccccccc"
+                );
 
-        Order order = Order.reconstruct(
-                orderId,
-                "client-1",
-                "BTCUSDT",
-                OrderSide.BUY,
-                OrderType.MARKET,
-                BigDecimal.ONE,
-                BigDecimal.ZERO,
-                "strat-1",
-                signalId,
-                OrderStatus.EXECUTING,
-                0L,
-                java.time.Instant.now(),
-                java.time.Instant.now(),
-                executionId,
-                java.time.Instant.now(),
-                null,
-                null,
-                null,
-                null,
-                0,
-                null
+        UUID signalId =
+                UUID.fromString(
+                        "dddddddd-dddd-dddd-dddd-dddddddddddd"
+                );
+
+        Order order =
+                Order.createPendingExecution(
+                        orderId,
+                        "client-order-2",
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        OrderType.MARKET,
+                        new BigDecimal("0.002"),
+                        new BigDecimal("76000"),
+                        "SMA_STUB",
+                        signalId
+                );
+
+        OrderEntity entity =
+                orderMapper.toEntity(order);
+
+        Order restored =
+                orderMapper.toDomain(entity);
+
+        assertNotNull(
+                restored.getExecutionId(),
+                "Restored Order must contain executionId"
         );
 
-        OrderEntity entity = OrderEntity.builder()
-                .id(orderId)
-                .clientOrderId("client-1")
-                .symbol("BTCUSDT")
-                .side(OrderSide.BUY)
-                .type(OrderType.MARKET)
-                .quantity(BigDecimal.ONE)
-                .status(OrderStatus.PENDING_EXECUTION)
-                .strategyId("strat-1")
-                .signalId(signalId)
-                .build();
+        assertEquals(
+                order.getExecutionId(),
+                restored.getExecutionId(),
+                "ExecutionId must survive Order -> Entity -> Order mapping"
+        );
 
-        orderMapper.updateEntity(order, entity);
+        assertEquals(
+                order.getId(),
+                restored.getId()
+        );
 
-        assertEquals(executionId, entity.getExecutionId(),
-                "Mapper must propagate executionId from domain to entity");
+        assertEquals(
+                order.getSignalId(),
+                restored.getSignalId()
+        );
+
+        assertEquals(
+                OrderStatus.PENDING_EXECUTION,
+                restored.getStatus()
+        );
     }
 }

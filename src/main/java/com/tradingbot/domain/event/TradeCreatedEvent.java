@@ -64,7 +64,14 @@ public class TradeCreatedEvent extends DomainEvent {
             BigDecimal stopLoss,
             BigDecimal takeProfit
     ) {
-        super(identity, attempt, business, 1);
+        super(
+                identity,
+                attempt,
+                business,
+                "TRADE_CREATED",
+                1
+        );
+
         this.tradeId = tradeId;
         this.orderId = orderId;
         this.symbol = symbol;

@@ -1,8 +1,8 @@
 package com.tradingbot.domain.event;
 
-import com.tradingbot.tracing.IdentityContext;
-import com.tradingbot.tracing.ExecutionAttemptContext;
 import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.IdentityContext;
 import com.tradingbot.tracing.IdentityFactory;
 import lombok.Getter;
 
@@ -37,25 +37,48 @@ public abstract class DomainEvent {
     /**
      * Базовый конструктор доменного события.
      *
-     * @param identity контекст идентичности (signal/order/aggregate)
+     * @param identity контекст идентичности
      * @param attempt контекст попытки исполнения
      * @param business бизнес-контекст события
+     * @param eventType канонический тип события
      * @param schemaVersion версия схемы события
      */
     protected DomainEvent(
             IdentityContext identity,
             ExecutionAttemptContext attempt,
             BusinessContext business,
+            String eventType,
             int schemaVersion
     ) {
+        if (identity == null) {
+            throw new IllegalArgumentException("identity cannot be null");
+        }
+
+        if (attempt == null) {
+            throw new IllegalArgumentException("attempt cannot be null");
+        }
+
+        if (business == null) {
+            throw new IllegalArgumentException("business cannot be null");
+        }
+
+        if (eventType == null || eventType.isBlank()) {
+            throw new IllegalArgumentException("eventType cannot be null or blank");
+        }
+
+        if (schemaVersion <= 0) {
+            throw new IllegalArgumentException("schemaVersion must be positive");
+        }
+
         this.identity = identity;
         this.attempt = attempt;
         this.business = business;
         this.timestamp = Instant.now();
         this.schemaVersion = schemaVersion;
+
         this.eventId = IdentityFactory.deriveEventId(
                 attempt.executionId(),
-                this.getClass().getSimpleName()
+                eventType
         );
     }
 

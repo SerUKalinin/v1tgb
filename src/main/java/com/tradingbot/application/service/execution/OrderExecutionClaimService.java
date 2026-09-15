@@ -59,6 +59,7 @@ public class OrderExecutionClaimService {
         UUID executionId = context.attempt().executionId();
         UUID orderId = payload.orderId();
         UUID signalId = payload.signalId();
+        UUID payloadExecutionId = payload.executionId();
 
         if (executionId == null) {
             throw new IllegalStateException(
@@ -79,6 +80,21 @@ public class OrderExecutionClaimService {
             );
         }
 
+        if (payloadExecutionId == null) {
+            throw new IllegalStateException(
+                    "Invariant violation: executionId is null in OrderCreatedEvent"
+            );
+        }
+
+        if (!executionId.equals(payloadExecutionId)) {
+            throw new IllegalStateException(
+                    "Identity mismatch in ORDER_CREATED: " +
+                            "payload.executionId=" + payloadExecutionId +
+                            ", context.executionId=" + executionId +
+                            ", orderId=" + orderId
+            );
+        }
+
         if (executionClaimPort.existsByExecutionId(executionId)) {
             log.info(
                     "[EXECUTION-SKIP] executionId {} already claimed. Skipping IO.",
@@ -95,12 +111,6 @@ public class OrderExecutionClaimService {
                 orderId
         );
 
-        /*
-         * REQUIRED внутри этого REQUIRES_NEW boundary.
-         *
-         * execution claim и переход Order -> EXECUTING
-         * должны попасть в одну физическую DB transaction.
-         */
         executionClaimPort.claimExecution(executionId, signalId);
 
         Optional<Order> orderOpt =

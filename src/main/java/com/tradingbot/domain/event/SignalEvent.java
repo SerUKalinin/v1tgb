@@ -66,8 +66,12 @@ public class SignalEvent extends DomainEvent {
     ) {
         super(
                 IdentityContext.of(signalId),
-                ExecutionAttemptContext.of(IdentityFactory.deriveExecution(signalId, 0)),
+                ExecutionAttemptContext.firstAttempt(
+                        IdentityFactory.deriveExecution(signalId, 0),
+                        signalId
+                ),
                 BusinessContext.empty(),
+                "SIGNAL_RECEIVED",
                 1
         );
 
