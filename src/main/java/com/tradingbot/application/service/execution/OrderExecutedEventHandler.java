@@ -45,7 +45,7 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
      * <p>Порядок:
      * <ul>
      *     <li>десериализация payload;</li>
-     *     <li>проверка идемпотентности;</li>
+     *     <li>проверка идемпотентности по OutboxEventEntity.eventId;</li>
      *     <li>для FILLED/PARTIALLY_FILLED создание Trade через TradeService;</li>
      *     <li>фиксация идемпотентности.</li>
      * </ul>
@@ -58,17 +58,28 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
     @Transactional
     public void consume(OutboxEventEntity event) throws Exception {
 
+        UUID eventId = event.getEventId();
+
+        if (eventId == null) {
+            throw new IllegalStateException(
+                    "ORDER_EXECUTED outbox event has no eventId"
+            );
+        }
+
         OrderExecutedEvent payload =
-                objectMapper.readValue(event.getPayload(), OrderExecutedEvent.class);
+                objectMapper.readValue(
+                        event.getPayload(),
+                        OrderExecutedEvent.class
+                );
 
         UUID orderId = payload.getOrderId();
         UUID executionId = payload.getAttempt().executionId();
 
-        UUID idempotencyKey = deriveIdempotencyKey(orderId, executionId);
-
-        if (idempotencyService.isAlreadyProcessed(idempotencyKey)) {
+        if (idempotencyService.isAlreadyProcessed(eventId)) {
             log.info(
-                    "[ORDER-EXECUTED-HANDLER] executionId {} for order {} already processed, skipping",
+                    "[ORDER-EXECUTED-HANDLER] Outbox event {} " +
+                            "for executionId {} and order {} already processed, skipping",
+                    eventId,
                     executionId,
                     orderId
             );
@@ -76,7 +87,8 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
         }
 
         log.info(
-                "[ORDER-EXECUTED-HANDLER] Processing execution for order {}. Status: {}, Qty: {}, Price: {}, exchangeTradeId: {}",
+                "[ORDER-EXECUTED-HANDLER] Processing execution for order {}. " +
+                        "Status: {}, Qty: {}, Price: {}, exchangeTradeId: {}",
                 orderId,
                 payload.getStatus(),
                 payload.getQuantity(),
@@ -95,7 +107,7 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
         }
 
         idempotencyService.markAsProcessed(
-                idempotencyKey,
+                eventId,
                 "OrderExecutedEventHandler"
         );
     }
@@ -114,12 +126,5 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
                 && price != null
                 && payload.getExchangeTradeId() != null
                 && !payload.getExchangeTradeId().isBlank();
-    }
-
-    private static UUID deriveIdempotencyKey(UUID orderId, UUID executionId) {
-        return UUID.nameUUIDFromBytes(
-                (orderId + ":" + executionId)
-                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)
-        );
     }
 }

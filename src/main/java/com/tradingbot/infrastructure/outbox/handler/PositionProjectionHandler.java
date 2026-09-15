@@ -37,19 +37,19 @@ public class PositionProjectionHandler implements OutboxConsumer {
             );
         }
 
-        log.info(
-                "[POSITION-HANDLER] Consuming TRADE_CREATED. " +
-                        "eventId={}, aggregateId={}, tradeId={}",
-                eventId,
-                event.getAggregateId(),
-                event.getOrderId()
-        );
-
         TradeCreatedEvent tradeEvent =
                 objectMapper.readValue(
                         event.getPayload(),
                         TradeCreatedEvent.class
                 );
+
+        log.info(
+                "[POSITION-HANDLER] Consuming TRADE_CREATED. " +
+                        "eventId={}, aggregateId={}, tradeId={}",
+                eventId,
+                event.getAggregateId(),
+                tradeEvent.getTradeId()
+        );
 
         positionService.updatePosition(
                 eventId,
