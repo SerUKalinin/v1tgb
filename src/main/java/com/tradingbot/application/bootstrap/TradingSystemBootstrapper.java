@@ -82,12 +82,17 @@ public class TradingSystemBootstrapper {
             positionRebuildService.rebuildAllPositions();
             log.info("[BOOTSTRAP] positions rebuilt");
 
-            // 4. READY
+            // 4. MARKET WARMING
+            stateManager.updateState(SystemStateManager.SystemState.MARKET_WARMING);
+            marketDataService.warmUpAll();
+            log.info("[BOOTSTRAP] market warmed");
+
+            // 5. READY
             stateManager.updateState(SystemStateManager.SystemState.READY);
 
             log.info("[BOOTSTRAP] READY");
 
-            // 5. CRITICAL: SINGLE ACTIVATION SIGNAL
+            // 6. CRITICAL: SINGLE ACTIVATION SIGNAL
             stateManager.updateState(SystemStateManager.SystemState.TRADING_ENABLED);
 
             eventPublisher.publishEvent(new SystemEvents.SystemReadyEvent());
