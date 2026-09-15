@@ -473,13 +473,11 @@ public class RiskStateReducer {
             RiskState state,
             RiskEvent.CapitalConsumed event
     ) {
-
         BigDecimal reservedAmount =
                 state.getActiveReservations()
                         .get(event.orderId());
 
         if (reservedAmount == null) {
-
             log.warn(
                     "[RiskReducer] Idempotency: No active reservation for order {}. Consume ignored.",
                     event.orderId()
@@ -488,11 +486,27 @@ public class RiskStateReducer {
             return state;
         }
 
+        if (event.amount() == null
+                || event.amount().signum() <= 0) {
+            throw new IllegalArgumentException(
+                    "Capital consumed amount must be positive"
+            );
+        }
+
+        BigDecimal actualExecutedNotional =
+                event.amount();
+
+        BigDecimal settlementDifference =
+                actualExecutedNotional.subtract(
+                        reservedAmount
+                );
+
         log.info(
-                "[RiskReducer] Consuming {} for order {} (Reason: {})",
-                reservedAmount,
+                "[RiskReducer] Consuming BUY reservation for order {}: reserved={}, actual={}, difference={}",
                 event.orderId(),
-                event.reason()
+                reservedAmount,
+                actualExecutedNotional,
+                settlementDifference
         );
 
         Map<UUID, BigDecimal> newReservations =
@@ -504,7 +518,21 @@ public class RiskStateReducer {
                 event.orderId()
         );
 
+        BigDecimal newBalance =
+                settlementDifference.signum() > 0
+                        ? MoneyMath.subtract(
+                        state.getBalance(),
+                        settlementDifference
+                )
+                        : settlementDifference.signum() < 0
+                          ? MoneyMath.add(
+                        state.getBalance(),
+                        settlementDifference.abs()
+                )
+                          : state.getBalance();
+
         return state.toBuilder()
+                .balance(newBalance)
                 .activeReservations(
                         Map.copyOf(newReservations)
                 )

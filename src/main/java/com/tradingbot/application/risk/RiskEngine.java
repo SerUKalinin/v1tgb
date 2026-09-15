@@ -63,10 +63,12 @@ public class RiskEngine {
      */
     public void consumeReservation(
             ExecutionContext context,
+            BigDecimal executedNotional,
             String reason
     ) {
         riskService.consumeReservation(
                 context,
+                executedNotional,
                 reason
         );
     }

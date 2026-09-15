@@ -552,12 +552,20 @@ public class RiskService {
      */
     public void consumeReservation(
             ExecutionContext context,
+            BigDecimal executedNotional,
             String reason
     ) {
         UUID orderId =
                 UUID.fromString(
                         context.business().orderId()
                 );
+
+        if (executedNotional == null
+                || executedNotional.signum() <= 0) {
+            throw new IllegalArgumentException(
+                    "Executed BUY notional must be positive"
+            );
+        }
 
         RiskState state =
                 riskStatePort.get();
@@ -584,7 +592,7 @@ public class RiskService {
                 new RiskEvent.CapitalConsumed(
                         eventId.toString(),
                         orderId,
-                        reservedAmount,
+                        executedNotional,
                         reason
                 );
 
@@ -603,14 +611,15 @@ public class RiskService {
         logReservation(
                 orderId,
                 RiskReservationEventType.CONSUME,
-                reservedAmount
+                executedNotional
         );
 
         log.info(
-                "[RISK] Consumed reservation {} for order {}, reason: {}",
-                reservedAmount,
+                "[RISK] Settled BUY execution {} for order {}. Reserved={} Actual={}",
+                executedNotional,
                 orderId,
-                reason
+                reservedAmount,
+                executedNotional
         );
     }
 

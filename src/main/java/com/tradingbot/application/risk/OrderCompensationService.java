@@ -112,9 +112,43 @@ public class OrderCompensationService {
 
         if (order.getSide() == OrderSide.BUY) {
 
+            BigDecimal executedQuantity =
+                    order.getExecutedQuantity();
+
+            BigDecimal executedPrice =
+                    order.getAveragePrice();
+
+            if (executedQuantity == null
+                    || executedQuantity.signum() <= 0) {
+                throw new IllegalStateException(
+                        "BUY settlement requires positive executed quantity. orderId="
+                                + order.getId()
+                );
+            }
+
+            if (executedPrice == null
+                    || executedPrice.signum() <= 0) {
+                throw new IllegalStateException(
+                        "BUY settlement requires positive executed price. orderId="
+                                + order.getId()
+                );
+            }
+
+            BigDecimal executedNotional =
+                    executedQuantity.multiply(
+                            executedPrice
+                    );
+
             riskEngine.consumeReservation(
                     context,
+                    executedNotional,
                     reason
+            );
+
+            log.info(
+                    "[RISK] Settled BUY notional {} for order {}",
+                    executedNotional,
+                    order.getId()
             );
 
             return;

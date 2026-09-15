@@ -28,7 +28,7 @@ import static org.mockito.Mockito.*;
  *
  * <p>Проверяют:
  * <ul>
- *     <li>BUY -> consume reservation;</li>
+ *     <li>BUY -> consume reservation с фактическим executed notional;</li>
  *     <li>SELL -> CapitalCredited;</li>
  *     <li>SELL proceeds рассчитываются по фактическим execution data;</li>
  *     <li>SELL без executed quantity отклоняется;</li>
@@ -105,9 +105,15 @@ class OrderCompensationServiceTest {
                         ExecutionContext.class
                 );
 
+        ArgumentCaptor<BigDecimal> notionalCaptor =
+                ArgumentCaptor.forClass(
+                        BigDecimal.class
+                );
+
         verify(riskEngine)
                 .consumeReservation(
                         contextCaptor.capture(),
+                        notionalCaptor.capture(),
                         eq("Order fully filled")
                 );
 
@@ -122,6 +128,11 @@ class OrderCompensationServiceTest {
         ).isEqualTo(
                 order.getId().toString()
         );
+
+        assertThat(notionalCaptor.getValue())
+                .isEqualByComparingTo(
+                        new BigDecimal("99.3817728")
+                );
 
         verify(riskEngine, never())
                 .publish(any(RiskEvent.class));
@@ -156,6 +167,7 @@ class OrderCompensationServiceTest {
         verify(riskEngine, never())
                 .consumeReservation(
                         any(ExecutionContext.class),
+                        any(BigDecimal.class),
                         anyString()
                 );
 
@@ -235,6 +247,8 @@ class OrderCompensationServiceTest {
                 .isEqualByComparingTo(
                         new BigDecimal("97.00000")
                 );
+
+        verifyNoMoreInteractions(riskEngine);
     }
 
     @Test
