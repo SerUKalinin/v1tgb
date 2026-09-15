@@ -43,7 +43,10 @@ public class OrderStateTransitionPolicy {
 
     static {
 
-        STATE_GRAPH.put(OrderStatus.NEW, Set.of(OrderStatus.PENDING_EXECUTION, OrderStatus.REJECTED));
+        STATE_GRAPH.put(OrderStatus.NEW, Set.of(
+                OrderStatus.PENDING_EXECUTION,
+                OrderStatus.REJECTED
+        ));
 
         STATE_GRAPH.put(OrderStatus.PENDING_EXECUTION, Set.of(
                 OrderStatus.EXECUTING,
@@ -78,7 +81,6 @@ public class OrderStateTransitionPolicy {
         STATE_GRAPH.put(OrderStatus.UNKNOWN, Set.of(
                 OrderStatus.FILLED,
                 OrderStatus.REJECTED,
-                OrderStatus.EXECUTING,
                 OrderStatus.RECOVERING
         ));
 
