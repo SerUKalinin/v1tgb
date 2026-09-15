@@ -9,6 +9,9 @@ import com.tradingbot.application.service.risk.ReconciliationService;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.OrderType;
+import com.tradingbot.domain.exchange.ExecutionPort;
+import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
@@ -32,6 +35,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
@@ -67,6 +73,13 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
     @MockBean
     private SystemStateManager systemStateManager;
 
+    /**
+     * Ключевой mock:
+     * race-test не должен ходить в реальный Binance.
+     */
+    @MockBean
+    private ExecutionPort executionPort;
+
     @BeforeEach
     void setUpSystemState() {
         when(systemStateManager.isReady()).thenReturn(true);
@@ -80,9 +93,10 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
 
         String clientOrderId = "CL-" + orderId;
 
-        // 1. Создаём ордер в PENDING_EXECUTION.
-        //
-        // executionId обязан быть сохранён ДО claim.
+        /*
+         * Один executionId существует на протяжении
+         * всего lifecycle одного Order.
+         */
         OrderEntity orderEntity =
                 OrderEntity.builder()
                         .id(orderId)
@@ -102,7 +116,6 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
 
         orderRepository.saveAndFlush(orderEntity);
 
-        // 2. Создаём ORDER_CREATED с тем же executionId.
         OrderCreatedEvent payload =
                 new OrderCreatedEvent(
                         signalId,
@@ -121,9 +134,7 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
                         .causationId(orderId)
                         .aggregateType("ORDER")
                         .eventType("ORDER_CREATED")
-                        .payload(
-                                objectMapper.writeValueAsString(payload)
-                        )
+                        .payload(objectMapper.writeValueAsString(payload))
                         .status(OutboxStatus.NEW)
                         .sequenceNumber(1L)
                         .retryCount(0)
@@ -134,7 +145,17 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
 
         outboxRepository.saveAndFlush(event);
 
-        // 3. Параллельная обработка одного ORDER_CREATED.
+        /*
+         * Биржа полностью отрезана от теста.
+         *
+         * Используем UNKNOWN, потому что нам здесь важен
+         * именно claim/concurrency lifecycle, а не успешный fill.
+         */
+        when(executionPort.placeOrder(any(Order.class)))
+                .thenAnswer(invocation ->
+                        ExecutionResult.exchangeStateUnknown(orderId)
+                );
+
         int threadCount = 3;
 
         ExecutorService executor =
@@ -174,11 +195,6 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
             executor.shutdown();
         }
 
-        /*
-         * Для одного ORDER_CREATED должен быть ровно один
-         * успешный consume(). Остальные конкурентные попытки
-         * могут проиграть на claim/lock.
-         */
         int successful =
                 successfulConsumers.get();
 
@@ -209,13 +225,25 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
             fail(message.toString());
         }
 
+        /*
+         * Только один поток должен пройти execution claim
+         * и дойти до ExecutionPort.
+         */
         assertEquals(
                 1,
                 successful,
                 "Для одного ORDER_CREATED должен быть ровно один успешный consume()"
         );
 
-        // 4. Проверяем итоговое состояние ордера в БД.
+        /*
+         * Внешний execution должен быть вызван ровно один раз.
+         */
+        verify(executionPort, times(1))
+                .placeOrder(any(Order.class));
+
+        /*
+         * В БД должна быть ровно одна попытка исполнения.
+         */
         OrderEntity finalOrder =
                 orderRepository
                         .findById(orderId)
@@ -225,6 +253,15 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
                 1,
                 finalOrder.getExecutionAttempts(),
                 "Один ORDER_CREATED не должен приводить более чем к одной попытке исполнения"
+        );
+
+        /*
+         * Идентичность исполнения не должна измениться.
+         */
+        assertEquals(
+                executionId,
+                finalOrder.getExecutionId(),
+                "executionId ордера не должен измениться во время конкурентного исполнения"
         );
     }
 }
