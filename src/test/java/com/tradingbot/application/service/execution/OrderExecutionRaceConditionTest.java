@@ -11,7 +11,6 @@ import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.model.ExecutionResult;
-import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
@@ -31,7 +30,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -54,29 +52,15 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
-    /**
-     * В этом тесте reconciliation с внешней биржей не проверяем.
-     */
     @MockBean
     private ReconciliationService reconciliationService;
 
-    /**
-     * Реальный bootstrap не должен выполнять Binance/reconciliation
-     * до начала теста.
-     */
     @MockBean
     private TradingSystemBootstrapper tradingSystemBootstrapper;
 
-    /**
-     * OrderExecutionClaimService требует READY-состояние системы.
-     */
     @MockBean
     private SystemStateManager systemStateManager;
 
-    /**
-     * Ключевой mock:
-     * race-test не должен ходить в реальный Binance.
-     */
     @MockBean
     private ExecutionPort executionPort;
 
@@ -87,6 +71,7 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
 
     @Test
     void testParallelExecutionDoesNotDoubleFill() throws Exception {
+
         UUID signalId = UUID.randomUUID();
         UUID orderId = UUID.randomUUID();
         UUID executionId = UUID.randomUUID();
@@ -94,8 +79,7 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
         String clientOrderId = "CL-" + orderId;
 
         /*
-         * Один executionId существует на протяжении
-         * всего lifecycle одного Order.
+         * Один Order с одним executionId.
          */
         OrderEntity orderEntity =
                 OrderEntity.builder()
@@ -116,6 +100,9 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
 
         orderRepository.saveAndFlush(orderEntity);
 
+        /*
+         * ORDER_CREATED payload.
+         */
         OrderCreatedEvent payload =
                 new OrderCreatedEvent(
                         signalId,
@@ -123,6 +110,10 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
                         executionId
                 );
 
+        /*
+         * Реальный OutboxEvent, который одновременно
+         * передаётся трём конкурентным consume().
+         */
         OutboxEventEntity event =
                 OutboxEventEntity.builder()
                         .id(UUID.randomUUID())
@@ -146,12 +137,12 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
         outboxRepository.saveAndFlush(event);
 
         /*
-         * Биржа полностью отрезана от теста.
+         * Биржа возвращает UNKNOWN.
          *
-         * Используем UNKNOWN, потому что нам здесь важен
-         * именно claim/concurrency lifecycle, а не успешный fill.
+         * Нам здесь важно проверить именно execution claim:
+         * один Order не должен попасть в ExecutionPort несколько раз.
          */
-        when(executionPort.placeOrder(any(Order.class)))
+        when(executionPort.placeOrder(any()))
                 .thenAnswer(invocation ->
                         ExecutionResult.exchangeStateUnknown(orderId)
                 );
@@ -161,9 +152,6 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
         ExecutorService executor =
                 Executors.newFixedThreadPool(threadCount);
 
-        AtomicInteger successfulConsumers =
-                new AtomicInteger(0);
-
         List<Throwable> failures =
                 new CopyOnWriteArrayList<>();
 
@@ -171,13 +159,17 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
             List<CompletableFuture<Void>> futures =
                     new ArrayList<>(threadCount);
 
+            /*
+             * Три конкурентных consume() для одного
+             * ORDER_CREATED.
+             */
             for (int i = 0; i < threadCount; i++) {
+
                 futures.add(
                         CompletableFuture.runAsync(
                                 () -> {
                                     try {
                                         executionHandler.consume(event);
-                                        successfulConsumers.incrementAndGet();
                                     } catch (Throwable e) {
                                         failures.add(e);
                                     }
@@ -187,6 +179,9 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
                 );
             }
 
+            /*
+             * Ждём завершения всех трёх потоков.
+             */
             CompletableFuture.allOf(
                     futures.toArray(new CompletableFuture[0])
             ).join();
@@ -195,16 +190,22 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
             executor.shutdown();
         }
 
-        int successful =
-                successfulConsumers.get();
+        /*
+         * Ни один конкурентный consume() не должен завершиться
+         * неожиданным исключением.
+         *
+         * Проигравший claim должен штатно вернуть управление,
+         * а не бросать exception.
+         */
+        if (!failures.isEmpty()) {
 
-        if (successful == 0) {
             StringBuilder message =
                     new StringBuilder(
-                            "Все конкурентные consume() завершились исключением."
+                            "Конкурентный consume() завершился исключением."
                     );
 
             for (int i = 0; i < failures.size(); i++) {
+
                 Throwable failure = failures.get(i);
 
                 message
@@ -226,23 +227,18 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
         }
 
         /*
-         * Только один поток должен пройти execution claim
-         * и дойти до ExecutionPort.
-         */
-        assertEquals(
-                1,
-                successful,
-                "Для одного ORDER_CREATED должен быть ровно один успешный consume()"
-        );
-
-        /*
-         * Внешний execution должен быть вызван ровно один раз.
+         * ==========================================
+         * ОСНОВНАЯ ПРОВЕРКА RACE CONDITION
+         * ==========================================
+         *
+         * Три consume() должны привести максимум
+         * к одному фактическому обращению к бирже.
          */
         verify(executionPort, times(1))
-                .placeOrder(any(Order.class));
+                .placeOrder(any());
 
         /*
-         * В БД должна быть ровно одна попытка исполнения.
+         * В БД должна быть только одна execution attempt.
          */
         OrderEntity finalOrder =
                 orderRepository
@@ -256,7 +252,9 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
         );
 
         /*
-         * Идентичность исполнения не должна измениться.
+         * executionId является identity всего execution lifecycle.
+         *
+         * Конкурентное исполнение не должно его менять.
          */
         assertEquals(
                 executionId,

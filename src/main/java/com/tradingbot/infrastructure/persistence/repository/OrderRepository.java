@@ -48,11 +48,12 @@ public interface OrderRepository extends JpaRepository<OrderEntity, UUID> {
     );
 
     @Query("""
-            SELECT o
-            FROM OrderEntity o
-            WHERE o.status = :status
-              AND o.createdAt < :threshold
-            """)
+        SELECT o
+        FROM OrderEntity o
+        WHERE o.status = :status
+          AND o.executionStartedAt IS NOT NULL
+          AND o.executionStartedAt < :threshold
+        """)
     List<OrderEntity> findStuckOrders(
             @Param("status")
             com.tradingbot.common.enums.OrderStatus status,

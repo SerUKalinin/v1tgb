@@ -95,14 +95,6 @@ public class OrderExecutionClaimService {
             );
         }
 
-        if (executionClaimPort.existsByExecutionId(executionId)) {
-            log.info(
-                    "[EXECUTION-SKIP] executionId {} already claimed. Skipping IO.",
-                    executionId
-            );
-            return Optional.empty();
-        }
-
         log.info(
                 "[EXECUTION-CLAIM-START] Attempting to claim execution. " +
                         "executionId={}, signalId={}, orderId={}",
@@ -111,8 +103,25 @@ public class OrderExecutionClaimService {
                 orderId
         );
 
-        executionClaimPort.claimExecution(executionId, signalId);
-
+        /*
+         * ВАЖНО:
+         *
+         * Сначала блокируем сам Order через SELECT ... FOR UPDATE
+         * и атомарно переводим его PENDING_EXECUTION -> EXECUTING.
+         *
+         * Это является главным барьером конкурентного execution.
+         *
+         * Нельзя сначала делать existsByExecutionId(), потому что
+         * это TOCTOU race:
+         *
+         * T1: exists -> false
+         * T2: exists -> false
+         * T1: INSERT claim
+         * T2: INSERT claim -> 23505
+         *
+         * После блокировки Order второй поток дождётся первого,
+         * затем увидит EXECUTING и завершит claim без INSERT.
+         */
         Optional<Order> orderOpt =
                 orderRepository.claimForExecution(orderId, context);
 
@@ -120,6 +129,15 @@ public class OrderExecutionClaimService {
             handleAlreadyProcessed(event);
             return Optional.empty();
         }
+
+        /*
+         * Order уже успешно захвачен и находится в EXECUTING.
+         *
+         * Execution claim создаётся в той же REQUIRES_NEW транзакции.
+         * Если INSERT завершится ошибкой, вся транзакция откатится,
+         * включая переход Order в EXECUTING.
+         */
+        executionClaimPort.claimExecution(executionId, signalId);
 
         return orderOpt;
     }
