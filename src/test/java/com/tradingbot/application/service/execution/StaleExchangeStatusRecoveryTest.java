@@ -7,6 +7,7 @@ import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.infrastructure.execution.ExecutionLockService;
 import com.tradingbot.infrastructure.outbox.OutboxService;
+import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.tracing.ExecutionLogger;
 import org.junit.jupiter.api.BeforeEach;
@@ -84,8 +85,19 @@ class StaleExchangeStatusRecoveryTest {
                         .payload(
                                 objectMapper.writeValueAsString(payload)
                         )
+                        .status(OutboxStatus.NEW)
+                        .sequenceNumber(1L)
+                        .retryCount(0)
+                        .attemptCount(1)
+                        .schemaVersion(1)
                         .build();
 
+        /*
+         * Execution уже был claimed ранее.
+         *
+         * Поэтому handler должен сразу остановиться:
+         * никакого повторного exchange IO и никакого commit.
+         */
         when(orderExecutionClaimService.claim(
                 any(),
                 any(),
