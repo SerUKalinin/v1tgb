@@ -2,8 +2,8 @@ package com.tradingbot.domain.risk;
 
 import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.tracing.BusinessContext;
-import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.ExecutionAttemptContext;
+import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.IdentityContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -18,7 +18,8 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class RiskEngineTest {
@@ -59,7 +60,10 @@ class RiskEngineTest {
 
         riskEngine.reserve(context, amount);
 
-        verify(riskService).reserve(context, eq(amount));
+        verify(riskService).reserve(
+                eq(context),
+                eq(amount)
+        );
     }
 
     @Test
@@ -74,6 +78,9 @@ class RiskEngineTest {
                 Instant.now()
         );
 
-        assertThrows(RuntimeException.class, () -> riskEngine.publish(event));
+        assertThrows(
+                RuntimeException.class,
+                () -> riskEngine.publish(event)
+        );
     }
 }
