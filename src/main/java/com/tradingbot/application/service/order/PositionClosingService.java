@@ -27,8 +27,6 @@ import java.util.List;
 public class PositionClosingService {
 
     private final PositionService positionService;
-    private final OrderManagementService oms;
-
     /**
      * Обрабатывает событие закрытия свечи.
      *
@@ -66,7 +64,20 @@ public class PositionClosingService {
      * @param high максимум свечи
      * @param low минимум свечи
      */
-    private void checkExitConditions(Position position, BigDecimal high, BigDecimal low) {
-        log.debug("[CLOSING-SERVICE] Checking exit for {}", position.getSymbol());
+    private void checkExitConditions(
+            Position position,
+            BigDecimal high,
+            BigDecimal low
+    ) {
+        log.debug(
+                "[CLOSING-SERVICE] Checking exit: symbol={}, strategyId={}, quantity={}, " +
+                        "entryPrice={}, candleHigh={}, candleLow={}",
+                position.getSymbol(),
+                position.getStrategyId(),
+                position.getNetQuantity(),
+                position.getAvgEntryPrice(),
+                high,
+                low
+        );
     }
 }
