@@ -1,6 +1,7 @@
 package com.tradingbot.application.service.execution;
 
 import com.tradingbot.application.risk.RiskEngine;
+import com.tradingbot.domain.event.OrderExecutedEvent;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Trade;
@@ -157,5 +158,99 @@ public class TradeService {
                 .stream()
                 .map(tradeMapper::toDomain)
                 .toList();
+    }
+
+    @Transactional
+    public void onOrderExecuted(
+            OrderExecutedEvent event,
+            ExecutionContext context
+    ) {
+        log.info(
+                "[TRADE-SERVICE] Creating trade from ORDER_EXECUTED for order: {} exchangeTradeId: {}",
+                event.getOrderId(),
+                event.getExchangeTradeId()
+        );
+
+        if (tradeRepository.existsByExchangeTradeId(event.getExchangeTradeId())) {
+            log.warn(
+                    "[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.",
+                    event.getExchangeTradeId()
+            );
+            return;
+        }
+
+        var order = orderRepository.findById(event.getOrderId())
+                .orElseThrow(() ->
+                        new IllegalStateException(
+                                "Order not found: " + event.getOrderId()
+                        )
+                );
+
+        TradeEntity entity = new TradeEntity();
+
+        entity.setId(
+                IdentityFactory.deriveEventId(
+                        context.attempt().executionId(),
+                        "trade"
+                )
+        );
+
+        entity.setOrder(order);
+        entity.setClientOrderId(order.getClientOrderId());
+        entity.setExchangeTradeId(event.getExchangeTradeId());
+        entity.setSymbol(event.getSymbol());
+        entity.setQuantity(event.getQuantity());
+        entity.setPrice(event.getPrice());
+        entity.setSide(order.getSide());
+        entity.setStrategyId(order.getStrategyId());
+        entity.setExecutedAt(Instant.now());
+        entity.setRealizedPnl(java.math.BigDecimal.ZERO);
+
+        TradeEntity saved = tradeRepository.save(entity);
+
+        ExecutionContext tradeContext = context.withNextStep(
+                IdentityFactory.deriveEventId(
+                        context.attempt().executionId(),
+                        "trade-publish"
+                )
+        );
+
+        TradeCreatedEvent tradeCreatedEvent = new TradeCreatedEvent(
+                tradeContext.identity(),
+                tradeContext.attempt(),
+                tradeContext.business(),
+                saved.getId(),
+                saved.getOrder().getId(),
+                saved.getSymbol(),
+                saved.getStrategyId(),
+                saved.getQuantity(),
+                saved.getPrice(),
+                saved.getSide(),
+                order.getStopLoss(),
+                order.getTakeProfit()
+        );
+
+        outboxService.publishEvent(
+                tradeContext,
+                "TRADE",
+                "TRADE_CREATED",
+                tradeCreatedEvent
+        );
+
+        riskEngine.publish(new RiskEvent.TradeExecuted(
+                saved.getExchangeTradeId(),
+                saved.getSymbol(),
+                saved.getQuantity(),
+                saved.getPrice(),
+                saved.getRealizedPnl(),
+                saved.getExecutedAt()
+        ));
+
+        log.info(
+                "[TRADE-SERVICE] Trade created successfully. tradeId={}, orderId={}, exchangeTradeId={}",
+                saved.getId(),
+                saved.getOrder().getId(),
+                saved.getExchangeTradeId()
+        );
     }
 }
