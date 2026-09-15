@@ -1,310 +1,556 @@
-# 📜 STATE MACHINE CONTRACT v1 — OMS EXECUTION CORE
+# STATE MACHINE CONTRACT
 
-## 🎯 PURPOSE
-
-This document defines the canonical order state machine for the OMS execution pipeline.
-
-The goal of this contract is to guarantee:
-
-- deterministic execution semantics
-- capital safety
-- retry-safe execution
-- idempotent state transitions
-- strict execution ownership
-- crash-safe recovery behavior
-- reconciliation correctness
-
-This contract is immutable unless explicitly versioned.
+**Version:** 1.1
+**Status:** Canonical Order State Machine
+**Scope:** Order lifecycle
 
 ---
 
-# 1. STATE DEFINITIONS
+# 1. Purpose
 
-The OMS supports the following canonical order states.
+This document defines the canonical state machine for an order.
 
-| State | Description |
-|---|---|
-| PENDING | Order created but not yet submitted to exchange |
-| EXECUTING | Exchange execution currently in progress |
-| UNKNOWN | Exchange outcome unknown due to timeout, disconnect, crash, or ambiguous acknowledgement |
-| FILLED | Order fully executed on exchange |
-| REJECTED | Order permanently rejected |
-| CANCELLED | Order cancelled before execution |
+The state machine is the Single Source of Truth for legal lifecycle transitions.
+
+No service, adapter, scheduler, recovery process or event handler may invent an undocumented transition.
 
 ---
 
-# 2. TERMINAL STATES
+# 2. Canonical States
 
-The following states are terminal and immutable:
+The canonical order states are:
 
-- FILLED
-- REJECTED
-- CANCELLED
-
-Terminal state guarantees:
-
-- terminal states are FINAL
-- terminal states are IMMUTABLE
-- terminal states cannot transition further
-- terminal states cannot be reopened
-- terminal states cannot be overridden by reconciliation
-- terminal states cannot be bypassed by retry logic
-
----
-
-# 3. ALLOWED TRANSITIONS
-
-The following transitions are the ONLY valid transitions in the system.
-
-## Execution Flow
-
-PENDING -> EXECUTING
-
-EXECUTING -> FILLED
-EXECUTING -> REJECTED
-EXECUTING -> UNKNOWN
-
-UNKNOWN -> FILLED
-UNKNOWN -> REJECTED
-UNKNOWN -> EXECUTING
-
-## Cancellation Flow
-
-PENDING -> CANCELLED
+```text
+NEW
+VALIDATED
+PENDING_EXECUTION
+EXECUTING
+SENT_TO_EXCHANGE
+PARTIALLY_FILLED
+FILLED
+REJECTED
+CANCELED
+UNKNOWN
+RECOVERING
+ERROR
+```
 
 ---
 
-# 4. FORBIDDEN TRANSITIONS
+# 3. State Categories
 
-Any transition not explicitly allowed is forbidden.
+## 3.1 Initial States
 
-Explicitly forbidden transitions include:
+```text
+NEW
+VALIDATED
+```
 
-## Terminal Resurrection
-
-FILLED -> *
-REJECTED -> *
-CANCELLED -> *
-
-## Invalid Execution Recovery
-
-REJECTED -> EXECUTING
-FILLED -> EXECUTING
-CANCELLED -> EXECUTING
-
-## Invalid Lifecycle Re-entry
-
-FILLED -> PENDING
-REJECTED -> PENDING
-CANCELLED -> PENDING
-
-UNKNOWN -> PENDING
-
-## Invalid Cancellation
-
-EXECUTING -> CANCELLED
-FILLED -> CANCELLED
+These states represent order creation and validation before execution.
 
 ---
 
-# 5. EXECUTION OWNERSHIP
+## 3.2 Execution States
 
-Execution ownership is mandatory.
+```text
+PENDING_EXECUTION
+EXECUTING
+SENT_TO_EXCHANGE
+PARTIALLY_FILLED
+UNKNOWN
+RECOVERING
+```
 
-Execution processing MUST follow claim-based ownership semantics.
-
-## Rules
-
-- only claimed execution owner may commit execution result
-- execution ownership is identified by executionId
-- commit phase MUST validate ownership before state mutation
-- stale execution attempts MUST be rejected
-- concurrent execution attempts MUST NOT mutate order state
-- retry execution MUST reuse ownership validation rules
-
-## Ownership Guarantees
-
-The system MUST guarantee:
-
-- single execution authority
-- no double execution
-- no split-brain execution commits
-- deterministic execution result ownership
+These states represent an execution lifecycle that has not yet reached terminal completion.
 
 ---
 
-# 6. TIMEOUT SEMANTICS
+## 3.3 Terminal States
 
-Exchange timeout NEVER means rejection.
+```text
+FILLED
+REJECTED
+CANCELED
+ERROR
+```
 
-Timeout is NOT execution failure.
+Terminal means:
 
-Timeout means:
-
-- exchange result is unknown
-- exchange acknowledgement may still arrive later
-- execution may already have happened remotely
-- order state becomes UNKNOWN
-
-## Mandatory Rules
-
-Exchange timeout MUST transition:
-
-EXECUTING -> UNKNOWN
-
-The system MUST NEVER:
-
-- auto-reject timeout orders
-- auto-cancel timeout orders
-- assume exchange rollback
-- release reserved risk automatically on timeout
-
-## UNKNOWN State Guarantees
-
-UNKNOWN state indicates:
-
-- execution ambiguity
-- reconciliation required
-- execution finality unresolved
-
-UNKNOWN orders remain recoverable only through:
-
-- reconciliation
-- exchange status verification
-- deterministic recovery flow
+> The execution lifecycle is complete and ordinary execution may not continue.
 
 ---
 
-# 7. RECONCILIATION RULES
+# 4. Allowed Transitions
 
-Reconciliation is verification-only.
+The canonical transitions are:
 
-Reconciliation exists to verify external exchange reality against internal OMS state.
+```text
+NEW
+ ├──> VALIDATED
+ ├──> PENDING_EXECUTION
+ └──> REJECTED
+```
 
-## Reconciliation MUST NOT
+```text
+VALIDATED
+ ├──> PENDING_EXECUTION
+ └──> REJECTED
+```
 
-Reconciliation MUST NOT:
+```text
+PENDING_EXECUTION
+ ├──> EXECUTING
+ ├──> CANCELED
+ └──> REJECTED
+```
 
-- create order
-- bypass state machine
-- resurrect terminal state
-- mutate immutable terminal state
-- fabricate execution result
-- overwrite valid ownership
-- introduce illegal transitions
+```text
+EXECUTING
+ ├──> EXECUTING
+ ├──> SENT_TO_EXCHANGE
+ ├──> PARTIALLY_FILLED
+ ├──> FILLED
+ ├──> REJECTED
+ ├──> CANCELED
+ └──> UNKNOWN
+```
 
-## Reconciliation MAY
+```text
+SENT_TO_EXCHANGE
+ ├──> PARTIALLY_FILLED
+ ├──> FILLED
+ ├──> REJECTED
+ └──> CANCELED
+```
 
-Reconciliation MAY:
+```text
+PARTIALLY_FILLED
+ ├──> PARTIALLY_FILLED
+ ├──> FILLED
+ ├──> CANCELED
+ └──> REJECTED
+```
 
-- verify exchange status
-- resolve UNKNOWN state
-- finalize ambiguous execution result
-- synchronize external execution outcome
+```text
+UNKNOWN
+ └──> RECOVERING
+```
 
-## Allowed Reconciliation Transitions
+```text
+RECOVERING
+ ├──> FILLED
+ ├──> REJECTED
+ ├──> CANCELED
+ └──> UNKNOWN
+```
 
-UNKNOWN -> FILLED
-UNKNOWN -> REJECTED
+Terminal states:
 
-ONLY if verified by authoritative exchange state.
-
----
-
-# 8. IDEMPOTENCY REQUIREMENTS
-
-All state transitions MUST be idempotent.
-
-Repeated processing MUST NOT:
-
-- duplicate execution
-- duplicate fills
-- duplicate reservations
-- create inconsistent transitions
-
-## Idempotency Guarantees
-
-The system MUST guarantee:
-
-- same executionId => same result
-- duplicate commit => no-op
-- retry-safe execution
-- crash-safe recovery
-
----
-
-# 9. CONCURRENCY GUARANTEES
-
-The state machine MUST remain deterministic under concurrency.
-
-## Required Guarantees
-
-- exactly one active execution owner
-- serialized state mutation
-- optimistic or pessimistic concurrency enforcement
-- stale writers rejected
-- concurrent retries safe
-
-The system MUST reject:
-
-- concurrent commit races
-- duplicate exchange submission
-- out-of-order state mutation
+```text
+FILLED       → no transition
+REJECTED     → no transition
+CANCELED     → no transition
+ERROR        → no transition
+```
 
 ---
 
-# 10. CAPITAL SAFETY RULES
+# 5. Execution Ownership
 
-Capital safety overrides throughput.
+A transition into:
 
-The system MUST prioritize:
+```text
+EXECUTING
+```
 
-1. deterministic execution
-2. consistency
-3. idempotency
-4. correctness
-5. observability
-6. throughput
+represents the establishment of execution ownership.
 
-The system MUST NEVER:
+Ownership is not a separate order state.
 
-- release reserved capital before execution finality
-- assume rejection without verification
-- execute twice
-- mutate terminal execution result
+Therefore:
 
----
+```text
+CLAIMED
+```
 
-# 11. CRASH RECOVERY GUARANTEES
+is NOT a canonical `OrderStatus`.
 
-The system MUST survive:
+It is an execution ownership condition.
 
-- process crash
-- network disconnect
-- exchange timeout
-- duplicate retry
-- partial execution acknowledgement
-
-Recovery flow MUST remain:
-
-- deterministic
-- idempotent
-- ownership-safe
-- state-machine compliant
+The system MAY internally represent a claim record, but it MUST NOT introduce `CLAIMED` as an alternative lifecycle state unless this document is explicitly revised.
 
 ---
 
-# 12. STATE MACHINE AUTHORITY
+# 6. PENDING_EXECUTION → EXECUTING
 
-This document is the canonical authority for:
+This is the canonical first execution transition.
 
-- order lifecycle
-- transition legality
-- execution finality
-- reconciliation boundaries
-- retry semantics
-- ownership semantics
+Before exchange I/O:
 
-All services MUST comply with this contract.
+```text
+PENDING_EXECUTION
+        ↓
+EXECUTING
+        ↓
+EXCHANGE I/O
+```
 
-No component may bypass this state machine.
+Exchange I/O MUST NOT occur while the order remains merely `PENDING_EXECUTION`.
+
+---
+
+# 7. EXECUTING → UNKNOWN
+
+`UNKNOWN` is entered when the local system cannot establish the exchange outcome.
+
+Examples:
+
+* network timeout after submission;
+* connection loss;
+* process crash after exchange submission;
+* ambiguous exchange response;
+* exchange API unavailable while execution result is unresolved.
+
+The system MUST NOT map every I/O exception to `REJECTED`.
+
+---
+
+# 8. UNKNOWN Safety Rule
+
+`UNKNOWN` MUST NOT be treated as an ordinary retryable state.
+
+The meaning is:
+
+```text
+REMOTE RESULT UNKNOWN
+```
+
+Therefore:
+
+```text
+UNKNOWN
+   ↓
+RECOVERING
+   ↓
+QUERY AUTHORITATIVE EXCHANGE STATE
+```
+
+Recovery must determine the actual exchange state.
+
+Blind resubmission from `UNKNOWN` is forbidden.
+
+---
+
+# 9. RECOVERING
+
+`RECOVERING` means that the system is actively resolving an unknown execution outcome.
+
+`RECOVERING` exists to make the recovery process explicit and observable.
+
+The recovery process may resolve the order to:
+
+```text
+FILLED
+REJECTED
+CANCELED
+UNKNOWN
+```
+
+A return to `UNKNOWN` means:
+
+> The recovery attempt itself did not obtain a sufficiently authoritative answer.
+
+---
+
+# 10. UNKNOWN Must Not Become EXECUTING Directly
+
+The following is forbidden as a normal recovery transition:
+
+```text
+UNKNOWN → EXECUTING
+```
+
+because the exchange may already have accepted or filled the order.
+
+A retry from `UNKNOWN` could therefore create a duplicate remote order.
+
+Any exceptional retry after UNKNOWN requires explicit evidence that the previous remote attempt did not execute and a policy that authorizes a new execution attempt.
+
+---
+
+# 11. PARTIALLY_FILLED
+
+`PARTIALLY_FILLED` is a non-terminal state.
+
+It represents:
+
+```text
+0 < executedQuantity < requestedQuantity
+```
+
+The state must preserve cumulative execution data.
+
+Repeated exchange notifications that do not increase cumulative executed quantity MUST be idempotent.
+
+---
+
+# 12. Partial Fill Completion
+
+The canonical completion path is:
+
+```text
+PARTIALLY_FILLED
+      ↓
+FILLED
+```
+
+When the order is canceled after partial execution:
+
+```text
+PARTIALLY_FILLED
+      ↓
+CANCELED
+```
+
+The already executed quantity MUST remain part of the execution result.
+
+---
+
+# 13. Terminal States
+
+## FILLED
+
+The complete requested execution is confirmed.
+
+No additional execution is permitted.
+
+---
+
+## REJECTED
+
+The exchange or validated execution path explicitly rejected the order.
+
+No successful execution may later be performed under the same lifecycle.
+
+---
+
+## CANCELED
+
+The order is explicitly canceled and will not continue execution.
+
+If partial execution occurred before cancellation, the executed quantity remains persisted.
+
+---
+
+## ERROR
+
+`ERROR` represents a terminal local/system failure that has been explicitly committed as terminal.
+
+`ERROR` MUST NOT be used as a substitute for `UNKNOWN`.
+
+If the remote exchange outcome is uncertain:
+
+```text
+UNKNOWN
+```
+
+must be used instead.
+
+---
+
+# 14. Stale Execution
+
+An execution attempt is stale when:
+
+* the order is terminal;
+* the execution identity does not match;
+* the execution ownership is no longer valid;
+* the execution attempt is superseded by an authoritative recovery result.
+
+A stale execution MUST NOT mutate the order.
+
+---
+
+# 15. Execution Identity
+
+Every lifecycle mutation requiring execution context MUST validate:
+
+```text
+context.executionId
+==
+order.executionId
+```
+
+Mismatch means:
+
+```text
+NO MUTATION
+NO EXCHANGE I/O
+```
+
+---
+
+# 16. Idempotency
+
+For the same execution identity:
+
+```text
+executionId
+```
+
+repeated delivery MUST NOT create another execution.
+
+Examples:
+
+```text
+same FILLED result
+→ no-op
+
+same REJECTED result
+→ no-op
+
+same PARTIALLY_FILLED cumulative quantity
+→ no-op
+```
+
+---
+
+# 17. Exchange Status Mapping
+
+Exchange-specific statuses MUST be converted into the canonical state machine.
+
+The domain must not depend on raw Binance/Bybit/OKX status names.
+
+Example mapping:
+
+```text
+EXCHANGE FILLED
+      ↓
+FILLED
+```
+
+```text
+EXCHANGE PARTIALLY_FILLED
+      ↓
+PARTIALLY_FILLED
+```
+
+```text
+EXCHANGE REJECTED
+      ↓
+REJECTED
+```
+
+```text
+EXCHANGE CANCELED
+      ↓
+CANCELED
+```
+
+```text
+AMBIGUOUS EXCHANGE RESULT
+      ↓
+UNKNOWN
+```
+
+---
+
+# 18. Reconciliation Rule
+
+Reconciliation is authoritative for resolving uncertain exchange state.
+
+Canonical flow:
+
+```text
+UNKNOWN
+   ↓
+RECOVERING
+   ↓
+EXCHANGE QUERY
+   ↓
+AUTHORITATIVE RESULT
+```
+
+Reconciliation MUST NOT invent a result that is not supported by exchange evidence.
+
+---
+
+# 19. State Mutation Authority
+
+Normal state transitions may be performed only by the component responsible for the corresponding lifecycle phase.
+
+Execution commit MUST verify execution ownership.
+
+A stale or foreign execution context cannot commit a result.
+
+---
+
+# 20. Forbidden Transitions
+
+The following are forbidden:
+
+```text
+FILLED → anything
+REJECTED → anything
+CANCELED → anything
+ERROR → anything
+```
+
+and:
+
+```text
+UNKNOWN → EXECUTING
+```
+
+without explicit verified proof that the original remote attempt did not execute.
+
+Also forbidden:
+
+```text
+PENDING_EXECUTION → FILLED
+```
+
+without an execution lifecycle having been established.
+
+---
+
+# 21. Canonical Execution Flow
+
+```text
+PENDING_EXECUTION
+        ↓
+   CLAIM OWNERSHIP
+        ↓
+     EXECUTING
+        │
+        ├──> SENT_TO_EXCHANGE
+        │        │
+        │        ├──> PARTIALLY_FILLED
+        │        │        └──> FILLED
+        │        │
+        │        ├──> FILLED
+        │        ├──> REJECTED
+        │        └──> CANCELED
+        │
+        ├──> PARTIALLY_FILLED
+        │        ├──> PARTIALLY_FILLED
+        │        ├──> FILLED
+        │        └──> CANCELED
+        │
+        ├──> FILLED
+        ├──> REJECTED
+        ├──> CANCELED
+        └──> UNKNOWN
+                 ↓
+             RECOVERING
+                 ↓
+        FILLED / REJECTED / CANCELED
+                 OR
+              UNKNOWN
+```
+
+---
+
+# 22. Contract Rule
+
+Any implementation transition not represented here is considered a contract violation until this document is intentionally revised.

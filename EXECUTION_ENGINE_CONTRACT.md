@@ -1,391 +1,668 @@
-# 📜 EXECUTION ENGINE CONTRACT v1 — OMS EXECUTION CORE
+# EXECUTION ENGINE CONTRACT
 
-## 🎯 PURPOSE
-
-This document defines the canonical execution semantics of the OMS execution engine.
-
-The execution engine is responsible for:
-
-- deterministic exchange execution
-- exactly-once execution semantics
-- idempotent retries
-- ownership-safe execution
-- crash-safe recovery
-- concurrency-safe state mutation
-- capital-safe execution finality
-
-This contract is immutable unless explicitly versioned.
+**Version:** 1.1
+**Status:** Canonical Execution Engine Contract
 
 ---
 
-# 1. CORE EXECUTION PRINCIPLES
+# 1. Purpose
 
-The execution engine MUST guarantee:
+The Execution Engine is responsible for deterministic, idempotent and crash-safe execution of a persisted order against an external exchange.
 
-- single execution ownership
-- deterministic execution flow
-- exactly-once execution semantics
-- retry-safe processing
-- crash-safe recovery
-- idempotent commits
-- serialized state mutation
+Its primary guarantees are:
 
-The execution engine MUST NEVER:
-
-- execute order twice
-- bypass state machine
-- mutate terminal state
-- commit stale execution
-- release capital before finality
-- assume exchange timeout means rejection
+* one execution identity;
+* one ownership lifecycle;
+* no duplicate exchange submission;
+* explicit execution state;
+* explicit recovery;
+* ownership validation;
+* atomic execution commit;
+* transactional outbox;
+* safe retries.
 
 ---
 
-# 2. EXECUTION PIPELINE
+# 2. Canonical Execution Pipeline
 
-Canonical execution flow:
+The canonical pipeline is:
 
-PENDING
-→ CLAIMED
-→ EXECUTING
-→ COMMIT
-→ FINAL STATE
+```text
+PENDING_EXECUTION
+      ↓
+CLAIM OWNERSHIP
+      ↓
+EXECUTING
+      ↓
+EXCHANGE I/O
+      ↓
+EXECUTION RESULT
+      ↓
+COMMIT
+      ↓
+OUTBOX DISPATCH
+```
 
-Canonical final states:
+`CLAIMED` is not an order state.
 
-- FILLED
-- REJECTED
-- UNKNOWN
-
-Execution pipeline MUST remain linear and deterministic.
-
-No alternative execution path may exist.
-
----
-
-# 3. CLAIM SEMANTICS
-
-Execution MUST begin with ownership claim.
-
-## Claim Requirements
-
-Claim operation MUST:
-
-- generate executionId
-- establish execution ownership
-- prevent concurrent execution
-- persist ownership atomically
-
-## Claim Guarantees
-
-Exactly one active execution owner per order.
-
-Concurrent claim attempts MUST fail.
-
-Claim MUST be idempotent.
-
-Repeated claim requests for same execution MUST return same ownership state.
+It is an ownership operation.
 
 ---
 
-# 4. EXECUTION OWNERSHIP
+# 3. Execution Identity
 
-Execution ownership is authoritative.
+The execution engine MUST NOT generate the execution identity during the claim step.
 
-Only current execution owner may:
+The execution identity must already exist before claim.
 
-- execute exchange request
-- commit execution result
-- mutate execution state
-- finalize order
+Canonical identity flow:
 
-## Ownership Validation
+```text
+signalId
+   ↓
+orderId
+   ↓
+executionId
+```
 
-Every commit MUST validate:
-
-- executionId
-- ownership validity
-- active ownership state
-- non-terminal order state
-
-Stale ownership MUST be rejected.
+The order must persist the execution identity before execution begins.
 
 ---
 
-# 5. EXECUTION ID RULES
+# 4. Execution Ownership
 
-Each execution attempt MUST have unique executionId.
+The claim operation establishes ownership of the existing `executionId`.
 
-executionId MUST:
+Conceptually:
 
-- uniquely identify execution attempt
-- survive retries
-- survive crashes
-- be persisted before exchange interaction
+```text
+order.executionId
+        ==
+context.executionId
+        ==
+claimed executionId
+```
 
-executionId MUST be immutable after claim.
+All three must refer to the same execution identity.
 
----
+If they do not match:
 
-# 6. EXCHANGE EXECUTION RULES
-
-Exchange interaction MUST occur ONLY after successful ownership claim.
-
-Execution engine MUST:
-
-- submit order exactly once
-- persist execution context before exchange call
-- treat exchange as non-transactional boundary
-- assume exchange response may be delayed or lost
-
-Exchange communication MUST be retry-safe.
+```text
+CLAIM FAILS
+NO EXCHANGE I/O
+```
 
 ---
 
-# 7. TIMEOUT SEMANTICS
+# 5. Claim Preconditions
 
-Exchange timeout NEVER means rejection.
+Execution claim is allowed only when:
 
-Timeout means:
+```text
+order exists
+AND
+order is not terminal
+AND
+order is executable
+AND
+executionId matches
+AND
+execution ownership can be established
+```
 
-- execution outcome unknown
-- exchange may still process request
-- execution finality unresolved
+The canonical executable state is:
 
-Mandatory transition:
+```text
+PENDING_EXECUTION
+```
 
-EXECUTING -> UNKNOWN
-
-Execution engine MUST NEVER:
-
-- auto-reject timeout
-- auto-cancel timeout
-- auto-release reserved capital
-- assume rollback on timeout
-
-UNKNOWN requires reconciliation.
-
----
-
-# 8. COMMIT PROTOCOL
-
-Commit phase finalizes execution result.
-
-Commit MUST be:
-
-- idempotent
-- ownership-validated
-- atomic
-- state-machine compliant
-
-## Commit Requirements
-
-Commit MUST validate:
-
-- execution ownership
-- executionId
-- allowed transition
-- non-terminal order state
-
-## Commit MUST Persist
-
-- final order state
-- execution result
-- exchange identifiers
-- timestamps
-- outbox events
-- audit metadata
-
-All within same transactional boundary.
+A stale `EXECUTING` order may be reclaimed only through explicit stale-execution recovery rules.
 
 ---
 
-# 9. IDEMPOTENCY GUARANTEES
+# 6. Claim Atomicity
 
-Execution engine MUST support retry-safe execution.
+The execution claim must not create a permanent half-state.
 
-Repeated processing MUST NOT:
+The system must guarantee that:
 
-- duplicate exchange execution
-- duplicate state transition
-- duplicate outbox event
-- duplicate fill
-- duplicate reservation mutation
+```text
+execution ownership
++
+order execution transition
+```
 
-## Required Guarantees
+are coordinated atomically or through an explicitly recoverable protocol.
 
-Same executionId MUST produce same result.
+The following dangerous state is forbidden:
 
-Duplicate commit MUST become no-op.
+```text
+execution claim committed
+BUT
+order remains PENDING_EXECUTION
+```
 
-Retry after crash MUST remain deterministic.
+when the presence of the claim causes all later retries to skip execution.
 
----
-
-# 10. OUTBOX GUARANTEES
-
-Execution result publication MUST use transactional outbox semantics.
-
-Outbox persistence MUST occur:
-
-- within same transaction as state mutation
-- after successful commit validation
-- exactly once per logical execution result
-
-Outbox MUST support:
-
-- idempotent publishing
-- replay safety
-- crash recovery
-
-Outbox MUST NEVER:
-
-- publish uncommitted state
-- publish duplicate logical event
-- bypass execution ownership validation
+If such a state can occur, the execution workflow is not crash-safe.
 
 ---
 
-# 11. RECOVERY SEMANTICS
+# 7. Claim Before Exchange I/O
 
-Recovery engine MUST be ownership-aware.
+The exchange may be contacted only after successful execution claim.
 
-Recovery MUST NOT:
+Canonical sequence:
 
-- re-execute committed execution
-- override terminal state
-- create duplicate execution
-- bypass state machine
+```text
+LOAD ORDER
+    ↓
+VALIDATE EXECUTION IDENTITY
+    ↓
+CLAIM OWNERSHIP
+    ↓
+COMMIT EXECUTING
+    ↓
+EXCHANGE I/O
+```
 
-Recovery MAY:
-
-- resume interrupted execution
-- reconcile UNKNOWN state
-- retry incomplete commit
-- continue valid claimed execution
-
-Recovery MUST remain deterministic.
-
----
-
-# 12. STALE EXECUTION REJECTION
-
-Stale execution attempts MUST be rejected.
-
-Execution becomes stale when:
-
-- ownership replaced
-- order finalized
-- executionId invalidated
-- newer execution exists
-
-Stale execution MUST NOT:
-
-- commit
-- mutate state
-- publish outbox event
-- release capital
+No exchange I/O may occur before ownership is established.
 
 ---
 
-# 13. CONCURRENCY GUARANTEES
+# 8. Exchange I/O Transaction Rule
 
-Execution engine MUST remain safe under concurrency.
+The database transaction used to establish execution ownership MUST NOT remain open while waiting for the exchange.
 
-The system MUST guarantee:
+Correct:
 
-- single active execution owner
-- serialized commit
-- atomic ownership validation
-- no split-brain execution
-- deterministic final state
+```text
+TX
+  claim
+  persist EXECUTING
+COMMIT
 
-Concurrent execution attempts MUST fail safely.
+exchange I/O
 
----
+TX
+  commit result
+COMMIT
+```
 
-# 14. CRASH CONSISTENCY
+Incorrect:
 
-Execution engine MUST survive:
+```text
+BEGIN TX
 
-- JVM crash
-- database reconnect
-- exchange timeout
-- partial commit
-- duplicate retry
-- process restart
+claim
+exchange I/O
+commit result
 
-Crash recovery MUST preserve:
-
-- ownership correctness
-- executionId consistency
-- state machine legality
-- outbox consistency
+COMMIT
+```
 
 ---
 
-# 15. CAPITAL SAFETY
+# 9. Execution Result
 
-Capital safety overrides throughput.
+Exchange results must be normalized into the canonical execution result model.
 
-The system MUST prioritize:
+Possible outcomes include:
 
-1. correctness
-2. deterministic execution
-3. idempotency
-4. consistency
-5. recovery safety
-6. throughput
+```text
+FILLED
+PARTIALLY_FILLED
+REJECTED
+CANCELED
+ACCEPTED
+EXCHANGE_STATE_UNKNOWN
+FAILED_IO
+```
 
-The system MUST NEVER:
-
-- release reserved funds before execution finality
-- assume failed execution without verification
-- finalize ambiguous exchange state incorrectly
-
----
-
-# 16. EXECUTION FINALITY
-
-Execution finality exists ONLY when:
-
-- terminal state committed
-- commit transaction completed
-- ownership validated
-- outbox persisted
-
-Execution is NOT final when:
-
-- exchange timeout occurred
-- UNKNOWN state active
-- commit incomplete
-- ownership unresolved
+The execution engine must map these outcomes to the canonical order state machine.
 
 ---
 
-# 17. STATE MACHINE AUTHORITY
+# 10. Known Rejection
 
-Execution engine MUST fully comply with:
+If the exchange explicitly rejects the order:
 
-- SYSTEM_CONTRACT.md
-- STATE_MACHINE_CONTRACT.md
+```text
+EXECUTING
+    ↓
+REJECTED
+```
 
-Execution engine MUST NEVER bypass canonical state machine rules.
-
-All execution logic MUST remain contract-driven.
+The rejection MUST NOT later be retried as if the exchange response had been unknown.
 
 ---
 
-# 18. CANONICAL EXECUTION MODEL
+# 11. Known Cancellation
 
-Canonical execution model:
+If the exchange explicitly cancels the order:
 
-CLAIM
-→ EXECUTE
-→ COMMIT
-→ PUBLISH
-→ RECONCILE (if UNKNOWN)
+```text
+EXECUTING / SENT_TO_EXCHANGE / PARTIALLY_FILLED
+    ↓
+CANCELED
+```
 
-No alternative execution flow is permitted.
+Any already executed quantity must remain persisted.
 
-This pipeline is the authoritative execution lifecycle of the OMS.
+---
+
+# 12. Successful Execution
+
+If the exchange confirms a full fill:
+
+```text
+EXECUTING / SENT_TO_EXCHANGE / PARTIALLY_FILLED
+    ↓
+FILLED
+```
+
+The execution commit must persist all authoritative exchange information available at that moment.
+
+Examples:
+
+* exchange order ID;
+* executed quantity;
+* average execution price;
+* execution timestamps;
+* execution identity.
+
+---
+
+# 13. Partial Fill
+
+A partial fill is a valid non-terminal outcome:
+
+```text
+EXECUTING
+    ↓
+PARTIALLY_FILLED
+```
+
+Repeated partial-fill notifications must be idempotent.
+
+The committed quantity must represent cumulative authoritative execution, not the same fill added repeatedly.
+
+---
+
+# 14. Unknown Outcome
+
+If the exchange response is ambiguous:
+
+```text
+EXECUTING
+    ↓
+UNKNOWN
+```
+
+The execution engine MUST NOT convert ambiguity into rejection.
+
+Examples:
+
+* timeout;
+* connection reset;
+* HTTP gateway timeout;
+* process crash after submission;
+* exchange response unavailable.
+
+---
+
+# 15. UNKNOWN Recovery
+
+The execution engine MUST hand uncertain executions to reconciliation/recovery.
+
+Canonical flow:
+
+```text
+UNKNOWN
+    ↓
+RECOVERING
+    ↓
+AUTHORITATIVE EXCHANGE QUERY
+    ↓
+FILLED / REJECTED / CANCELED
+```
+
+If the exchange still cannot provide an authoritative result:
+
+```text
+RECOVERING
+    ↓
+UNKNOWN
+```
+
+The engine MUST NOT blindly submit another order while the remote state is unresolved.
+
+---
+
+# 16. Retry Rule
+
+Retries are allowed for processing failures, not for blindly repeating remote execution.
+
+For example:
+
+```text
+same event delivery
+→ retry processing
+```
+
+is safe.
+
+But:
+
+```text
+UNKNOWN exchange outcome
+→ submit a second remote order
+```
+
+is forbidden without explicit proof that the original attempt did not execute.
+
+---
+
+# 17. Ownership Validation Before Commit
+
+Before applying an execution result, the engine MUST validate:
+
+```text
+order.executionId == context.executionId
+```
+
+and that the execution ownership is still valid.
+
+If ownership is stale or lost:
+
+```text
+NO COMMIT
+```
+
+The stale executor MUST NOT overwrite the authoritative result.
+
+---
+
+# 18. Execution Commit
+
+Execution commit MUST be atomic from the database perspective.
+
+The commit transaction is responsible for applying, as required:
+
+```text
+order state
+execution metadata
+exchange identifiers
+executed quantity
+average price
+risk settlement
+outbox events
+execution audit metadata
+```
+
+The business mutation and corresponding outbox records MUST commit together.
+
+---
+
+# 19. Transactional Outbox
+
+Execution commit does NOT synchronously publish events to all consumers.
+
+Instead:
+
+```text
+EXECUTION COMMIT
+      ↓
+PERSIST OUTBOX RECORDS
+      ↓
+DB COMMIT
+      ↓
+OUTBOX PROCESSOR
+      ↓
+EVENT DISPATCH
+```
+
+Therefore "publish" in the logical execution pipeline means:
+
+> persist the event into the transactional outbox.
+
+Actual consumer dispatch occurs after database commit.
+
+---
+
+# 20. Idempotency
+
+The primary execution idempotency key is:
+
+```text
+executionId
+```
+
+A duplicate execution delivery MUST NOT create:
+
+* a new exchange submission;
+* a new order lifecycle;
+* a second risk reservation;
+* a second settlement.
+
+---
+
+# 21. Execution Claim Duplicate
+
+If an execution claim already exists for the same execution identity, the system must determine whether the current processing attempt is:
+
+* a duplicate delivery of an already-running execution;
+* a completed execution;
+* a stale/incomplete execution;
+* a recoverable execution attempt.
+
+It MUST NOT blindly interpret "claim exists" as:
+
+```text
+execution already completed
+```
+
+A claim record proves ownership history, not successful completion.
+
+---
+
+# 22. Crash Safety
+
+The system must remain recoverable after crashes at every boundary.
+
+Relevant crash points include:
+
+```text
+before claim
+after claim before commit
+after EXECUTING persistence
+before exchange I/O
+after exchange submission
+before exchange response
+after exchange response
+before execution commit
+after execution commit
+before outbox dispatch
+after outbox dispatch
+```
+
+The resulting persistent state must permit deterministic recovery.
+
+---
+
+# 23. Crash After Exchange Submission
+
+The most dangerous crash point is:
+
+```text
+exchange accepted request
+        ↓
+process crashes
+        ↓
+local result not committed
+```
+
+The order MUST be recoverable as:
+
+```text
+UNKNOWN / recovery-required
+```
+
+and reconciliation must query the exchange.
+
+No blind duplicate submission is allowed.
+
+---
+
+# 24. Crash After Execution Commit
+
+If execution commit has succeeded:
+
+```text
+terminal/updated order state
++
+outbox records
+```
+
+must already be durable.
+
+A crash before event dispatch is therefore safe.
+
+The outbox processor will dispatch the event later.
+
+---
+
+# 25. Stale Execution Attempts
+
+A stale executor MUST NOT overwrite a newer authoritative state.
+
+Examples:
+
+```text
+old execution result arrives after reconciliation
+old worker finishes after another worker committed
+duplicate event reprocessed after terminal transition
+```
+
+All such attempts must be rejected or reduced to deterministic no-op behavior.
+
+---
+
+# 26. Finality
+
+An execution is final only when:
+
+```text
+terminal state committed
+AND
+execution ownership validated
+AND
+business state persisted
+AND
+required outbox records persisted atomically
+```
+
+Outbox consumer completion is NOT required for execution finality.
+
+---
+
+# 27. Exchange Order Identity
+
+Exchange order IDs are external identities.
+
+They MUST NOT replace:
+
+```text
+signalId
+orderId
+executionId
+eventId
+```
+
+They are stored as exchange metadata associated with the execution lifecycle.
+
+---
+
+# 28. Exchange-Agnostic Requirement
+
+The execution core MUST operate against an abstraction such as:
+
+```text
+ExecutionPort
+```
+
+Exchange-specific details belong to adapters.
+
+Example:
+
+```text
+BinanceExecutionAdapter
+BybitExecutionAdapter
+OkxExecutionAdapter
+FakeExecutionAdapter
+```
+
+The domain state machine must not contain exchange-specific statuses.
+
+---
+
+# 29. Determinism
+
+For identical persisted state, execution context and exchange result:
+
+```text
+resulting state
++
+settlement
++
+outbox events
+```
+
+must be deterministic.
+
+---
+
+# 30. Forbidden Behavior
+
+The execution engine MUST NOT:
+
+* generate a new executionId during claim;
+* execute before ownership;
+* hold DB transactions across exchange I/O;
+* treat UNKNOWN as REJECTED;
+* blindly retry UNKNOWN;
+* allow stale ownership to commit;
+* create a second lifecycle for the same executionId;
+* bypass the order state machine;
+* bypass risk settlement rules;
+* bypass transactional outbox.
+
+---
+
+# 31. Canonical Pipeline
+
+```text
+PENDING_EXECUTION
+       ↓
+VALIDATE IDENTITY
+       ↓
+CLAIM OWNERSHIP
+       ↓
+EXECUTING
+       ↓
+EXCHANGE I/O
+       ↓
+NORMALIZE RESULT
+       ↓
+VALIDATE OWNERSHIP
+       ↓
+EXECUTION COMMIT
+       ↓
+OUTBOX PERSISTED
+       ↓
+DB COMMIT
+       ↓
+OUTBOX DISPATCH
+       ↓
+PROJECTION / RECONCILIATION
+```
