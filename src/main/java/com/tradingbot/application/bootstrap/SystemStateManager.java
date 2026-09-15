@@ -92,6 +92,17 @@ public class SystemStateManager {
     }
 
     /**
+     * Проверяет, разрешена ли обработка торгового outbox.
+     *
+     * Outbox начинает обрабатываться только после полного startup pipeline:
+     * risk recovery -> reconciliation -> position rebuild -> READY -> TRADING_ENABLED.
+     *
+     * @return true только в состоянии TRADING_ENABLED
+     */
+    public boolean isTradingEnabled() {
+        return state == SystemState.TRADING_ENABLED;
+    }
+    /**
      * Проверяет, находится ли система в режиме холодного старта.
      *
      * @return true если система выполняет cold start reconciliation

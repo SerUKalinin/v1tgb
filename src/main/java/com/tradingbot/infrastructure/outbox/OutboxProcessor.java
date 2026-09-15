@@ -1,10 +1,13 @@
 package com.tradingbot.infrastructure.outbox;
 
+import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.application.event.OutboxEventRouter;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.tracing.ExecutionEventType;
 import com.tradingbot.tracing.ExecutionLogRecord;
+import com.tradingbot.tracing.ExecutionLogger;
+import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -49,7 +52,10 @@ public class OutboxProcessor implements ApplicationContextAware {
     /**
      * Логгер исполнительных событий (для трассировки обработки outbox).
      */
-    private final com.tradingbot.tracing.ExecutionLogger executionLogger;
+    private final ExecutionLogger executionLogger;
+
+
+    private final SystemStateManager systemStateManager;
 
     /**
      * Spring ApplicationContext для получения проксированного self-bean.
@@ -78,7 +84,7 @@ public class OutboxProcessor implements ApplicationContextAware {
      * Вызывается при завершении работы приложения.
      * Переводит процессор в режим остановки.
      */
-    @jakarta.annotation.PreDestroy
+    @PreDestroy
     public void shutdown() {
         this.shuttingDown = true;
         log.info("[OUTBOX] Получен сигнал завершения. Остановка процессора...");
@@ -104,7 +110,15 @@ public class OutboxProcessor implements ApplicationContextAware {
      */
     @Scheduled(fixedDelayString = "${app.outbox.scan-interval:500}")
     public void scheduledProcess() {
-        if (!enabled || shuttingDown) return;
+
+        if (!enabled || shuttingDown) {
+            return;
+        }
+
+        if (!systemStateManager.isTradingEnabled()) {
+            return;
+        }
+
         processOutbox();
     }
 
