@@ -1,0 +1,334 @@
+package com.tradingbot.application.service.risk;
+
+import com.tradingbot.application.bootstrap.SystemStateManager;
+import com.tradingbot.application.risk.OrderCompensationService;
+import com.tradingbot.application.risk.RiskEngine;
+import com.tradingbot.application.service.execution.PositionRebuildService;
+import com.tradingbot.application.service.system.AdminNotificationService;
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.common.enums.OrderType;
+import com.tradingbot.domain.execution.ExchangeOrderQueryService;
+import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.model.OrderRepositoryPort;
+import com.tradingbot.domain.policy.TransitionValidator;
+import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.ExecutionLogger;
+import com.tradingbot.tracing.IdentityFactory;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.math.BigDecimal;
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.*;
+
+class ReconciliationRejectedCanceledTest {
+
+    private ReconciliationService reconciliationService;
+
+    private OrderRepositoryPort orderRepository;
+    private ExchangeOrderQueryService exchangeQueryService;
+    private OrderCompensationService orderCompensationService;
+
+    @BeforeEach
+    void setUp() {
+
+        orderRepository =
+                mock(OrderRepositoryPort.class);
+
+        exchangeQueryService =
+                mock(ExchangeOrderQueryService.class);
+
+        orderCompensationService =
+                mock(OrderCompensationService.class);
+
+        reconciliationService =
+                new ReconciliationService(
+                        orderRepository,
+                        mock(OutboxEventRepository.class),
+                        exchangeQueryService,
+                        orderCompensationService,
+                        mock(RiskEngine.class),
+                        mock(AdminNotificationService.class),
+                        mock(PositionRebuildService.class),
+                        mock(SystemStateManager.class),
+                        mock(TransitionValidator.class),
+                        mock(ExecutionLogger.class)
+                );
+    }
+
+    @Test
+    void shouldRecoverUnknownOrderToRejectedAndReleaseReservation()
+            throws Exception {
+
+        UUID orderId =
+                UUID.randomUUID();
+
+        UUID signalId =
+                UUID.randomUUID();
+
+        Order order =
+                Order.createPendingExecution(
+                        orderId,
+                        "client-rejected",
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        OrderType.MARKET,
+                        BigDecimal.ONE,
+                        new BigDecimal("50000"),
+                        "strategy-1",
+                        signalId
+                );
+
+        /*
+         * Реальное состояние после:
+         *
+         * PENDING_EXECUTION
+         * -> EXECUTING
+         * -> UNKNOWN
+         *
+         * Делаем executionId детерминированным через доменную
+         * identity chain.
+         */
+        UUID executionId =
+                IdentityFactory.deriveExecution(
+                        orderId,
+                        1
+                );
+
+        ReflectionTestUtils.setField(
+                order,
+                "executionId",
+                executionId
+        );
+
+        ExecutionContext context =
+                ExecutionContext.of(order);
+
+        order.markExecuting(
+                context
+        );
+
+        order.markAsUnknown(
+                context
+        );
+
+        assertEquals(
+                OrderStatus.UNKNOWN,
+                order.getStatus()
+        );
+
+        when(
+                orderRepository.claimForReconciliation(
+                        eq(orderId)
+                )
+        ).thenReturn(
+                Optional.of(order)
+        );
+
+        when(
+                exchangeQueryService.getOrderStatus(
+                        eq("client-rejected")
+                )
+        ).thenReturn(
+                ExecutionResult.rejected(
+                        orderId,
+                        "TEST_REJECTED"
+                )
+        );
+
+        reconciliationService.syncOrderWithExchange(
+                order,
+                context
+        );
+
+        /*
+         * UNKNOWN -> RECOVERING -> REJECTED
+         */
+        assertEquals(
+                OrderStatus.REJECTED,
+                order.getStatus(),
+                "Rejected exchange result must produce REJECTED order"
+        );
+
+        /*
+         * Execution identity cannot disappear during recovery.
+         */
+        assertEquals(
+                executionId,
+                order.getExecutionId(),
+                "ExecutionId must remain unchanged"
+        );
+
+        assertNotNull(
+                order.getExecutionStartedAt(),
+                "Execution start timestamp must remain present"
+        );
+
+        /*
+         * Reservation must be released/compensated.
+         *
+         * Для чистого rejected order executedQuantity обычно null,
+         * поэтому проверяем сам факт вызова compensation service
+         * с текущим доменным остатком.
+         */
+        verify(
+                orderCompensationService,
+                times(1)
+        ).releasePartial(
+                eq(order),
+                eq(order.getExecutedQuantity())
+        );
+
+        /*
+         * Order state must be persisted exactly once after the
+         * reconciliation action.
+         *
+         * Первый save — UNKNOWN -> RECOVERING.
+         * Второй save — RECOVERING -> REJECTED.
+         */
+        verify(
+                orderRepository,
+                times(2)
+        ).save(
+                eq(order)
+        );
+
+        /*
+         * Биржа была опрошена ровно один раз.
+         */
+        verify(
+                exchangeQueryService,
+                times(1)
+        ).getOrderStatus(
+                eq("client-rejected")
+        );
+    }
+
+    @Test
+    void shouldRecoverUnknownOrderToCanceledAndReleaseReservation()
+            throws Exception {
+
+        UUID orderId =
+                UUID.randomUUID();
+
+        UUID signalId =
+                UUID.randomUUID();
+
+        Order order =
+                Order.createPendingExecution(
+                        orderId,
+                        "client-canceled",
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        OrderType.MARKET,
+                        BigDecimal.ONE,
+                        new BigDecimal("50000"),
+                        "strategy-1",
+                        signalId
+                );
+
+        UUID executionId =
+                IdentityFactory.deriveExecution(
+                        orderId,
+                        1
+                );
+
+        ReflectionTestUtils.setField(
+                order,
+                "executionId",
+                executionId
+        );
+
+        ExecutionContext context =
+                ExecutionContext.of(order);
+
+        order.markExecuting(
+                context
+        );
+
+        order.markAsUnknown(
+                context
+        );
+
+        assertEquals(
+                OrderStatus.UNKNOWN,
+                order.getStatus()
+        );
+
+        when(
+                orderRepository.claimForReconciliation(
+                        eq(orderId)
+                )
+        ).thenReturn(
+                Optional.of(order)
+        );
+
+        when(
+                exchangeQueryService.getOrderStatus(
+                        eq("client-canceled")
+                )
+        ).thenReturn(
+                ExecutionResult.canceled(
+                        orderId
+                )
+        );
+
+        reconciliationService.syncOrderWithExchange(
+                order,
+                context
+        );
+
+        /*
+         * UNKNOWN -> RECOVERING -> CANCELED
+         */
+        assertEquals(
+                OrderStatus.CANCELED,
+                order.getStatus(),
+                "Canceled exchange result must produce CANCELED order"
+        );
+
+        assertEquals(
+                executionId,
+                order.getExecutionId(),
+                "ExecutionId must remain unchanged"
+        );
+
+        /*
+         * Reservation compensation обязана быть вызвана.
+         */
+        verify(
+                orderCompensationService,
+                times(1)
+        ).releasePartial(
+                eq(order),
+                eq(order.getExecutedQuantity())
+        );
+
+        /*
+         * UNKNOWN -> RECOVERING
+         * RECOVERING -> CANCELED
+         */
+        verify(
+                orderRepository,
+                times(2)
+        ).save(
+                eq(order)
+        );
+
+        verify(
+                exchangeQueryService,
+                times(1)
+        ).getOrderStatus(
+                eq("client-canceled")
+        );
+    }
+}

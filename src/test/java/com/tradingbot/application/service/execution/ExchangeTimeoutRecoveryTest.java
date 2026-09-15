@@ -7,7 +7,6 @@ import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.exchange.ExecutionPort;
-import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.infrastructure.execution.ExecutionLockService;
@@ -24,13 +23,16 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 class ExchangeTimeoutRecoveryTest {
 
     private OrderExecutionHandler handler;
+
     private ExecutionPort executionPort;
     private OrderRepositoryPort orderRepository;
     private OrderExecutionClaimService orderExecutionClaimService;
@@ -39,47 +41,77 @@ class ExchangeTimeoutRecoveryTest {
 
     @BeforeEach
     void setUp() {
-        executionPort = mock(ExecutionPort.class);
-        orderRepository = mock(OrderRepositoryPort.class);
-        orderExecutionClaimService = mock(OrderExecutionClaimService.class);
-        orderExecutionCommitService = mock(OrderExecutionCommitService.class);
-        objectMapper = new ObjectMapper();
 
-        handler = new OrderExecutionHandler(
-                executionPort,
-                orderRepository,
-                orderExecutionClaimService,
-                mock(ExecutionLockService.class),
-                mock(OrderCompensationService.class),
-                mock(OutboxService.class),
-                mock(ExecutionLogger.class),
-                objectMapper,
-                orderExecutionCommitService
-        );
+        executionPort =
+                mock(ExecutionPort.class);
+
+        orderRepository =
+                mock(OrderRepositoryPort.class);
+
+        orderExecutionClaimService =
+                mock(OrderExecutionClaimService.class);
+
+        orderExecutionCommitService =
+                mock(OrderExecutionCommitService.class);
+
+        objectMapper =
+                new ObjectMapper();
+
+        handler =
+                new OrderExecutionHandler(
+                        executionPort,
+                        orderRepository,
+                        orderExecutionClaimService,
+                        mock(ExecutionLockService.class),
+                        mock(OrderCompensationService.class),
+                        mock(OutboxService.class),
+                        mock(ExecutionLogger.class),
+                        objectMapper,
+                        orderExecutionCommitService
+                );
     }
 
     @Test
-    void recoveryFromTimeoutTest() throws Exception {
+    void exchangeTimeoutMustNotCommitAndMustNotPlaceDuplicateOrder()
+            throws Exception {
 
-        UUID orderId = UUID.randomUUID();
-        UUID signalId = UUID.randomUUID();
+        UUID orderId =
+                UUID.randomUUID();
+
+        UUID signalId =
+                UUID.randomUUID();
+
         UUID executionId =
-                IdentityFactory.deriveExecution(orderId, 1);
+                IdentityFactory.deriveExecution(
+                        orderId,
+                        1
+                );
 
-        String clientOrderId = "CL-" + orderId;
+        UUID eventId =
+                UUID.randomUUID();
 
-        Order order = Order.createPendingExecution(
-                orderId,
-                clientOrderId,
-                "BTCUSDT",
-                OrderSide.BUY,
-                OrderType.MARKET,
-                BigDecimal.ONE,
-                new BigDecimal("50000"),
-                "strategy-1",
-                signalId
-        );
+        String clientOrderId =
+                "CL-" + orderId;
 
+        Order order =
+                Order.createPendingExecution(
+                        orderId,
+                        clientOrderId,
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        OrderType.MARKET,
+                        BigDecimal.ONE,
+                        new BigDecimal("50000"),
+                        "strategy-1",
+                        signalId
+                );
+
+        /*
+         * Устанавливаем состояние, которое реально получает
+         * Order после claim:
+         *
+         * PENDING_EXECUTION -> EXECUTING
+         */
         ReflectionTestUtils.setField(
                 order,
                 "executionId",
@@ -104,34 +136,95 @@ class ExchangeTimeoutRecoveryTest {
                 OrderStatus.EXECUTING
         );
 
+        OrderCreatedEvent payload =
+                new OrderCreatedEvent(
+                        signalId,
+                        orderId,
+                        executionId
+                );
+
         OutboxEventEntity event =
-                new OutboxEventEntity();
-
-        event.setId(UUID.randomUUID());
-        event.setAggregateId(orderId);
-        event.setSignalId(signalId);
-        event.setExecutionId(executionId);
-        event.setCausationId(orderId);
-        event.setCorrelationId(signalId);
-        event.setAttemptCount(1);
-
-        event.setPayload(
-                objectMapper.writeValueAsString(
-                        new OrderCreatedEvent(
-                                signalId,
-                                orderId,
-                                executionId
+                OutboxEventEntity.builder()
+                        .id(eventId)
+                        .eventId(eventId)
+                        .aggregateId(orderId)
+                        .signalId(signalId)
+                        .orderId(orderId)
+                        .executionId(executionId)
+                        .causationId(signalId)
+                        .correlationId(signalId)
+                        .aggregateType("ORDER")
+                        .eventType("ORDER_CREATED")
+                        .attemptCount(1)
+                        .payload(
+                                objectMapper.writeValueAsString(
+                                        payload
+                                )
                         )
+                        .build();
+
+        /*
+         * Первый заход:
+         *
+         * claim успешен -> EXECUTING
+         * exchange кидает timeout
+         *
+         * Сам handler НЕ должен делать commit.
+         */
+        when(
+                orderExecutionClaimService.claim(
+                        any(),
+                        any(),
+                        any()
+                )
+        ).thenReturn(
+                Optional.of(order)
+        );
+
+        when(
+                executionPort.placeOrder(
+                        eq(order)
+                )
+        ).thenThrow(
+                new RuntimeException(
+                        "EXCHANGE_TIMEOUT"
                 )
         );
 
-        when(orderExecutionClaimService.claim(
+        handler.consume(
+                event
+        );
+
+        /*
+         * Claim произошёл.
+         */
+        verify(
+                orderExecutionClaimService,
+                times(1)
+        ).claim(
                 any(),
                 any(),
                 any()
-        )).thenReturn(Optional.of(order));
+        );
 
-        doNothing().when(orderExecutionCommitService).commit(
+        /*
+         * Биржа была вызвана ровно один раз.
+         */
+        verify(
+                executionPort,
+                times(1)
+        ).placeOrder(
+                eq(order)
+        );
+
+        /*
+         * После timeout commit результата исполнения
+         * НЕ должен происходить.
+         */
+        verify(
+                orderExecutionCommitService,
+                never()
+        ).commit(
                 any(),
                 any(),
                 any(),
@@ -139,37 +232,106 @@ class ExchangeTimeoutRecoveryTest {
                 anyString()
         );
 
-        when(executionPort.placeOrder(eq(order)))
-                .thenReturn(
-                        ExecutionResult.filled(
-                                orderId,
-                                "EX-123",
-                                "trade-123",
-                                "BTCUSDT",
-                                OrderSide.BUY,
-                                BigDecimal.ONE,
-                                new BigDecimal("50000"),
-                                BigDecimal.ZERO,
-                                "USDT",
-                                clientOrderId
-                        )
-                );
+        /*
+         * Сам Order остаётся EXECUTING.
+         *
+         * Это ожидаемо:
+         * handler не имеет права самовольно переводить
+         * EXECUTING -> UNKNOWN/ERROR после неопределённого
+         * результата внешнего exchange.
+         *
+         * Дальнейшее состояние определяет reconciliation/watchdog.
+         */
+        assertEquals(
+                OrderStatus.EXECUTING,
+                order.getStatus()
+        );
 
-        handler.consume(event);
+        assertEquals(
+                executionId,
+                order.getExecutionId()
+        );
 
-        verify(orderExecutionClaimService, times(1))
-                .claim(any(), any(), any());
+        assertEquals(
+                1,
+                order.getExecutionAttempts()
+        );
 
-        verify(executionPort, times(1))
-                .placeOrder(eq(order));
+        assertNotNull(
+                order.getExecutionStartedAt()
+        );
 
-        verify(orderExecutionCommitService, times(1))
-                .commit(
+        /*
+         * ============================================================
+         * SECOND PASS
+         * ============================================================
+         *
+         * Повторная обработка того же ORDER_CREATED после того,
+         * как execution уже был claimed, не должна снова отправить
+         * ордер на биржу.
+         *
+         * Имитируем это так же, как работает recovery:
+         * claim возвращает Optional.empty().
+         */
+        when(
+                orderExecutionClaimService.claim(
                         any(),
                         any(),
-                        eq(order),
-                        any(),
-                        anyString()
-                );
+                        any()
+                )
+        ).thenReturn(
+                Optional.empty()
+        );
+
+        handler.consume(
+                event
+        );
+
+        /*
+         * Claim был вызван второй раз.
+         */
+        verify(
+                orderExecutionClaimService,
+                times(2)
+        ).claim(
+                any(),
+                any(),
+                any()
+        );
+
+        /*
+         * Но exchange получил только ОДИН placement.
+         */
+        verify(
+                executionPort,
+                times(1)
+        ).placeOrder(
+                eq(order)
+        );
+
+        /*
+         * Commit по-прежнему не выполнялся.
+         */
+        verify(
+                orderExecutionCommitService,
+                never()
+        ).commit(
+                any(),
+                any(),
+                any(),
+                any(),
+                anyString()
+        );
+
+        /*
+         * Handler не должен напрямую сохранять Order
+         * в timeout-path.
+         */
+        verify(
+                orderRepository,
+                never()
+        ).save(
+                any()
+        );
     }
 }

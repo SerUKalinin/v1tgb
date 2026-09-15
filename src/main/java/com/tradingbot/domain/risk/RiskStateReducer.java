@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -26,15 +27,11 @@ import java.util.UUID;
  *   <li>автоматический HALT при нарушении рисков</li>
  *   <li>идемпотентность по eventId</li>
  * </ul>
- * </p>
  */
 @Slf4j
 @Component
 public class RiskStateReducer {
 
-    /**
-     * Применяет событие к текущему состоянию risk-engine.
-     */
     public RiskState reduce(
             RiskState currentState,
             RiskEvent event
@@ -46,21 +43,12 @@ public class RiskStateReducer {
         );
     }
 
-    /**
-     * Применяет событие к состоянию risk-engine.
-     *
-     * @param currentState текущее состояние
-     * @param event событие
-     * @param isReplaying флаг режима восстановления (replay mode)
-     * @return новое состояние
-     */
     public RiskState reduce(
             RiskState currentState,
             RiskEvent event,
             boolean isReplaying
     ) {
 
-        // 1. Идемпотентность по eventId
         if (currentState.getProcessedEventIds()
                 .contains(event.getEventId())) {
 
@@ -73,7 +61,6 @@ public class RiskStateReducer {
         }
 
         try {
-            // 2. Диспетчеризация событий
             RiskState newState =
                     switch (event) {
 
@@ -123,17 +110,14 @@ public class RiskStateReducer {
                                 currentState;
                     };
 
-            // 3. Проверка инвариантов
             if (!isReplaying) {
                 newState.validateInvariants();
             }
 
-            // 4. Auto-HALT логика
             if (!isReplaying && !newState.isHalted()) {
                 checkAndApplyAutoHalt(newState);
             }
 
-            // 5. Обновление списка обработанных событий
             Set<String> newEventIds =
                     new HashSet<>(
                             newState.getProcessedEventIds()
@@ -164,14 +148,10 @@ public class RiskStateReducer {
         }
     }
 
-    /**
-     * Auto-halt проверка лимитов риска.
-     */
     private void checkAndApplyAutoHalt(
             RiskState state
     ) {
 
-        // Дневной убыток > 5%
         BigDecimal dailyLossLimit =
                 MoneyMath.multiply(
                         state.getTotalEquity(),
@@ -191,7 +171,6 @@ public class RiskStateReducer {
             return;
         }
 
-        // Просадка > 10%
         BigDecimal currentDrawdown =
                 calculateDrawdown(state);
 
@@ -218,7 +197,6 @@ public class RiskStateReducer {
                 state.getMaxEquity(),
                 BigDecimal.ZERO
         )) {
-
             return BigDecimal.ZERO;
         }
 
@@ -237,9 +215,6 @@ public class RiskStateReducer {
         );
     }
 
-    /**
-     * Обработка события остановки торговли.
-     */
     private RiskState handleTradingHalted(
             RiskState state,
             RiskEvent.TradingHalted event
@@ -256,14 +231,6 @@ public class RiskStateReducer {
                 .build();
     }
 
-    /**
-     * Обработка фактического исполнения сделки.
-     *
-     * <p>
-     * PnL и exposure обновляются здесь.
-     * Cash settlement BUY/SELL выполняется отдельными
-     * CapitalConsumed / CapitalCredited events.
-     */
     private RiskState handleTradeExecuted(
             RiskState state,
             RiskEvent.TradeExecuted event
@@ -324,9 +291,6 @@ public class RiskStateReducer {
                 .build();
     }
 
-    /**
-     * Обработка изменения рыночной цены.
-     */
     private RiskState handlePriceUpdated(
             RiskState state,
             RiskEvent.PriceUpdated event
@@ -339,9 +303,6 @@ public class RiskStateReducer {
                 .build();
     }
 
-    /**
-     * Резервирование quote capital под BUY.
-     */
     private RiskState handleCapitalReserved(
             RiskState state,
             RiskEvent.CapitalReserved event
@@ -398,9 +359,6 @@ public class RiskStateReducer {
                 .build();
     }
 
-    /**
-     * Освобождение ранее зарезервированного капитала.
-     */
     private RiskState handleCapitalReleased(
             RiskState state,
             RiskEvent.CapitalReleased event
@@ -430,6 +388,21 @@ public class RiskStateReducer {
                         ? reservedAmount
                         : event.amount();
 
+        if (amountToRelease.signum() < 0) {
+            throw new IllegalArgumentException(
+                    "Capital release amount must not be negative"
+            );
+        }
+
+        if (amountToRelease.compareTo(reservedAmount) > 0) {
+            throw new IllegalArgumentException(
+                    "Capital release amount exceeds active reservation. " +
+                            "orderId=" + event.orderId() +
+                            ", reserved=" + reservedAmount +
+                            ", release=" + amountToRelease
+            );
+        }
+
         log.info(
                 "[RiskReducer] Releasing {} for order {} (Reason: {})",
                 amountToRelease,
@@ -442,9 +415,21 @@ public class RiskStateReducer {
                         state.getActiveReservations()
                 );
 
-        newReservations.remove(
-                event.orderId()
-        );
+        BigDecimal remainingReservation =
+                reservedAmount.subtract(
+                        amountToRelease
+                );
+
+        if (MoneyMath.isZero(remainingReservation)) {
+            newReservations.remove(
+                    event.orderId()
+            );
+        } else {
+            newReservations.put(
+                    event.orderId(),
+                    remainingReservation
+            );
+        }
 
         return state.toBuilder()
                 .balance(
@@ -463,21 +448,32 @@ public class RiskStateReducer {
     }
 
     /**
-     * Использование reservation после полного BUY execution.
+     * Settlement BUY execution.
      *
      * <p>
-     * Reservation удаляется, но balance не изменяется:
-     * средства уже были вычтены в момент CapitalReserved.
+     * Важная семантика:
+     *
+     * <ul>
+     *     <li>FILLED: reservation закрывается полностью;</li>
+     *     <li>PARTIAL FILL: фактически исполненная часть потребляется,
+     *         остаток reservation сохраняется;</li>
+     *     <li>если actual > reserved: дополнительный расход списывается
+     *         из доступного balance;</li>
+     *     <li>если actual < reserved: balance не меняется,
+     *         reservation уменьшается на фактически исполненную сумму.</li>
+     * </ul>
      */
     private RiskState handleCapitalConsumed(
             RiskState state,
             RiskEvent.CapitalConsumed event
     ) {
+
         BigDecimal reservedAmount =
                 state.getActiveReservations()
                         .get(event.orderId());
 
         if (reservedAmount == null) {
+
             log.warn(
                     "[RiskReducer] Idempotency: No active reservation for order {}. Consume ignored.",
                     event.orderId()
@@ -488,6 +484,7 @@ public class RiskStateReducer {
 
         if (event.amount() == null
                 || event.amount().signum() <= 0) {
+
             throw new IllegalArgumentException(
                     "Capital consumed amount must be positive"
             );
@@ -502,7 +499,8 @@ public class RiskStateReducer {
                 );
 
         log.info(
-                "[RiskReducer] Consuming BUY reservation for order {}: reserved={}, actual={}, difference={}",
+                "[RiskReducer] Consuming BUY reservation for order {}: " +
+                        "reserved={}, actual={}, difference={}",
                 event.orderId(),
                 reservedAmount,
                 actualExecutedNotional,
@@ -514,22 +512,64 @@ public class RiskStateReducer {
                         state.getActiveReservations()
                 );
 
-        newReservations.remove(
-                event.orderId()
-        );
-
         BigDecimal newBalance =
-                settlementDifference.signum() > 0
-                        ? MoneyMath.subtract(
-                        state.getBalance(),
-                        settlementDifference
-                )
-                        : settlementDifference.signum() < 0
-                          ? MoneyMath.add(
-                        state.getBalance(),
-                        settlementDifference.abs()
-                )
-                          : state.getBalance();
+                state.getBalance();
+
+        if (settlementDifference.signum() < 0) {
+
+            /*
+             * Partial fill:
+             *
+             * reserved = 100
+             * actual   = 30
+             * remaining reservation = 70
+             *
+             * balance remains 9900,
+             * reservation becomes 70.
+             */
+            BigDecimal remainingReservation =
+                    reservedAmount.subtract(
+                            actualExecutedNotional
+                    );
+
+            if (remainingReservation.signum() <= 0) {
+                throw new IllegalStateException(
+                        "Remaining reservation must be positive for partial consume"
+                );
+            }
+
+            newReservations.put(
+                    event.orderId(),
+                    remainingReservation
+            );
+
+        } else if (settlementDifference.signum() > 0) {
+
+            /*
+             * Actual execution exceeded reserved amount.
+             * The active reservation is fully consumed and the extra
+             * notional is additionally taken from available balance.
+             */
+            newReservations.remove(
+                    event.orderId()
+            );
+
+            newBalance =
+                    MoneyMath.subtract(
+                            state.getBalance(),
+                            settlementDifference
+                    );
+
+        } else {
+
+            /*
+             * Exact settlement:
+             * reserved == actual.
+             */
+            newReservations.remove(
+                    event.orderId()
+            );
+        }
 
         return state.toBuilder()
                 .balance(newBalance)
@@ -542,13 +582,6 @@ public class RiskStateReducer {
                 .build();
     }
 
-    /**
-     * Зачисление quote capital после фактического SELL execution.
-     *
-     * <p>
-     * SELL не имел reservation.
-     * Поэтому proceeds напрямую увеличивают available balance.
-     */
     private RiskState handleCapitalCredited(
             RiskState state,
             RiskEvent.CapitalCredited event

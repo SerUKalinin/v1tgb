@@ -109,6 +109,11 @@ public class OrderExecutionCommitService {
                         result.getExecutedQty(),
                         result.getExecutedPrice()
                 );
+
+                orderCompensationService.consumeReservation(
+                        order,
+                        "Order partially filled"
+                );
             }
 
             case ACCEPTED -> {
