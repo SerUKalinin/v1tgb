@@ -8,7 +8,6 @@ import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.infrastructure.execution.ExecutionLockService;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
-import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.ExecutionLogger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,6 +23,7 @@ class OrderExecutionIdempotencyTest {
     private OrderExecutionHandler handler;
     private OrderRepositoryPort orderRepository;
     private OrderExecutionClaimService orderExecutionClaimService;
+    private OrderExecutionCommitService orderExecutionCommitService;
     private ExecutionPort executionPort;
     private ObjectMapper objectMapper;
 
@@ -31,6 +31,7 @@ class OrderExecutionIdempotencyTest {
     void setUp() {
         orderRepository = mock(OrderRepositoryPort.class);
         orderExecutionClaimService = mock(OrderExecutionClaimService.class);
+        orderExecutionCommitService = mock(OrderExecutionCommitService.class);
         executionPort = mock(ExecutionPort.class);
         objectMapper = new ObjectMapper();
 
@@ -42,7 +43,8 @@ class OrderExecutionIdempotencyTest {
                 mock(OrderCompensationService.class),
                 mock(OutboxService.class),
                 mock(ExecutionLogger.class),
-                objectMapper
+                objectMapper,
+                orderExecutionCommitService
         );
     }
 
@@ -61,9 +63,6 @@ class OrderExecutionIdempotencyTest {
                         executionId
                 );
 
-        ExecutionContext mockCtx =
-                mock(ExecutionContext.class);
-
         OutboxEventEntity event =
                 OutboxEventEntity.builder()
                         .id(eventId)
@@ -75,13 +74,11 @@ class OrderExecutionIdempotencyTest {
                         .causationId(orderId)
                         .aggregateType("ORDER")
                         .eventType("ORDER_CREATED")
-                        .payload(objectMapper.writeValueAsString(payload))
+                        .payload(
+                                objectMapper.writeValueAsString(payload)
+                        )
                         .build();
 
-        /*
-         * Claim service сообщает, что execution уже был обработан
-         * и Order нельзя отдавать на повторное исполнение.
-         */
         when(orderExecutionClaimService.claim(
                 any(),
                 any(),
@@ -95,6 +92,9 @@ class OrderExecutionIdempotencyTest {
 
         verify(executionPort, never())
                 .placeOrder(any());
+
+        verify(orderExecutionCommitService, never())
+                .commit(any(), any(), any(), any(), anyString());
 
         verify(orderRepository, never())
                 .claimForExecution(any(), any());

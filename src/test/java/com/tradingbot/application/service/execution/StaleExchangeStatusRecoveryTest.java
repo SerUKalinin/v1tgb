@@ -26,6 +26,7 @@ class StaleExchangeStatusRecoveryTest {
     private ExecutionPort executionPort;
     private OrderRepositoryPort orderRepository;
     private OrderExecutionClaimService orderExecutionClaimService;
+    private OrderExecutionCommitService orderExecutionCommitService;
     private ObjectMapper objectMapper;
 
     @BeforeEach
@@ -34,6 +35,7 @@ class StaleExchangeStatusRecoveryTest {
         executionPort = mock(ExecutionPort.class);
         orderRepository = mock(OrderRepositoryPort.class);
         orderExecutionClaimService = mock(OrderExecutionClaimService.class);
+        orderExecutionCommitService = mock(OrderExecutionCommitService.class);
         objectMapper = new ObjectMapper();
 
         handler = new OrderExecutionHandler(
@@ -44,7 +46,8 @@ class StaleExchangeStatusRecoveryTest {
                 mock(OrderCompensationService.class),
                 mock(OutboxService.class),
                 mock(ExecutionLogger.class),
-                objectMapper
+                objectMapper,
+                orderExecutionCommitService
         );
     }
 
@@ -83,11 +86,6 @@ class StaleExchangeStatusRecoveryTest {
                         )
                         .build();
 
-        /*
-         * Execution уже заклеймлен.
-         * Claim service не должен отдавать Order
-         * для повторного исполнения.
-         */
         when(orderExecutionClaimService.claim(
                 any(),
                 any(),
@@ -101,6 +99,9 @@ class StaleExchangeStatusRecoveryTest {
 
         verify(executionPort, never())
                 .placeOrder(any());
+
+        verify(orderExecutionCommitService, never())
+                .commit(any(), any(), any(), any(), anyString());
 
         verify(orderRepository, never())
                 .claimForExecution(any(), any());

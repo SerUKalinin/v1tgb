@@ -152,7 +152,7 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
      * @param order доменный объект ордера
      */
     @Override
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional(propagation = Propagation.REQUIRED)
     public void save(Order order) {
         OrderEntity entity = orderRepository.findByIdForUpdate(order.getId())
                 .orElseThrow(() -> new IllegalStateException("Order lost: " + order.getId()));

@@ -34,6 +34,7 @@ class ExchangeTimeoutRecoveryTest {
     private ExecutionPort executionPort;
     private OrderRepositoryPort orderRepository;
     private OrderExecutionClaimService orderExecutionClaimService;
+    private OrderExecutionCommitService orderExecutionCommitService;
     private ObjectMapper objectMapper;
 
     @BeforeEach
@@ -41,6 +42,7 @@ class ExchangeTimeoutRecoveryTest {
         executionPort = mock(ExecutionPort.class);
         orderRepository = mock(OrderRepositoryPort.class);
         orderExecutionClaimService = mock(OrderExecutionClaimService.class);
+        orderExecutionCommitService = mock(OrderExecutionCommitService.class);
         objectMapper = new ObjectMapper();
 
         handler = new OrderExecutionHandler(
@@ -51,7 +53,8 @@ class ExchangeTimeoutRecoveryTest {
                 mock(OrderCompensationService.class),
                 mock(OutboxService.class),
                 mock(ExecutionLogger.class),
-                objectMapper
+                objectMapper,
+                orderExecutionCommitService
         );
     }
 
@@ -60,7 +63,9 @@ class ExchangeTimeoutRecoveryTest {
 
         UUID orderId = UUID.randomUUID();
         UUID signalId = UUID.randomUUID();
-        UUID executionId = IdentityFactory.deriveExecution(orderId, 1);
+        UUID executionId =
+                IdentityFactory.deriveExecution(orderId, 1);
+
         String clientOrderId = "CL-" + orderId;
 
         Order order = Order.createPendingExecution(
@@ -99,7 +104,8 @@ class ExchangeTimeoutRecoveryTest {
                 OrderStatus.EXECUTING
         );
 
-        OutboxEventEntity event = new OutboxEventEntity();
+        OutboxEventEntity event =
+                new OutboxEventEntity();
 
         event.setId(UUID.randomUUID());
         event.setAggregateId(orderId);
@@ -119,16 +125,19 @@ class ExchangeTimeoutRecoveryTest {
                 )
         );
 
-        /*
-         * Claim уже выполнен.
-         * Для этого unit-теста просто передаём готовый Order
-         * дальше в execution pipeline.
-         */
         when(orderExecutionClaimService.claim(
                 any(),
                 any(),
                 any()
         )).thenReturn(Optional.of(order));
+
+        doNothing().when(orderExecutionCommitService).commit(
+                any(),
+                any(),
+                any(),
+                any(),
+                anyString()
+        );
 
         when(executionPort.placeOrder(eq(order)))
                 .thenReturn(
@@ -153,5 +162,14 @@ class ExchangeTimeoutRecoveryTest {
 
         verify(executionPort, times(1))
                 .placeOrder(eq(order));
+
+        verify(orderExecutionCommitService, times(1))
+                .commit(
+                        any(),
+                        any(),
+                        eq(order),
+                        any(),
+                        anyString()
+                );
     }
 }

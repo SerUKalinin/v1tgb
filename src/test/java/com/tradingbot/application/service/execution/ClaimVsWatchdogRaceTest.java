@@ -30,6 +30,7 @@ class ClaimVsWatchdogRaceTest {
     private ExecutionPort executionPort;
     private OrderRepositoryPort orderRepository;
     private OrderExecutionClaimService orderExecutionClaimService;
+    private OrderExecutionCommitService orderExecutionCommitService;
     private ObjectMapper objectMapper;
 
     @BeforeEach
@@ -37,6 +38,7 @@ class ClaimVsWatchdogRaceTest {
         executionPort = mock(ExecutionPort.class);
         orderRepository = mock(OrderRepositoryPort.class);
         orderExecutionClaimService = mock(OrderExecutionClaimService.class);
+        orderExecutionCommitService = mock(OrderExecutionCommitService.class);
         objectMapper = new ObjectMapper();
 
         handler = new OrderExecutionHandler(
@@ -47,14 +49,14 @@ class ClaimVsWatchdogRaceTest {
                 mock(OrderCompensationService.class),
                 mock(OutboxService.class),
                 mock(ExecutionLogger.class),
-                objectMapper
+                objectMapper,
+                orderExecutionCommitService
         );
     }
 
     @Test
     void watchdogRaceProtectionTest() throws Exception {
 
-        // GIVEN
         UUID orderId = UUID.randomUUID();
         UUID signalId = UUID.randomUUID();
         UUID executionId =
@@ -78,8 +80,6 @@ class ClaimVsWatchdogRaceTest {
         event.setId(UUID.randomUUID());
         event.setAggregateId(orderId);
         event.setSignalId(signalId);
-
-        // Обязательные поля для ExecutionContext.from()
         event.setExecutionId(executionId);
         event.setCausationId(orderId);
         event.setCorrelationId(signalId);
@@ -96,9 +96,7 @@ class ClaimVsWatchdogRaceTest {
         );
 
         /*
-         * Имитируем гонку:
-         * другой consumer уже забрал execution,
-         * поэтому claim service ничего не возвращает.
+         * Другой consumer уже забрал execution.
          */
         when(orderExecutionClaimService.claim(
                 any(),
@@ -106,23 +104,20 @@ class ClaimVsWatchdogRaceTest {
                 any()
         )).thenReturn(Optional.empty());
 
-        // WHEN
         handler.consume(event);
 
-        // THEN
         verify(orderExecutionClaimService, times(1))
                 .claim(any(), any(), any());
 
-        // Биржа не должна вызываться.
         verify(executionPort, never())
                 .placeOrder(any());
 
-        // Order не должен сохраняться повторно.
+        verify(orderExecutionCommitService, never())
+                .commit(any(), any(), any(), any(), anyString());
+
         verify(orderRepository, never())
                 .save(any());
 
-        // Repository claim не должен вызываться напрямую
-        // из OrderExecutionHandler.
         verify(orderRepository, never())
                 .claimForExecution(eq(orderId), any());
     }

@@ -89,6 +89,8 @@ public class OrderExecutionHandler implements OutboxConsumer {
      */
     private final ObjectMapper objectMapper;
 
+    private final OrderExecutionCommitService orderExecutionCommitService;
+
     /**
      * Обработка события ORDER_CREATED из outbox.
      */
@@ -162,18 +164,16 @@ public class OrderExecutionHandler implements OutboxConsumer {
             }
 
             try {
-                commitExecution(
+                orderExecutionCommitService.commit(
                         event,
                         context,
                         order,
                         result,
                         lockKey
                 );
-
             } catch (Exception e) {
                 log.error(
-                        "[EXECUTION-COMMIT-ERROR] Context: {}. " +
-                                "Critical inconsistency risk.",
+                        "[EXECUTION-COMMIT-ERROR] Context: {}. Critical inconsistency risk.",
                         context,
                         e
                 );
@@ -193,189 +193,5 @@ public class OrderExecutionHandler implements OutboxConsumer {
         } finally {
             ExecutionLogContext.clear();
         }
-    }
-
-    /**
-     * Финальный commit результата исполнения ордера.
-     *
-     * <p>Обновляет агрегат Order, публикует outbox events,
-     * фиксирует lock и обеспечивает идемпотентность.</p>
-     *
-     * <p>ВАЖНО: этот метод пока оставлен здесь без структурного
-     * переноса. Следующим отдельным Fix Loop проверим его
-     * transaction boundary, потому что self-invocation имеет
-     * ту же проблему Spring proxy.</p>
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void commitExecution(
-            OutboxEventEntity event,
-            ExecutionContext context,
-            Order order,
-            ExecutionResult result,
-            String lockKey
-    ) {
-        ExecutionOwnershipValidator.validateExecutionOwnership(
-                order,
-                context.attempt().executionId()
-        );
-
-        if (order.getStatus() == OrderStatus.FILLED
-                || order.getStatus() == OrderStatus.PARTIALLY_FILLED
-                || order.getStatus() == OrderStatus.REJECTED
-                || order.getStatus() == OrderStatus.CANCELED) {
-
-            log.info(
-                    "[EXECUTION-IDEMPOTENT-SKIP] Order {} already in terminal state {}. " +
-                            "Skipping commit.",
-                    order.getId(),
-                    order.getStatus()
-            );
-
-            return;
-        }
-
-        UUID completionEventId =
-                IdentityFactory.deriveEventId(
-                        context.attempt().executionId(),
-                        "execution-completion"
-                );
-
-        ExecutionContext completionContext =
-                context.withNextStep(completionEventId);
-
-        switch (result.getStatus()) {
-
-            case FILLED -> {
-                order.fill(
-                        context,
-                        result.getExchangeOrderId(),
-                        result.getExecutedQty(),
-                        result.getExecutedPrice()
-                );
-
-                orderCompensationService.consumeReservation(
-                        order,
-                        "Order fully filled"
-                );
-            }
-
-            case PARTIALLY_FILLED -> {
-                order.applyPartialFill(
-                        context,
-                        result.getExecutedQty(),
-                        result.getExecutedPrice()
-                );
-            }
-
-            case ACCEPTED -> {
-                order.markAccepted(
-                        context,
-                        result.getExchangeOrderId()
-                );
-            }
-
-            case REJECTED -> {
-                order.markAsRejected(
-                        context,
-                        result.getErrorMessage()
-                );
-
-                orderCompensationService.releasePartial(
-                        order,
-                        order.getExecutedQuantity()
-                );
-            }
-
-            case CANCELED -> {
-                order.markCancelled(context);
-
-                orderCompensationService.releasePartial(
-                        order,
-                        order.getExecutedQuantity()
-                );
-            }
-
-            case EXCHANGE_STATE_UNKNOWN -> {
-                order.markAsUnknown(context);
-            }
-        }
-
-        orderRepository.save(order);
-
-        publishCompletionEvent(
-                completionContext,
-                order,
-                result
-        );
-
-        lockService.markExecuted(lockKey);
-
-        log.info(
-                "[EXECUTION-SUCCESS] Order committed. Context: {}",
-                completionContext
-        );
-    }
-
-    /**
-     * Публикация completion event в outbox.
-     */
-    private void publishCompletionEvent(
-            ExecutionContext completionContext,
-            Order order,
-            ExecutionResult result
-    ) {
-        String eventType = resolveCompletionEventType(
-                order,
-                result
-        );
-
-        Object payload = OrderExecutedEvent.from(
-                order,
-                result.getExchangeTradeId()
-        );
-
-        outboxService.publishEvent(
-                completionContext,
-                "ORDER",
-                eventType,
-                payload
-        );
-    }
-
-    /**
-     * Определение типа события завершения исполнения.
-     */
-    private String resolveCompletionEventType(
-            Order order,
-            ExecutionResult result
-    ) {
-        if (result.getStatus() == ExecutionResult.Status.FILLED) {
-
-            boolean hasRealExecution =
-                    order.getExecutedQuantity() != null
-                            && order.getAveragePrice() != null;
-
-            if (!hasRealExecution) {
-                log.error(
-                        "[INVARIANT-VIOLATION] FILLED result but no execution data. " +
-                                "orderId={}, status={}",
-                        order.getId(),
-                        order.getStatus()
-                );
-            }
-
-            return hasRealExecution
-                    ? "ORDER_EXECUTED"
-                    : "ORDER_COMPLETED";
-        }
-
-        return switch (result.getStatus()) {
-            case PARTIALLY_FILLED -> "ORDER_PARTIALLY_FILLED";
-            case ACCEPTED -> "ORDER_ACCEPTED";
-            case REJECTED -> "ORDER_REJECTED";
-            case EXCHANGE_STATE_UNKNOWN -> "ORDER_TIMEOUT";
-            case CANCELED -> "ORDER_CANCELED";
-            default -> "ORDER_COMPLETED";
-        };
     }
 }
