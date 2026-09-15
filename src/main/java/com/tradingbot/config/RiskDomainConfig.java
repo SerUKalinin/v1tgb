@@ -2,6 +2,7 @@ package com.tradingbot.config;
 
 import com.tradingbot.domain.exchange.ExchangeFeasibilityPort;
 import com.tradingbot.domain.exchange.OrderNormalizationService;
+import com.tradingbot.domain.position.PositionAvailabilityPort;
 import com.tradingbot.domain.risk.RiskReservationLogPort;
 import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.domain.risk.RiskStatePort;
@@ -63,7 +64,8 @@ public class RiskDomainConfig {
             ExchangeFeasibilityPort feasibilityPort,
             OrderNormalizationService normalizationService,
             ExecutionLogger executionLogger,
-            OutboxService outboxService
+            OutboxService outboxService,
+            PositionAvailabilityPort positionAvailabilityPort
     ) {
         return new RiskService(
                 port,
@@ -72,7 +74,8 @@ public class RiskDomainConfig {
                 feasibilityPort,
                 normalizationService,
                 executionLogger,
-                outboxService
+                outboxService,
+                positionAvailabilityPort
         );
     }
 }

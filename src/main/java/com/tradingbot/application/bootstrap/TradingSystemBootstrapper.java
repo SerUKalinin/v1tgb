@@ -2,8 +2,10 @@ package com.tradingbot.application.bootstrap;
 
 import com.tradingbot.application.market.MarketDataService;
 import com.tradingbot.application.risk.RiskEngine;
+import com.tradingbot.application.service.execution.PositionRebuildService;
 import com.tradingbot.application.service.risk.RiskStateRecoveryService;
 import com.tradingbot.application.event.SystemEvents;
+import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -30,8 +32,9 @@ public class TradingSystemBootstrapper {
     private final RiskStateRecoveryService riskRecoveryService;
     private final MarketDataService marketDataService;
     private final RiskEngine riskEngine;
-    private final com.tradingbot.domain.execution.ExchangeOrderQueryService exchangeQueryService;
+    private final ExchangeOrderQueryService exchangeQueryService;
     private final ApplicationEventPublisher eventPublisher;
+    private final PositionRebuildService positionRebuildService;
 
     /**
      * Точка входа после полного старта Spring контекста.
@@ -75,9 +78,9 @@ public class TradingSystemBootstrapper {
                 stateManager.updateState(SystemStateManager.SystemState.RECONCILING);
             }
 
-            // 3. MARKET WARMUP
-            stateManager.updateState(SystemStateManager.SystemState.MARKET_WARMING);
-            marketDataService.warmUpAll();
+            // 3. POSITION REBUILD
+            positionRebuildService.rebuildAllPositions();
+            log.info("[BOOTSTRAP] positions rebuilt");
 
             // 4. READY
             stateManager.updateState(SystemStateManager.SystemState.READY);

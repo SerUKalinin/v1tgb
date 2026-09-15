@@ -6,6 +6,7 @@ import com.tradingbot.common.util.MoneyMath;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.exchange.*;
 import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.position.PositionAvailabilityPort;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.tracing.*;
 import org.slf4j.Logger;
@@ -35,6 +36,7 @@ public class RiskService {
     private final OrderNormalizationService normalizationService;
     private final ExecutionLogger executionLogger;
     private final OutboxService outboxService;
+    private final PositionAvailabilityPort positionAvailabilityPort;
 
     /**
      * Конструктор сервиса.
@@ -54,7 +56,8 @@ public class RiskService {
             ExchangeFeasibilityPort feasibilityPort,
             OrderNormalizationService normalizationService,
             ExecutionLogger executionLogger,
-            OutboxService outboxService
+            OutboxService outboxService,
+            PositionAvailabilityPort positionAvailabilityPort
     ) {
         this.riskStatePort = riskStatePort;
         this.reducer = reducer;
@@ -63,6 +66,7 @@ public class RiskService {
         this.normalizationService = normalizationService;
         this.executionLogger = executionLogger;
         this.outboxService = outboxService;
+        this.positionAvailabilityPort = positionAvailabilityPort;
     }
 
     // ==================== MAIN FLOW ====================
@@ -104,6 +108,36 @@ public class RiskService {
                 new FeasibilityRequest(signal.getSymbol(), rawQuantity, signal.getPrice())
         );
         log.info("[TRACE_FLOW] Normalized order: qty={}, price={} for identity: {}", normalized.getQuantity(), normalized.getPrice(), identity);
+
+        if (signal.getType() == SignalType.SELL) {
+
+            BigDecimal availableQuantity =
+                    positionAvailabilityPort.getAvailableQuantity(
+                            signal.getSymbol(),
+                            signal.getStrategyId()
+                    );
+
+            log.info(
+                    "[TRACE_FLOW] SELL position check: symbol={}, strategyId={}, requestedQty={}, availableQty={}",
+                    signal.getSymbol(),
+                    signal.getStrategyId(),
+                    normalized.getQuantity(),
+                    availableQuantity
+            );
+
+            if (availableQuantity.compareTo(normalized.getQuantity()) < 0) {
+                log.warn(
+                        "[TRACE_FLOW] EXIT RiskService.evaluateSignal - REJECTED: " +
+                                "SELL exceeds available position. symbol={}, strategyId={}, requestedQty={}, availableQty={}",
+                        signal.getSymbol(),
+                        signal.getStrategyId(),
+                        normalized.getQuantity(),
+                        availableQuantity
+                );
+
+                return Optional.empty();
+            }
+        }
 
         FeasibilityResult feasibility = feasibilityPort.check(
                 new FeasibilityRequest(

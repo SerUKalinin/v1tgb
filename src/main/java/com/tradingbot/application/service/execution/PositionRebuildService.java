@@ -6,8 +6,6 @@ import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
 import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,7 +38,6 @@ public class PositionRebuildService {
      * Запускается автоматически после старта приложения (ApplicationReadyEvent).
      * Выполняет полную реконструкцию состояния позиций из торговой истории.
      */
-    @EventListener(ApplicationReadyEvent.class)
     @Transactional
     public void rebuildAllPositions() {
         log.info("[REBUILD] Starting full position rebuild from trade history...");
@@ -83,39 +80,156 @@ public class PositionRebuildService {
      * @param trades список сделок в хронологическом порядке
      * @return восстановленная позиция
      */
-    private PositionEntity calculatePosition(String symbol, String strategyId, List<Trade> trades) {
+    private PositionEntity calculatePosition(
+            String symbol,
+            String strategyId,
+            List<Trade> trades
+    ) {
         BigDecimal netQuantity = BigDecimal.ZERO;
         BigDecimal boughtQuantity = BigDecimal.ZERO;
         BigDecimal boughtCost = BigDecimal.ZERO;
         BigDecimal realizedPnl = BigDecimal.ZERO;
 
         for (Trade trade : trades) {
-            BigDecimal tradeValue = trade.getPrice().multiply(trade.getQuantity());
+
+            if (trade.getQuantity() == null
+                    || trade.getQuantity().signum() <= 0) {
+                throw new IllegalStateException(
+                        String.format(
+                                "Invalid trade quantity during position rebuild: " +
+                                        "symbol=%s, strategyId=%s, tradeId=%s, orderId=%s, " +
+                                        "exchangeTradeId=%s, side=%s, quantity=%s",
+                                symbol,
+                                strategyId,
+                                trade.getId(),
+                                trade.getOrderId(),
+                                trade.getExchangeTradeId(),
+                                trade.getSide(),
+                                trade.getQuantity()
+                        )
+                );
+            }
+
+            if (trade.getPrice() == null
+                    || trade.getPrice().signum() <= 0) {
+                throw new IllegalStateException(
+                        String.format(
+                                "Invalid trade price during position rebuild: " +
+                                        "symbol=%s, strategyId=%s, tradeId=%s, orderId=%s, " +
+                                        "exchangeTradeId=%s, side=%s, price=%s",
+                                symbol,
+                                strategyId,
+                                trade.getId(),
+                                trade.getOrderId(),
+                                trade.getExchangeTradeId(),
+                                trade.getSide(),
+                                trade.getPrice()
+                        )
+                );
+            }
+
+            BigDecimal tradeValue =
+                    trade.getPrice().multiply(trade.getQuantity());
 
             if (trade.getSide() == OrderSide.BUY) {
+
                 netQuantity = netQuantity.add(trade.getQuantity());
                 boughtQuantity = boughtQuantity.add(trade.getQuantity());
                 boughtCost = boughtCost.add(tradeValue);
-            } else { // SELL
+
+            } else if (trade.getSide() == OrderSide.SELL) {
+
+                /*
+                 * Position model is long-only.
+                 * SELL is valid only when there is enough existing quantity.
+                 */
+                if (trade.getQuantity().compareTo(netQuantity) > 0) {
+                    throw new IllegalStateException(
+                            String.format(
+                                    "Invalid position history: SELL exceeds available position. " +
+                                            "symbol=%s, strategyId=%s, tradeId=%s, orderId=%s, " +
+                                            "exchangeTradeId=%s, sellQuantity=%s, availablePosition=%s",
+                                    symbol,
+                                    strategyId,
+                                    trade.getId(),
+                                    trade.getOrderId(),
+                                    trade.getExchangeTradeId(),
+                                    trade.getQuantity(),
+                                    netQuantity
+                            )
+                    );
+                }
+
+                if (boughtQuantity.compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new IllegalStateException(
+                            String.format(
+                                    "Invalid position history: SELL without BUY inventory. " +
+                                            "symbol=%s, strategyId=%s, tradeId=%s, orderId=%s, " +
+                                            "exchangeTradeId=%s, sellQuantity=%s, availablePosition=%s",
+                                    symbol,
+                                    strategyId,
+                                    trade.getId(),
+                                    trade.getOrderId(),
+                                    trade.getExchangeTradeId(),
+                                    trade.getQuantity(),
+                                    netQuantity
+                            )
+                    );
+                }
+
+                BigDecimal sellRatio = trade.getQuantity()
+                        .divide(boughtQuantity, 18, RoundingMode.HALF_UP);
+
+                BigDecimal soldCostBasis =
+                        boughtCost.multiply(sellRatio);
+
+                boughtCost = boughtCost.subtract(soldCostBasis);
+                boughtQuantity = boughtQuantity.subtract(trade.getQuantity());
+
                 netQuantity = netQuantity.subtract(trade.getQuantity());
 
-                if (boughtQuantity.compareTo(BigDecimal.ZERO) > 0) {
-                    BigDecimal sellRatio = trade.getQuantity()
-                            .divide(boughtQuantity, 12, RoundingMode.HALF_UP);
+                realizedPnl = realizedPnl.add(
+                        tradeValue.subtract(soldCostBasis)
+                );
 
-                    BigDecimal soldCostBasis = boughtCost.multiply(sellRatio);
-
-                    boughtCost = boughtCost.subtract(soldCostBasis);
-                    boughtQuantity = boughtQuantity.subtract(trade.getQuantity());
-
-                    realizedPnl = realizedPnl.add(tradeValue.subtract(soldCostBasis));
+                if (netQuantity.signum() < 0) {
+                    throw new IllegalStateException(
+                            String.format(
+                                    "Position rebuild produced negative quantity: " +
+                                            "symbol=%s, strategyId=%s, tradeId=%s, " +
+                                            "orderId=%s, exchangeTradeId=%s, quantity=%s",
+                                    symbol,
+                                    strategyId,
+                                    trade.getId(),
+                                    trade.getOrderId(),
+                                    trade.getExchangeTradeId(),
+                                    netQuantity
+                            )
+                    );
                 }
+
+            } else {
+                throw new IllegalStateException(
+                        String.format(
+                                "Unsupported trade side during position rebuild: " +
+                                        "symbol=%s, strategyId=%s, tradeId=%s, side=%s",
+                                symbol,
+                                strategyId,
+                                trade.getId(),
+                                trade.getSide()
+                        )
+                );
             }
         }
 
         BigDecimal avgPrice = BigDecimal.ZERO;
+
         if (boughtQuantity.compareTo(BigDecimal.ZERO) > 0) {
-            avgPrice = boughtCost.divide(boughtQuantity, 8, RoundingMode.HALF_UP);
+            avgPrice = boughtCost.divide(
+                    boughtQuantity,
+                    8,
+                    RoundingMode.HALF_UP
+            );
         }
 
         return PositionEntity.builder()
