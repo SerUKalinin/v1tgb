@@ -74,19 +74,7 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
         }
 
         ExecutionClaimEntity entity = ExecutionClaimEntity.create(executionId, signalId);
-
-        try {
-            repository.saveAndFlush(entity);
-        } catch (DataIntegrityViolationException e) {
-            if (isExecutionAlreadyClaimed(e)) {
-                log.debug(
-                        "[EXECUTION-CLAIM] Concurrent claim detected for executionId {}. Handled via DB constraint.",
-                        executionId
-                );
-                return;
-            }
-            throw e;
-        }
+        repository.saveAndFlush(entity);
     }
 
     @Override

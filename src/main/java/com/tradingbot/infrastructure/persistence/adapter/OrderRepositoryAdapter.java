@@ -113,7 +113,7 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
      * @return Optional с захваченным ордером
      */
     @Override
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional(propagation = Propagation.REQUIRED)
     public Optional<Order> claimForExecution(UUID orderId, ExecutionContext context) {
         return claimForExecutionInCurrentTransaction(orderId, context);
     }
