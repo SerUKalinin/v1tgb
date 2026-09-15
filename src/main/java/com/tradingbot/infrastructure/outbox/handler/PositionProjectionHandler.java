@@ -7,7 +7,7 @@ import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.junit.jupiter.api.Order;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 /**
