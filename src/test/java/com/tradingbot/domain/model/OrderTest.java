@@ -10,7 +10,9 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.util.UUID;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class OrderTest {
 
@@ -18,83 +20,169 @@ class OrderTest {
     @DisplayName("EXECUTING -> FILLED корректное исполнение")
     void testOrderFill() {
         Order order = createOrder();
-        ExecutionContext ctx = testContext();
-        order.markExecuting(ctx);
+        ExecutionContext context = testContext(order);
 
-        order.fill(ctx, "EX-123", new BigDecimal("1.0"), new BigDecimal("101.0"));
+        order.markExecuting(context);
 
-        assertEquals(OrderStatus.FILLED, order.getStatus());
-        assertEquals(new BigDecimal("1.0"), order.getExecutedQuantity());
-        assertEquals(0, new BigDecimal("101.0").compareTo(order.getAveragePrice()));
+        order.fill(
+                context,
+                "EX-123",
+                new BigDecimal("1.0"),
+                new BigDecimal("101.0")
+        );
+
+        assertEquals(
+                OrderStatus.FILLED,
+                order.getStatus()
+        );
+
+        assertEquals(
+                new BigDecimal("1.0"),
+                order.getExecutedQuantity()
+        );
+
+        assertEquals(
+                0,
+                new BigDecimal("101.0")
+                        .compareTo(order.getAveragePrice())
+        );
     }
 
     @Test
     @DisplayName("partial fill корректно агрегирует исполнение")
     void testPartialFill() {
         Order order = createOrder();
-        ExecutionContext ctx = testContext();
-        order.markExecuting(ctx);
+        ExecutionContext context = testContext(order);
 
-        order.applyPartialFill(ctx, new BigDecimal("0.3"), new BigDecimal("101.0"));
+        order.markExecuting(context);
 
-        assertEquals(new BigDecimal("0.3"), order.getExecutedQuantity());
-        assertEquals(new BigDecimal("0.7"), order.getRemainingQuantity());
+        order.applyPartialFill(
+                context,
+                new BigDecimal("0.3"),
+                new BigDecimal("101.0")
+        );
+
+        assertEquals(
+                new BigDecimal("0.3"),
+                order.getExecutedQuantity()
+        );
+
+        assertEquals(
+                new BigDecimal("0.7"),
+                order.getRemainingQuantity()
+        );
     }
 
     @Test
     @DisplayName("terminal state блокирует переходы")
     void testTerminalStateTransitions() {
         Order order = createOrder();
-        ExecutionContext ctx = testContext();
-        order.markExecuting(ctx);
-        order.fill(ctx, "EX-1", new BigDecimal("1.0"), new BigDecimal("100.5"));
+        ExecutionContext context = testContext(order);
 
-        ExecutionContext ctx2 = testContext();
-        assertThrows(IllegalStateException.class, () -> order.markExecuting(ctx2));
-        assertThrows(IllegalStateException.class, () -> order.markAsUnknown(ctx2));
+        order.markExecuting(context);
+
+        order.fill(
+                context,
+                "EX-1",
+                new BigDecimal("1.0"),
+                new BigDecimal("100.5")
+        );
+
+        ExecutionContext sameExecutionContext = testContext(order);
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> order.markExecuting(sameExecutionContext)
+        );
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> order.markAsUnknown(sameExecutionContext)
+        );
     }
 
     @Test
     @DisplayName("EXECUTING -> FILLED: повторный fill идемпотентен")
     void shouldPreventInvalidFillAfterTerminal() {
         Order order = createOrder();
-        ExecutionContext ctx = testContext();
-        order.markExecuting(ctx);
-        order.fill(ctx, "EX-1", new BigDecimal("1.0"), new BigDecimal("100.0"));
+        ExecutionContext context = testContext(order);
 
-        // Повторный fill из терминального FILLED — идемпотентный NOOP
-        ExecutionContext ctx2 = testContext();
-        order.fill(ctx2, "EX-2", new BigDecimal("1.0"), new BigDecimal("101.0"));
+        order.markExecuting(context);
 
-        // Значения не изменились
-        assertEquals(OrderStatus.FILLED, order.getStatus());
-        assertEquals(new BigDecimal("1.0"), order.getExecutedQuantity());
-        assertEquals(0, new BigDecimal("100.0").compareTo(order.getAveragePrice()));
-        assertEquals("EX-1", order.getExchangeOrderId());
+        order.fill(
+                context,
+                "EX-1",
+                new BigDecimal("1.0"),
+                new BigDecimal("100.0")
+        );
+
+        /*
+         * Используем тот же executionId Order.
+         * Повторный fill должен быть идемпотентным.
+         */
+        ExecutionContext sameExecutionContext = testContext(order);
+
+        order.fill(
+                sameExecutionContext,
+                "EX-2",
+                new BigDecimal("1.0"),
+                new BigDecimal("101.0")
+        );
+
+        assertEquals(
+                OrderStatus.FILLED,
+                order.getStatus()
+        );
+
+        assertEquals(
+                new BigDecimal("1.0"),
+                order.getExecutedQuantity()
+        );
+
+        assertEquals(
+                0,
+                new BigDecimal("100.0")
+                        .compareTo(order.getAveragePrice())
+        );
+
+        assertEquals(
+                "EX-1",
+                order.getExchangeOrderId()
+        );
     }
 
     @Test
     @DisplayName("markAsRejected возможен только после EXECUTING")
     void rejectOnlyFromExecuting() {
         Order order = createOrder();
-        ExecutionContext ctx = testContext();
+        ExecutionContext context = testContext(order);
 
-        order.markExecuting(ctx);
+        order.markExecuting(context);
 
-        assertDoesNotThrow(() -> order.markAsRejected(ctx, "risk"));
+        assertDoesNotThrow(
+                () -> order.markAsRejected(
+                        context,
+                        "risk"
+                )
+        );
     }
 
     @Test
     @DisplayName("UNKNOWN state recovery разрешает fill")
     void unknownAllowsFill() {
         Order order = createOrder();
-        ExecutionContext ctx = testContext();
-        // Политика разрешает UNKNOWN только из EXECUTING
-        order.markExecuting(ctx);
-        order.markAsUnknown(ctx);
+        ExecutionContext context = testContext(order);
 
-        assertDoesNotThrow(() ->
-                order.fill(ctx, "EX-1", new BigDecimal("1.0"), new BigDecimal("102.0"))
+        order.markExecuting(context);
+        order.markAsUnknown(context);
+
+        assertDoesNotThrow(
+                () -> order.fill(
+                        context,
+                        "EX-1",
+                        new BigDecimal("1.0"),
+                        new BigDecimal("102.0")
+                )
         );
     }
 
@@ -102,12 +190,17 @@ class OrderTest {
     @DisplayName("UNKNOWN разрешает reject")
     void unknownAllowsReject() {
         Order order = createOrder();
-        ExecutionContext ctx = testContext();
-        // Политика разрешает UNKNOWN только из EXECUTING
-        order.markExecuting(ctx);
-        order.markAsUnknown(ctx);
+        ExecutionContext context = testContext(order);
 
-        assertDoesNotThrow(() -> order.markAsRejected(ctx, "ambiguous"));
+        order.markExecuting(context);
+        order.markAsUnknown(context);
+
+        assertDoesNotThrow(
+                () -> order.markAsRejected(
+                        context,
+                        "ambiguous"
+                )
+        );
     }
 
     private Order createOrder() {
@@ -124,7 +217,7 @@ class OrderTest {
         );
     }
 
-    private ExecutionContext testContext() {
-        return ExecutionContext.of(UUID.randomUUID());
+    private ExecutionContext testContext(Order order) {
+        return ExecutionContext.of(order);
     }
 }

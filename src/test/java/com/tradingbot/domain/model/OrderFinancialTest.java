@@ -3,10 +3,7 @@ package com.tradingbot.domain.model;
 import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.OrderType;
-import com.tradingbot.tracing.BusinessContext;
 import com.tradingbot.tracing.ExecutionContext;
-import com.tradingbot.tracing.ExecutionAttemptContext;
-import com.tradingbot.tracing.IdentityContext;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -20,10 +17,8 @@ class OrderFinancialTest {
     @Test
     @DisplayName("Should correctly set executed quantity and price")
     void fillCalculationTest() {
-        UUID id = UUID.randomUUID();
-        UUID signalId = UUID.randomUUID();
         Order order = Order.createPendingExecution(
-                id,
+                UUID.randomUUID(),
                 "test-" + UUID.randomUUID(),
                 "BTCUSDT",
                 OrderSide.BUY,
@@ -31,16 +26,12 @@ class OrderFinancialTest {
                 new BigDecimal("10.0"),
                 new BigDecimal("100.0"),
                 "STRAT-1",
-                signalId
+                UUID.randomUUID()
         );
 
-        order.markExecuting(ExecutionContext.of(signalId));
+        ExecutionContext context = ExecutionContext.of(order);
 
-        ExecutionContext context = new ExecutionContext(
-                IdentityContext.of(signalId),
-                ExecutionAttemptContext.firstAttempt(signalId),
-                BusinessContext.empty()
-        );
+        order.markExecuting(context);
 
         order.fill(
                 context,
@@ -49,18 +40,27 @@ class OrderFinancialTest {
                 new BigDecimal("105.0")
         );
 
-        assertEquals(new BigDecimal("10.0"), order.getExecutedQuantity());
-        assertEquals(new BigDecimal("105.0"), order.getAveragePrice());
-        assertEquals(OrderStatus.FILLED, order.getStatus());
+        assertEquals(
+                new BigDecimal("10.0"),
+                order.getExecutedQuantity()
+        );
+
+        assertEquals(
+                new BigDecimal("105.0"),
+                order.getAveragePrice()
+        );
+
+        assertEquals(
+                OrderStatus.FILLED,
+                order.getStatus()
+        );
     }
 
     @Test
     @DisplayName("Should use execution price instead of limit price in fill")
     void markAsFilledPriceTest() {
-        UUID id = UUID.randomUUID();
-        UUID signalId = UUID.randomUUID();
         Order order = Order.createPendingExecution(
-                id,
+                UUID.randomUUID(),
                 "test-" + UUID.randomUUID(),
                 "BTCUSDT",
                 OrderSide.BUY,
@@ -68,18 +68,14 @@ class OrderFinancialTest {
                 new BigDecimal("1.0"),
                 new BigDecimal("100.0"),
                 "STRAT-1",
-                signalId
+                UUID.randomUUID()
         );
 
-        order.markExecuting(ExecutionContext.of(signalId));
+        ExecutionContext context = ExecutionContext.of(order);
+
+        order.markExecuting(context);
 
         BigDecimal executionPrice = new BigDecimal("102.5");
-
-        ExecutionContext context = new ExecutionContext(
-                IdentityContext.of(signalId),
-                ExecutionAttemptContext.firstAttempt(signalId),
-                BusinessContext.empty()
-        );
 
         order.fill(
                 context,
@@ -88,7 +84,14 @@ class OrderFinancialTest {
                 executionPrice
         );
 
-        assertEquals(executionPrice, order.getAveragePrice());
-        assertEquals(OrderStatus.FILLED, order.getStatus());
+        assertEquals(
+                executionPrice,
+                order.getAveragePrice()
+        );
+
+        assertEquals(
+                OrderStatus.FILLED,
+                order.getStatus()
+        );
     }
 }
