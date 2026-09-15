@@ -2,8 +2,8 @@ package com.tradingbot.application.service.risk;
 
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.application.event.SystemEvents;
-import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.application.risk.OrderCompensationService;
+import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.application.service.execution.PositionRebuildService;
 import com.tradingbot.application.service.system.AdminNotificationService;
 import com.tradingbot.common.enums.OrderStatus;
@@ -165,48 +165,84 @@ public class ReconciliationService {
      */
     public void reconcileBalances(boolean force) {
         try {
-            BigDecimal exchangeBalance = exchangeQueryService.getAvailableBalance("USDT");
-            BigDecimal internalBalance = riskEngine.getState().availableBalance();
+            BigDecimal exchangeBalance =
+                    exchangeQueryService.getAvailableBalance("USDT");
 
-            boolean isColdStart = stateManager.isColdStart() ||
-                    (stateManager.getState() == SystemStateManager.SystemState.COLD_START_RECONCILIATION);
+            BigDecimal internalBalance =
+                    riskEngine.getState().availableBalance();
+
+            boolean isColdStart =
+                    stateManager.isColdStart()
+                            || stateManager.getState()
+                            == SystemStateManager.SystemState.COLD_START_RECONCILIATION;
 
             if (isColdStart) {
-                log.info("[BOOTSTRAP_SYNC] Cold start reconciliation active. Force syncing internal balance: {} -> {}",
-                        internalBalance, exchangeBalance);
+                log.info(
+                        "[BOOTSTRAP_SYNC] Cold start reconciliation active. " +
+                                "Force syncing internal balance: {} -> {}",
+                        internalBalance,
+                        exchangeBalance
+                );
+
                 riskEngine.syncBalance(exchangeBalance);
                 positionRebuildService.rebuildAllPositions();
                 lastReconcileTimestamp = Instant.now();
                 return;
             }
 
-            if (internalBalance.signum() == 0 && exchangeBalance.signum() == 0) return;
+            if (internalBalance.signum() == 0
+                    && exchangeBalance.signum() == 0) {
+                return;
+            }
 
-            BigDecimal diff = exchangeBalance.subtract(internalBalance).abs();
-            if (diff.signum() == 0) return;
+            BigDecimal diff =
+                    exchangeBalance.subtract(internalBalance).abs();
 
-            BigDecimal driftPercent = internalBalance.signum() != 0
-                    ? diff.divide(internalBalance, 4, RoundingMode.HALF_UP)
-                    : BigDecimal.ONE;
+            if (diff.signum() == 0) {
+                return;
+            }
+
+            BigDecimal driftPercent =
+                    internalBalance.signum() != 0
+                            ? diff.divide(
+                            internalBalance,
+                            4,
+                            RoundingMode.HALF_UP
+                    )
+                            : BigDecimal.ONE;
 
             Instant now = Instant.now();
-            if (!force && now.isBefore(lastReconcileTimestamp.plus(DRIFT_DETECTION_WINDOW))) {
+
+            if (!force
+                    && now.isBefore(
+                    lastReconcileTimestamp.plus(DRIFT_DETECTION_WINDOW)
+            )) {
                 return;
             }
 
             if (driftPercent.compareTo(DRIFT_THRESHOLD) > 0) {
-                log.error("[RECON-CRITICAL] CRITICAL balance drift detected: Drift={}%",
-                        driftPercent.multiply(new BigDecimal("100")));
+                log.error(
+                        "[RECON-CRITICAL] CRITICAL balance drift detected: Drift={}%",
+                        driftPercent.multiply(new BigDecimal("100"))
+                );
 
                 riskEngine.syncBalance(exchangeBalance);
                 positionRebuildService.rebuildAllPositions();
 
                 if (stateManager.isReady() && !isColdStart) {
-                    notifications.sendCritical("Trading HALTED: Balance drift exceeds 1%.");
-                    riskEngine.emergencyStop("Critical balance drift: " + driftPercent);
+                    notifications.sendCritical(
+                            "Trading HALTED: Balance drift exceeds 1%."
+                    );
+
+                    riskEngine.emergencyStop(
+                            "Critical balance drift: " + driftPercent
+                    );
                 }
             } else {
-                log.info("[RECON] Minor drift detected. Auto-repairing state.");
+                log.info(
+                        "[RECON] Minor drift detected. Auto-repairing state."
+                );
+
                 riskEngine.syncBalance(exchangeBalance);
                 positionRebuildService.rebuildAllPositions();
             }
@@ -214,7 +250,10 @@ public class ReconciliationService {
             lastReconcileTimestamp = now;
 
         } catch (Exception e) {
-            log.error("[RECON] Failed to reconcile balances", e);
+            log.error(
+                    "[RECON] Failed to reconcile balances",
+                    e
+            );
         }
     }
 
@@ -224,15 +263,23 @@ public class ReconciliationService {
     @Scheduled(fixedDelay = 30000)
     @Transactional
     public void reconcileOutbox() {
-        Instant threshold = Instant.now().minusSeconds(30);
-        List<OutboxEventEntity> stuckEvents = outboxRepository.findStaleProcessingEvents(threshold);
+        Instant threshold =
+                Instant.now().minusSeconds(30);
+
+        List<OutboxEventEntity> stuckEvents =
+                outboxRepository.findStaleProcessingEvents(threshold);
 
         if (!stuckEvents.isEmpty()) {
-            log.warn("[RECON] Found {} stuck outbox events. Resetting to FAILED.", stuckEvents.size());
+            log.warn(
+                    "[RECON] Found {} stuck outbox events. Resetting to FAILED.",
+                    stuckEvents.size()
+            );
+
             stuckEvents.forEach(event -> {
                 event.setStatus(OutboxStatus.FAILED);
                 event.setUpdatedAt(Instant.now());
             });
+
             outboxRepository.saveAll(stuckEvents);
         }
     }
@@ -242,112 +289,218 @@ public class ReconciliationService {
      */
     @Scheduled(fixedDelay = 300000)
     public void reconcilePendingOrders() {
-        Instant threshold = Instant.now().minus(STALE_THRESHOLD);
-        Set<OrderStatus> reconcilableStatuses = transitionValidator.getReconcilableStatuses();
+        Instant threshold =
+                Instant.now().minus(STALE_THRESHOLD);
 
-        List<Order> stuckOrders = orderRepository.findStuckOrdersInStatuses(reconcilableStatuses, threshold);
+        Set<OrderStatus> reconcilableStatuses =
+                transitionValidator.getReconcilableStatuses();
+
+        List<Order> stuckOrders =
+                orderRepository.findStuckOrdersInStatuses(
+                        reconcilableStatuses,
+                        threshold
+                );
 
         for (Order order : stuckOrders) {
-            ExecutionContext context = ExecutionContext.of(order);
-            syncOrderWithExchange(order, context);
+            ExecutionContext context =
+                    ExecutionContext.of(order);
+
+            syncOrderWithExchange(
+                    order,
+                    context
+            );
         }
     }
 
     /**
      * Реконсиляция конкретного ордера.
      *
+     * <p>
+     * ВАЖНО: метод НЕ является transactional.
+     *
+     * <p>
+     * Это гарантирует, что внешний запрос к бирже внутри
+     * {@link #syncOrderWithExchange(Order, ExecutionContext)}
+     * не выполняется внутри DB transaction.
+     *
      * @param context контекст исполнения
      */
-    @Transactional
     public void reconcile(ExecutionContext context) {
-        orderRepository.findById(UUID.fromString(context.business().orderId()))
-                .ifPresent(order -> syncOrderWithExchange(order, context));
+        orderRepository.findById(
+                UUID.fromString(context.business().orderId())
+        ).ifPresent(order ->
+                syncOrderWithExchange(
+                        order,
+                        context
+                )
+        );
     }
 
     /**
      * Синхронизация состояния ордера с биржей.
      *
-     * <p>Является ключевой точкой обеспечения консистентности между доменной моделью и биржей.
+     * <p>
+     * Claim является единственной DB-транзакцией,
+     * устанавливающей ownership reconciliation.
+     *
+     * <p>
+     * После commit claim-транзакции запрос к бирже выполняется
+     * без открытой DB transaction.
+     *
+     * <p>
+     * Финальный save() выполняется отдельной DB transaction.
      *
      * @param targetOrder целевой ордер
      * @param context контекст исполнения
      */
-    @Transactional
-    public void syncOrderWithExchange(Order targetOrder, ExecutionContext context) {
+    public void syncOrderWithExchange(
+            Order targetOrder,
+            ExecutionContext context
+    ) {
         try {
-            Optional<Order> orderOpt = orderRepository.claimForReconciliation(targetOrder.getId());
+            /*
+             * Claim is the only database transaction that establishes
+             * reconciliation ownership.
+             *
+             * claimForReconciliation() commits:
+             *
+             *   EXECUTING(stale) -> UNKNOWN -> RECOVERING
+             *   UNKNOWN           -> RECOVERING
+             *
+             * Therefore no database transaction is kept open
+             * while communicating with the exchange.
+             */
+            Optional<Order> orderOpt =
+                    orderRepository.claimForReconciliation(
+                            targetOrder.getId()
+                    );
 
             if (orderOpt.isEmpty()) {
-                log.debug("[RECON-SKIP] Order {} is currently executing or terminal.", targetOrder.getId());
+                log.debug(
+                        "[RECON-SKIP] Order {} is currently owned by another " +
+                                "execution/reconciliation worker or is terminal.",
+                        targetOrder.getId()
+                );
                 return;
             }
 
             Order order = orderOpt.get();
 
-            if (order.getStatus() == OrderStatus.UNKNOWN) {
-                order.markRecovering(context);
-                orderRepository.save(order);
-            }
+            executionLogger.log(
+                    ExecutionLogFactory.from(
+                            order,
+                            context,
+                            ExecutionEventType.RECON_START,
+                            ExecutionStateMapper.toContractState(
+                                    order.getStatus()
+                            ),
+                            "Reconciling order " + order.getId()
+                    )
+            );
 
-            executionLogger.log(ExecutionLogFactory.from(
-                    order,
-                    context,
-                    ExecutionEventType.RECON_START,
-                    ExecutionStateMapper.toContractState(order.getStatus()),
-                    "Reconciling order " + order.getId()
-            ));
+            log.info(
+                    "[RECON] Syncing order {} (status: {}).",
+                    order.getId(),
+                    order.getStatus()
+            );
 
-            log.info("[RECON] Syncing order {} (status: {}).", order.getId(), order.getStatus());
-
-            ExecutionResult exchangeState = exchangeQueryService.getOrderStatus(order.getClientOrderId());
+            /*
+             * IMPORTANT:
+             *
+             * Exchange I/O happens outside any database transaction.
+             */
+            ExecutionResult exchangeState =
+                    exchangeQueryService.getOrderStatus(
+                            order.getClientOrderId()
+                    );
 
             BinanceStatusMapper.Action action =
-                    BinanceStatusMapper.mapToReconciliationAction(exchangeState.getStatus());
+                    BinanceStatusMapper.mapToReconciliationAction(
+                            exchangeState.getStatus()
+                    );
 
-            boolean stateChanged = switch (action) {
-                case FORCE_FILL -> {
-                    order.forceFill(context,
-                            exchangeState.getExchangeOrderId(),
-                            exchangeState.getExecutedQty(),
-                            exchangeState.getExecutedPrice());
-                    yield true;
-                }
-                case PARTIALLY_FILL -> {
-                    order.applyPartialFill(context,
-                            exchangeState.getExecutedQty(),
-                            exchangeState.getExecutedPrice());
-                    yield true;
-                }
-                case REJECT -> {
-                    order.markAsRejected(context, exchangeState.getErrorMessage());
-                    orderCompensationService.releasePartial(order, order.getExecutedQuantity());
-                    yield true;
-                }
-                case CANCEL -> {
-                    order.markCancelled(context);
-                    orderCompensationService.releasePartial(order, order.getExecutedQuantity());
-                    yield true;
-                }
-                case MARK_UNKNOWN -> {
-                    order.markAsUnknown(context);
-                    yield true;
-                }
-                case NOOP -> false;
+            boolean stateChanged =
+                    switch (action) {
 
-                case FILL, MARK_ACCEPTED -> {
-                    order.markAsUnknown(context);
-                    yield true;
-                }
-            };
+                        case FORCE_FILL -> {
+                            order.forceFill(
+                                    context,
+                                    exchangeState.getExchangeOrderId(),
+                                    exchangeState.getExecutedQty(),
+                                    exchangeState.getExecutedPrice()
+                            );
+                            yield true;
+                        }
 
+                        case PARTIALLY_FILL -> {
+                            order.applyPartialFill(
+                                    context,
+                                    exchangeState.getExecutedQty(),
+                                    exchangeState.getExecutedPrice()
+                            );
+                            yield true;
+                        }
+
+                        case REJECT -> {
+                            order.markAsRejected(
+                                    context,
+                                    exchangeState.getErrorMessage()
+                            );
+
+                            orderCompensationService.releasePartial(
+                                    order,
+                                    order.getExecutedQuantity()
+                            );
+
+                            yield true;
+                        }
+
+                        case CANCEL -> {
+                            order.markCancelled(context);
+
+                            orderCompensationService.releasePartial(
+                                    order,
+                                    order.getExecutedQuantity()
+                            );
+
+                            yield true;
+                        }
+
+                        case MARK_UNKNOWN -> {
+                            order.markAsUnknown(context);
+                            yield true;
+                        }
+
+                        case NOOP -> false;
+
+                        case FILL, MARK_ACCEPTED -> {
+                            order.markAsUnknown(context);
+                            yield true;
+                        }
+                    };
+
+            /*
+             * save() opens its own transaction.
+             *
+             * Exchange I/O is therefore completely outside
+             * the database transaction.
+             */
             if (stateChanged) {
                 orderRepository.save(order);
             }
 
         } catch (OptimisticLockException e) {
-            log.warn("[RECON-CONFLICT] Stale version for order {}. Skipping.", targetOrder.getId());
+            log.warn(
+                    "[RECON-CONFLICT] Stale version for order {}. Skipping.",
+                    targetOrder.getId()
+            );
+
         } catch (Exception e) {
-            log.error("[RECON-ERROR] Failed to sync order {}", targetOrder.getId(), e);
+            log.error(
+                    "[RECON-ERROR] Failed to sync order {}",
+                    targetOrder.getId(),
+                    e
+            );
         }
     }
 }

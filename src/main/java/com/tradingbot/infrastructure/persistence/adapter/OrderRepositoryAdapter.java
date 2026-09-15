@@ -130,18 +130,86 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Optional<Order> claimForReconciliation(UUID orderId) {
         return orderRepository.findByIdForUpdate(orderId).flatMap(entity -> {
+
             if (transitionValidator.isTerminal(entity.getStatus())) {
                 return Optional.empty();
             }
 
-            boolean isExecuting = entity.getStatus() == OrderStatus.EXECUTING;
-            boolean isStale = transitionValidator.isStale(entity.getStatus(), entity.getExecutionStartedAt());
+            boolean isExecuting =
+                    entity.getStatus() == OrderStatus.EXECUTING;
 
+            boolean isStale =
+                    transitionValidator.isStale(
+                            entity.getStatus(),
+                            entity.getExecutionStartedAt()
+                    );
+
+            /*
+             * Active execution owns the order.
+             * Reconciliation cannot steal it.
+             */
             if (isExecuting && !isStale) {
                 return Optional.empty();
             }
 
+            /*
+             * RECOVERING means reconciliation already owns this lifecycle.
+             *
+             * The previous worker has already persisted the ownership
+             * transition in its REQUIRES_NEW transaction.
+             */
+            if (entity.getStatus() == OrderStatus.RECOVERING) {
+                return Optional.empty();
+            }
+
             Order order = orderMapper.toDomain(entity);
+
+            /*
+             * stale EXECUTING must first become UNKNOWN and then
+             * immediately RECOVERING within the same transaction.
+             *
+             * This creates a durable ownership barrier before commit.
+             */
+            if (isExecuting && isStale) {
+                ExecutionContext context =
+                        ExecutionContext.of(order);
+
+                order.markAsUnknown(context);
+                order.markRecovering(context);
+
+                orderMapper.updateEntity(order, entity);
+                entity.setUpdatedAt(Instant.now());
+
+                orderRepository.saveAndFlush(entity);
+
+                return Optional.of(order);
+            }
+
+            /*
+             * UNKNOWN is an interrupted execution.
+             *
+             * Claiming it transfers the lifecycle into RECOVERING.
+             * The transition is persisted before this REQUIRES_NEW
+             * transaction commits.
+             */
+            if (order.getStatus() == OrderStatus.UNKNOWN) {
+                ExecutionContext context =
+                        ExecutionContext.of(order);
+
+                order.markRecovering(context);
+
+                orderMapper.updateEntity(order, entity);
+                entity.setUpdatedAt(Instant.now());
+
+                orderRepository.saveAndFlush(entity);
+
+                return Optional.of(order);
+            }
+
+            /*
+             * Other reconcilable states are handled by the existing
+             * reconciliation flow.
+             */
             return Optional.of(order);
         });
     }

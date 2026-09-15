@@ -101,10 +101,10 @@ class ReconciliationServiceIsolationTest {
 
         reconciliationService.syncOrderWithExchange(order, context);
 
-        // syncOrderWithExchange сохраняет дважды:
-        // 1) markRecovering (UNKNOWN → RECOVERING) — строка 181
-        // 2) forceFill (RECOVERING → FILLED) — строка 236
-        verify(orderRepository, times(2)).save(order);
+        // UNKNOWN → RECOVERING выполняется внутри claimForReconciliation().
+        // syncOrderWithExchange() после успешного claim выполняет только
+        // финальный переход RECOVERING → FILLED и сохраняет его.
+        verify(orderRepository, times(1)).save(order);
         assertEquals(OrderStatus.FILLED, order.getStatus());
     }
 
