@@ -67,7 +67,7 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
      * @param signalId идентификатор исходного сигнала
      */
     @Override
-    @Transactional(propagation = Propagation.REQUIRED)
+    @Transactional
     public void claimExecution(UUID executionId, UUID signalId) {
         if (existsByExecutionId(executionId)) {
             return;
@@ -80,10 +80,10 @@ public class ExecutionClaimAdapter implements ExecutionClaimPort {
         } catch (DataIntegrityViolationException e) {
             if (isExecutionAlreadyClaimed(e)) {
                 log.debug(
-                        "[EXECUTION-CLAIM] Concurrent claim detected for executionId {}. " +
-                                "Rolling back current transaction; delivery will be retried.",
+                        "[EXECUTION-CLAIM] Concurrent claim detected for executionId {}. Handled via DB constraint.",
                         executionId
                 );
+                return;
             }
             throw e;
         }
