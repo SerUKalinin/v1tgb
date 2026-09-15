@@ -49,4 +49,22 @@ class OrderStateTransitionPolicyTest {
         assertTrue(OrderStateTransitionPolicy.canTransition(status, status));
         assertDoesNotThrow(() -> OrderStateTransitionPolicy.requestTransition(status, status));
     }
+
+    @Test
+    void testUnknownCannotReturnToExecuting() {
+        assertFalse(
+                OrderStateTransitionPolicy.canTransition(
+                        OrderStatus.UNKNOWN,
+                        OrderStatus.EXECUTING
+                )
+        );
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> OrderStateTransitionPolicy.requestTransition(
+                        OrderStatus.UNKNOWN,
+                        OrderStatus.EXECUTING
+                )
+        );
+    }
 }

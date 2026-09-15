@@ -78,7 +78,6 @@ public class OrderStateTransitionPolicy {
         STATE_GRAPH.put(OrderStatus.UNKNOWN, Set.of(
                 OrderStatus.FILLED,
                 OrderStatus.REJECTED,
-                OrderStatus.EXECUTING,
                 OrderStatus.RECOVERING
         ));
 
