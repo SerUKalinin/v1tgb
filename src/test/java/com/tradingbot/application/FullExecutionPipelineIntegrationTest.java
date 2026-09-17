@@ -116,8 +116,6 @@ class FullExecutionPipelineIntegrationTest
 
         riskState.setHalted(false);
 
-        riskState.setVersion(0L);
-
         riskState.setUpdatedAt(
                 Instant.now()
         );

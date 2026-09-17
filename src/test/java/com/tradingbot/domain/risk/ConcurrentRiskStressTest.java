@@ -3,10 +3,7 @@ package com.tradingbot.domain.risk;
 import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.domain.risk.RiskDecision;
-import com.tradingbot.tracing.BusinessContext;
-import com.tradingbot.tracing.ExecutionContext;
-import com.tradingbot.tracing.ExecutionAttemptContext;
-import com.tradingbot.tracing.IdentityContext;
+import com.tradingbot.tracing.*;
 import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,7 +37,16 @@ class ConcurrentRiskStressTest extends BaseIntegrationTest {
         transactionTemplate.executeWithoutResult(status ->
                 riskStateRepository.deleteAll());
 
-        riskEngine.syncBalance(new BigDecimal("1000.00"));
+        RiskState initialState = RiskState.builder()
+                .balance(new BigDecimal("1000.00"))
+                .totalEquity(new BigDecimal("1000.00"))
+                .maxEquity(new BigDecimal("1000.00"))
+                .dailyPnl(BigDecimal.ZERO)
+                .maxDrawdown(BigDecimal.ZERO)
+                .halted(false)
+                .build();
+
+        riskEngine.initialize(initialState);
     }
 
     @Test
@@ -58,11 +64,14 @@ class ConcurrentRiskStressTest extends BaseIntegrationTest {
                 try {
                     transactionTemplate.executeWithoutResult(status -> {
                         UUID signalId = UUID.randomUUID();
+                        UUID orderId = IdentityFactory.deriveOrder(signalId);
+
                         ExecutionContext context = new ExecutionContext(
                                 IdentityContext.of(signalId),
                                 ExecutionAttemptContext.firstAttempt(signalId),
-                                BusinessContext.empty()
+                                BusinessContext.of(orderId.toString())
                         );
+
                         RiskDecision decision = riskEngine.reserve(context, orderAmount);
                         if (decision.isApproved()) {
                             approvedCount.incrementAndGet();

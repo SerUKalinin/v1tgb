@@ -20,9 +20,6 @@ public abstract class BaseIntegrationTest {
     @Autowired
     protected RiskStateRepository riskStateRepository;
 
-    @MockBean
-    protected TradingTelegramBot tradingTelegramBot;
-
     @BeforeEach
     @Transactional
     void setUpRiskState() {
@@ -54,8 +51,6 @@ public abstract class BaseIntegrationTest {
         );
 
         riskState.setHalted(false);
-
-        riskState.setVersion(0L);
 
         riskState.setUpdatedAt(
                 Instant.now()

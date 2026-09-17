@@ -59,9 +59,6 @@ class PartialFillRiskStateIntegrationTest
     private OutboxProcessor outboxProcessor;
 
     @MockBean
-    private TradingSystemBootstrapper tradingSystemBootstrapper;
-
-    @MockBean
     private SystemStateManager systemStateManager;
 
     @MockBean
@@ -98,8 +95,6 @@ class PartialFillRiskStateIntegrationTest
         );
 
         riskState.setHalted(false);
-
-        riskState.setVersion(0L);
 
         riskState.setUpdatedAt(
                 Instant.now()
