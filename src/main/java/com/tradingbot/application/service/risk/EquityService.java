@@ -2,12 +2,13 @@ package com.tradingbot.application.service.risk;
 
 import com.tradingbot.application.service.execution.PositionService;
 import com.tradingbot.domain.event.TradeCreatedEvent;
+import com.tradingbot.domain.model.EquitySnapshot;
+import com.tradingbot.domain.model.EquitySnapshotPort;
 import com.tradingbot.domain.model.Position;
+import com.tradingbot.domain.model.Trade;
+import com.tradingbot.domain.model.TradePort;
 import com.tradingbot.domain.risk.RiskState;
 import com.tradingbot.domain.risk.RiskStatePort;
-import com.tradingbot.infrastructure.persistence.entity.EquitySnapshotEntity;
-import com.tradingbot.infrastructure.persistence.repository.EquitySnapshotRepository;
-import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
 import com.tradingbot.tracing.ExecutionContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,28 +18,31 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.util.List;
 
 /**
- * Сервис управления equity (капиталом) стратегии.
+ * Сервис управления equity стратегии.
  *
  * <p>
- * Формирует equity snapshots на основе canonical RiskState
- * и текущей Position projection.
- * </p>
+ * Persistence скрыта за domain ports.
  *
  * <p>
- * Финансовый баланс НЕ хранится в памяти этого сервиса.
- * Источником истины для quote capital является RiskStatePort.
- * </p>
+ * Quote capital берётся только из canonical RiskState.
+ *
+ * <p>
+ * Контракты:
+ * SYSTEM_CONTRACT.md
+ * STATE_MACHINE_CONTRACT.md
+ * EXECUTION_ENGINE_CONTRACT.md
  */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class EquityService {
 
-    private final EquitySnapshotRepository equityRepository;
+    private final EquitySnapshotPort equitySnapshotPort;
     private final PositionService positionService;
-    private final TradeRepository tradeRepository;
+    private final TradePort tradePort;
     private final RiskStatePort riskStatePort;
 
     /**
@@ -51,6 +55,12 @@ public class EquityService {
     public void onTradeCreated(
             TradeCreatedEvent event
     ) {
+        if (event == null) {
+            throw new IllegalArgumentException(
+                    "event cannot be null"
+            );
+        }
+
         ExecutionContext context =
                 ExecutionContext.of(
                         event.getIdentity(),
@@ -74,18 +84,9 @@ public class EquityService {
     /**
      * Создаёт snapshot состояния equity.
      *
-     * <p>
-     * Balance берётся исключительно из canonical RiskState.
-     * Никакого in-memory initial balance здесь нет.
-     * </p>
-     *
      * <pre>
      * equity = balance + unrealizedPnL
      * </pre>
-     *
-     * @param strategyId идентификатор стратегии
-     * @param symbol торговый символ
-     * @param currentPrice текущая рыночная цена
      */
     public void createSnapshot(
             String strategyId,
@@ -94,6 +95,12 @@ public class EquityService {
     ) {
         RiskState riskState =
                 riskStatePort.get();
+
+        if (riskState == null) {
+            throw new IllegalStateException(
+                    "RiskState cannot be null"
+            );
+        }
 
         BigDecimal balance =
                 riskState.getBalance();
@@ -148,8 +155,8 @@ public class EquityService {
                         unrealizedPnl
                 );
 
-        EquitySnapshotEntity snapshot =
-                EquitySnapshotEntity.builder()
+        EquitySnapshot snapshot =
+                EquitySnapshot.builder()
                         .strategyId(strategyId)
                         .timestamp(Instant.now())
                         .balance(balance)
@@ -157,7 +164,7 @@ public class EquityService {
                         .equity(equity)
                         .build();
 
-        equityRepository.save(snapshot);
+        equitySnapshotPort.save(snapshot);
 
         log.info(
                 "[EQUITY] Snapshot saved for {}: Equity={}, Balance={}, UPnL={}, RiskVersion={}",
@@ -170,18 +177,20 @@ public class EquityService {
     }
 
     /**
-     * Рассчитывает суммарный реализованный PnL
-     * по истории сделок.
+     * Рассчитывает суммарный исторический PnL
+     * на основе trade ledger.
      *
      * <p>
-     * Это отдельная историческая метрика и не является
-     * источником текущего cash balance.
-     * </p>
-     *
-     * @return суммарный realized PnL
+     * Сохраняем существующую семантику метода без изменения
+     * финансовой логики: BUY уменьшает значение,
+     * SELL увеличивает.
      */
     public BigDecimal calculateTotalRealizedPnL() {
-        return tradeRepository.findAll().stream()
+
+        List<Trade> trades =
+                tradePort.findAll();
+
+        return trades.stream()
                 .map(trade -> {
                     BigDecimal sign =
                             trade.getSide().name().equals("BUY")

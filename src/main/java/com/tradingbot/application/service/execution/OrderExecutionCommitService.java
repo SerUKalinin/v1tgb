@@ -7,9 +7,9 @@ import com.tradingbot.domain.execution.ExecutionOwnershipValidator;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
+import com.tradingbot.domain.model.OutboxEvent;
 import com.tradingbot.infrastructure.execution.ExecutionLockService;
 import com.tradingbot.infrastructure.outbox.OutboxService;
-import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.IdentityFactory;
 import lombok.RequiredArgsConstructor;
@@ -23,16 +23,14 @@ import java.util.UUID;
 /**
  * Транзакционный boundary для фиксации результата execution.
  *
- * <p>В одной транзакции выполняются:
- * <ul>
- *     <li>проверка ownership executionId;</li>
- *     <li>изменение Order;</li>
- *     <li>сохранение Order;</li>
- *     <li>публикация completion event в transactional outbox;</li>
- *     <li>фиксация execution lock.</li>
- * </ul>
+ * В одной транзакции выполняются:
+ * - проверка ownership executionId;
+ * - изменение Order;
+ * - сохранение Order;
+ * - публикация completion event в transactional outbox;
+ * - фиксация execution lock.
  *
- * <p>Внешний exchange I/O сюда не входит.</p>
+ * Внешний exchange I/O сюда не входит.
  */
 @Slf4j
 @Service
@@ -45,19 +43,21 @@ public class OrderExecutionCommitService {
     private final ExecutionLockService lockService;
 
     /**
-     * Фиксирует результат исполнения в отдельной новой DB transaction.
+     * Фиксирует результат исполнения
+     * в отдельной новой DB transaction.
      */
     @Transactional(
             propagation = Propagation.REQUIRES_NEW,
             rollbackFor = Exception.class
     )
     public void commit(
-            OutboxEventEntity event,
+            OutboxEvent event,
             ExecutionContext context,
             Order order,
             ExecutionResult result,
             String lockKey
     ) {
+
         ExecutionOwnershipValidator.validateExecutionOwnership(
                 order,
                 context.attempt().executionId()
@@ -90,6 +90,7 @@ public class OrderExecutionCommitService {
         switch (result.getStatus()) {
 
             case FILLED -> {
+
                 order.fill(
                         context,
                         result.getExchangeOrderId(),
@@ -104,6 +105,7 @@ public class OrderExecutionCommitService {
             }
 
             case PARTIALLY_FILLED -> {
+
                 order.applyPartialFill(
                         context,
                         result.getExecutedQty(),
@@ -117,6 +119,7 @@ public class OrderExecutionCommitService {
             }
 
             case ACCEPTED -> {
+
                 order.markAccepted(
                         context,
                         result.getExchangeOrderId()
@@ -124,6 +127,7 @@ public class OrderExecutionCommitService {
             }
 
             case REJECTED -> {
+
                 order.markAsRejected(
                         context,
                         result.getErrorMessage()
@@ -136,6 +140,7 @@ public class OrderExecutionCommitService {
             }
 
             case CANCELED -> {
+
                 order.markCancelled(context);
 
                 orderCompensationService.releasePartial(
@@ -145,14 +150,15 @@ public class OrderExecutionCommitService {
             }
 
             case EXCHANGE_STATE_UNKNOWN -> {
+
                 order.markAsUnknown(context);
             }
         }
 
         /*
-         * ВАЖНО:
-         * OrderRepositoryAdapter.save() должен быть REQUIRED,
-         * чтобы save участвовал именно в этой transaction.
+         * REQUIRED transaction boundary:
+         * OrderRepositoryAdapter.save() участвует
+         * в этой transaction.
          */
         orderRepository.save(order);
 
@@ -175,15 +181,18 @@ public class OrderExecutionCommitService {
             Order order,
             ExecutionResult result
     ) {
-        String eventType = resolveCompletionEventType(
-                order,
-                result
-        );
 
-        Object payload = OrderExecutedEvent.from(
-                order,
-                result.getExchangeTradeId()
-        );
+        String eventType =
+                resolveCompletionEventType(
+                        order,
+                        result
+                );
+
+        Object payload =
+                OrderExecutedEvent.from(
+                        order,
+                        result.getExchangeTradeId()
+                );
 
         outboxService.publishEvent(
                 completionContext,
@@ -197,6 +206,7 @@ public class OrderExecutionCommitService {
             Order order,
             ExecutionResult result
     ) {
+
         if (result.getStatus() == ExecutionResult.Status.FILLED) {
 
             boolean hasRealExecution =
@@ -204,6 +214,7 @@ public class OrderExecutionCommitService {
                             && order.getAveragePrice() != null;
 
             if (!hasRealExecution) {
+
                 log.error(
                         "[INVARIANT-VIOLATION] FILLED result but no execution data. " +
                                 "orderId={}, status={}",
@@ -218,12 +229,24 @@ public class OrderExecutionCommitService {
         }
 
         return switch (result.getStatus()) {
-            case PARTIALLY_FILLED -> "ORDER_EXECUTED";
-            case ACCEPTED -> "ORDER_ACCEPTED";
-            case REJECTED -> "ORDER_REJECTED";
-            case EXCHANGE_STATE_UNKNOWN -> "ORDER_TIMEOUT";
-            case CANCELED -> "ORDER_CANCELED";
-            default -> "ORDER_COMPLETED";
+
+            case PARTIALLY_FILLED ->
+                    "ORDER_EXECUTED";
+
+            case ACCEPTED ->
+                    "ORDER_ACCEPTED";
+
+            case REJECTED ->
+                    "ORDER_REJECTED";
+
+            case EXCHANGE_STATE_UNKNOWN ->
+                    "ORDER_TIMEOUT";
+
+            case CANCELED ->
+                    "ORDER_CANCELED";
+
+            default ->
+                    "ORDER_COMPLETED";
         };
     }
 }

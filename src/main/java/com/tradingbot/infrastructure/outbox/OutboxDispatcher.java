@@ -1,5 +1,6 @@
 package com.tradingbot.infrastructure.outbox;
 
+import com.tradingbot.domain.model.OutboxEvent;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -10,11 +11,10 @@ import java.util.List;
 /**
  * Диспетчер outbox-событий.
  *
- * <p>Отвечает за маршрутизацию событий из outbox-таблицы
- * к соответствующим обработчикам (OutboxConsumer).</p>
+ * Legacy infrastructure dispatcher.
  *
- * <p>Поддерживает модель "fan-out": одно событие может быть
- * обработано несколькими consumers, если они его поддерживают.</p>
+ * Основной production path сейчас использует
+ * OutboxEventRouter через OutboxProcessor.
  */
 @Slf4j
 @Component
@@ -24,26 +24,49 @@ public class OutboxDispatcher {
     private final List<OutboxConsumer> consumers;
 
     /**
-     * Диспетчеризация события в подходящие обработчики.
-     *
-     * <p>Итерирует по всем зарегистрированным consumers и вызывает
-     * обработку для тех, кто поддерживает данный тип события.</p>
-     *
-     * @param event событие outbox
-     * @throws Exception при ошибке обработки любого consumer'а
+     * Диспетчеризация события в подходящие handlers.
      */
-    public void dispatch(OutboxEventEntity event) throws Exception {
+    public void dispatch(
+            OutboxEventEntity event
+    ) throws Exception {
+
+        if (event == null) {
+            throw new IllegalArgumentException(
+                    "OutboxEventEntity cannot be null"
+            );
+        }
+
+        OutboxEvent domainEvent =
+                OutboxEventMapper.toDomain(
+                        event
+                );
+
         boolean handled = false;
 
-        for (OutboxConsumer consumer : consumers) {
-            if (consumer.supports(event.getEventType())) {
-                consumer.consume(event);
-                handled = true;
+        for (OutboxConsumer consumer :
+                consumers) {
+
+            if (!consumer.supports(
+                    domainEvent.eventType()
+            )) {
+
+                continue;
             }
+
+            consumer.consume(
+                    domainEvent
+            );
+
+            handled = true;
         }
 
         if (!handled) {
-            log.warn("[OUTBOX-DISPATCHER] No consumer found for event type: {}", event.getEventType());
+
+            log.warn(
+                    "[OUTBOX-DISPATCHER] " +
+                            "No consumer found for event type: {}",
+                    domainEvent.eventType()
+            );
         }
     }
 }

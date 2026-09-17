@@ -10,16 +10,10 @@ import com.tradingbot.domain.policy.OrderStateTransitionPolicy;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.domain.risk.RiskState;
 import com.tradingbot.domain.risk.RiskStateCorruptionException;
+import com.tradingbot.domain.risk.RiskStateRecoveryPort;
 import com.tradingbot.domain.risk.RiskStateReducer;
-import com.tradingbot.infrastructure.persistence.entity.RiskEventEntity;
-import com.tradingbot.infrastructure.persistence.entity.RiskReservationLogEntity;
-import com.tradingbot.infrastructure.persistence.entity.RiskSnapshotEntity;
-import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
-import com.tradingbot.infrastructure.persistence.mapper.RiskStateMapper;
-import com.tradingbot.infrastructure.persistence.repository.RiskEventRepository;
-import com.tradingbot.infrastructure.persistence.repository.RiskReservationLogRepository;
-import com.tradingbot.infrastructure.persistence.repository.RiskSnapshotRepository;
-import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
+import com.tradingbot.domain.risk.RiskStateRecoveryPort.RiskEventRecord;
+import com.tradingbot.domain.risk.RiskStateRecoveryPort.RiskReservationRecord;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -36,69 +30,80 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Сервис восстановления риск-состояния системы.
  *
- * <p>Отвечает за полный rebuild риск-модели из:
+ * <p>Отвечает за полный rebuild риск-модели из:</p>
  * <ul>
- *     <li>snapshot состояния</li>
- *     <li>persisted RiskState</li>
- *     <li>event log (event sourcing)</li>
- *     <li>reservation log</li>
+ *     <li>snapshot состояния;</li>
+ *     <li>persisted RiskState;</li>
+ *     <li>event log;</li>
+ *     <li>reservation log.</li>
  * </ul>
  *
- * <p>После восстановления выполняется реконсиляция с биржей
- * и инициализация RiskEngine.</p>
+ * <p>После восстановления выполняется reconciliation
+ * с биржей и инициализация RiskEngine.</p>
  *
- * <p>Является критическим компонентом cold-start recovery pipeline.</p>
+ * <p>Application слой не знает о JPA repository/entity.</p>
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class RiskStateRecoveryService {
 
-    private final RiskEventRepository eventRepository;
-    private final RiskSnapshotRepository snapshotRepository;
-    private final RiskReservationLogRepository reservationLogRepository;
-
-    private final RiskStateRepository riskStateRepository;
-    private final RiskStateMapper riskStateMapper;
+    /**
+     * Persistence boundary.
+     *
+     * Вся работа с JPA скрыта за этим port.
+     */
+    private final RiskStateRecoveryPort recoveryPort;
 
     private final RiskEngine riskEngine;
+
     private final RiskStateReducer reducer;
+
     private final ObjectMapper objectMapper;
+
     private final RiskReconciler riskReconciler;
+
     private final ExchangeOrderQueryService exchangeQueryService;
+
     private final SystemStateManager stateManager;
+
     private final OrderRepositoryPort orderRepositoryPort;
 
-    private static final String AGGREGATE_ID = RiskStateEntity.SINGLETON_ID;
+    /**
+     * ID singleton RiskState.
+     *
+     * Значение совпадает с persistence-контрактом RiskStateEntity,
+     * но application больше не зависит от entity.
+     */
+    private static final String AGGREGATE_ID = "GLOBAL";
+
     private static final String CAPITAL_ASSET = "USDT";
 
     /**
      * Гарантия однократного выполнения recovery.
      */
-    private final AtomicBoolean recovered = new AtomicBoolean(false);
+    private final AtomicBoolean recovered =
+            new AtomicBoolean(false);
 
     /**
-     * Запуск процесса восстановления риск-состояния.
-     *
-     * <p>Гарантии:
-     * <ul>
-     *     <li>non-reentrant execution</li>
-     *     <li>execution только в состоянии RISK_RECOVERING</li>
-     * </ul>
-     *
-     * @return true если отсутствовали snapshot и event history
+     * Запуск процесса восстановления.
      */
     public boolean recover() {
 
         if (!recovered.compareAndSet(false, true)) {
+
             throw new IllegalStateException(
-                    "[RISK-RECOVERY] already executed - non reentrant violation"
+                    "[RISK-RECOVERY] already executed - " +
+                            "non reentrant violation"
             );
         }
 
-        if (stateManager.getState() != SystemStateManager.SystemState.RISK_RECOVERING) {
+        if (stateManager.getState()
+                != SystemStateManager.SystemState.RISK_RECOVERING) {
+
             throw new IllegalStateException(
-                    "[RISK-RECOVERY] invalid state: " + stateManager.getState()
+                    "[RISK-RECOVERY] invalid state: " +
+                            stateManager.getState()
             );
         }
 
@@ -106,34 +111,33 @@ public class RiskStateRecoveryService {
     }
 
     /**
-     * Основной pipeline восстановления состояния.
-     *
-     * <ol>
-     *     <li>загрузка snapshot либо persisted RiskState</li>
-     *     <li>replay событий</li>
-     *     <li>rebuild reservation state</li>
-     *     <li>reconciliation с биржей</li>
-     *     <li>инициализация RiskEngine</li>
-     * </ol>
+     * Основной pipeline восстановления.
      */
     private boolean recoverState() {
 
-        log.info("[RISK-RECOVERY] START");
+        log.info(
+                "[RISK-RECOVERY] START"
+        );
 
-        // ============================================================
-        // 1. SNAPSHOT / PERSISTED RISK STATE
-        // ============================================================
+        /*
+         * ============================================================
+         * 1. SNAPSHOT / PERSISTED RISK STATE
+         * ============================================================
+         */
 
-        Optional<RiskSnapshotEntity> snapshotOpt =
-                snapshotRepository.findFirstByAggregateIdOrderByLastVersionDesc(
+        Optional<String> snapshotJsonOpt =
+                recoveryPort.findLatestSnapshotStateJson(
                         AGGREGATE_ID
                 );
 
         RiskState state;
 
-        if (snapshotOpt.isPresent()) {
+        if (snapshotJsonOpt.isPresent()) {
 
-            state = deserializeSnapshot(snapshotOpt.get());
+            state =
+                    deserializeSnapshot(
+                            snapshotJsonOpt.get()
+                    );
 
             log.info(
                     "[RISK-RECOVERY] source=SNAPSHOT version={}",
@@ -142,12 +146,15 @@ public class RiskStateRecoveryService {
 
         } else {
 
-            Optional<RiskStateEntity> persistedState =
-                    riskStateRepository.findById(AGGREGATE_ID);
+            Optional<RiskState> persistedState =
+                    recoveryPort.findPersistedState(
+                            AGGREGATE_ID
+                    );
 
             if (persistedState.isPresent()) {
 
-                state = riskStateMapper.toDomain(persistedState.get());
+                state =
+                        persistedState.get();
 
                 log.info(
                         "[RISK-RECOVERY] source=PERSISTED_RISK_STATE " +
@@ -160,21 +167,24 @@ public class RiskStateRecoveryService {
 
             } else {
 
-                state = RiskState.empty();
+                state =
+                        RiskState.empty();
 
                 log.warn(
-                        "[RISK-RECOVERY] no snapshot and no persisted risk state " +
-                                "-> using empty state"
+                        "[RISK-RECOVERY] no snapshot and no persisted " +
+                                "risk state -> using empty state"
                 );
             }
         }
 
-        // ============================================================
-        // 2. EVENT REPLAY
-        // ============================================================
+        /*
+         * ============================================================
+         * 2. EVENT REPLAY
+         * ============================================================
+         */
 
-        List<RiskEventEntity> events =
-                eventRepository.findByAggregateIdAndVersionGreaterThanOrderByVersionAsc(
+        List<RiskEventRecord> events =
+                recoveryPort.findEventsAfter(
                         AGGREGATE_ID,
                         state.getVersion()
                 );
@@ -185,46 +195,51 @@ public class RiskStateRecoveryService {
                 state.getVersion()
         );
 
-        for (RiskEventEntity entity : events) {
+        for (RiskEventRecord record : events) {
 
-            RiskEvent event = deserializeEvent(entity);
+            RiskEvent event =
+                    deserializeEvent(
+                            record
+                    );
 
-            state = reducer.reduce(
-                    state,
-                    event,
-                    true
-            );
+            state =
+                    reducer.reduce(
+                            state,
+                            event,
+                            true
+                    );
         }
 
-        // ============================================================
-        // 3. RESERVATION REBUILD
-        // ============================================================
-        //
-        // Reservation log является источником истины для:
-        // - размера reservation
-        // - порядка RESERVE / RELEASE / CONSUME
-        //
-        // OrderStatus является источником истины для:
-        // - того, может ли reservation существовать после recovery.
-        //
-        // Historical RESERVE от уже terminal order
-        // не должен resurrect'ить reservation.
-        // ============================================================
+        /*
+         * ============================================================
+         * 3. RESERVATION REBUILD
+         * ============================================================
+         *
+         * Reservation log является источником истины для:
+         * - размера reservation;
+         * - порядка RESERVE / RELEASE / CONSUME.
+         *
+         * OrderStatus является источником истины для:
+         * - того, может ли reservation существовать после recovery.
+         * ============================================================
+         */
 
-        Map<UUID, BigDecimal> reservations = new HashMap<>();
+        Map<UUID, BigDecimal> reservations =
+                new HashMap<>();
 
-        List<RiskReservationLogEntity> logs =
-                reservationLogRepository.findAllByOrderBySequenceIdAsc();
+        List<RiskReservationRecord> logs =
+                recoveryPort.findAllReservations();
 
-        for (RiskReservationLogEntity logEntity : logs) {
+        for (RiskReservationRecord record : logs) {
 
-            String eventType = logEntity.getEventType();
+            String eventType =
+                    record.eventType();
 
             if ("RESERVE".equals(eventType)) {
 
                 reservations.put(
-                        logEntity.getOrderId(),
-                        logEntity.getAmount()
+                        record.orderId(),
+                        record.amount()
                 );
 
                 continue;
@@ -234,26 +249,35 @@ public class RiskStateRecoveryService {
                     || "CONSUME".equals(eventType)) {
 
                 reservations.remove(
-                        logEntity.getOrderId()
+                        record.orderId()
                 );
             }
         }
 
-        // Только эти состояния могут иметь живую reservation.
-        //
-        // FILLED / REJECTED / CANCELED / ERROR являются terminal.
-        // Поэтому старые RESERVE записи от них должны быть отброшены.
+        /*
+         * Только reconcilable order statuses
+         * могут иметь живую reservation.
+         */
         Set<OrderStatus> activeStatuses =
-                OrderStateTransitionPolicy.getReconcilableStatuses();
+                OrderStateTransitionPolicy
+                        .getReconcilableStatuses();
 
         Set<UUID> activeOrderIds =
-                orderRepositoryPort.findOrderIdsByStatusIn(activeStatuses);
+                orderRepositoryPort.findOrderIdsByStatusIn(
+                        activeStatuses
+                );
 
-        reservations.keySet().retainAll(activeOrderIds);
+        reservations.keySet()
+                .retainAll(activeOrderIds);
 
-        state = state.toBuilder()
-                .activeReservations(Map.copyOf(reservations))
-                .build();
+        state =
+                state.toBuilder()
+                        .activeReservations(
+                                Map.copyOf(
+                                        reservations
+                                )
+                        )
+                        .build();
 
         log.info(
                 "[RISK-RECOVERY] reservations={}, reserved={}, activeOrders={}",
@@ -262,11 +286,16 @@ public class RiskStateRecoveryService {
                 activeOrderIds.size()
         );
 
-        // ============================================================
-        // 4. RECONCILIATION WITH EXCHANGE
-        // ============================================================
+        /*
+         * ============================================================
+         * 4. RECONCILIATION WITH EXCHANGE
+         * ============================================================
+         */
 
-        state = reconcileWithExchange(state);
+        state =
+                reconcileWithExchange(
+                        state
+                );
 
         log.info(
                 "[RISK-RECOVERY] reconciled balance={}, totalEquity={}",
@@ -274,11 +303,15 @@ public class RiskStateRecoveryService {
                 state.getTotalEquity()
         );
 
-        // ============================================================
-        // 5. ENGINE INITIALIZATION
-        // ============================================================
+        /*
+         * ============================================================
+         * 5. ENGINE INITIALIZATION
+         * ============================================================
+         */
 
-        riskEngine.initialize(state);
+        riskEngine.initialize(
+                state
+        );
 
         log.info(
                 "[RISK-RECOVERY] COMPLETE version={}, halted={}, pnl={}",
@@ -287,18 +320,21 @@ public class RiskStateRecoveryService {
                 state.getDailyPnl()
         );
 
-        return snapshotOpt.isEmpty() && events.isEmpty();
+        return snapshotJsonOpt.isEmpty()
+                && events.isEmpty();
     }
 
     /**
-     * Десериализация snapshot состояния риска.
+     * Десериализация snapshot.
      */
-    private RiskState deserializeSnapshot(RiskSnapshotEntity entity) {
+    private RiskState deserializeSnapshot(
+            String stateJson
+    ) {
 
         try {
 
             return objectMapper.readValue(
-                    entity.getStateJson(),
+                    stateJson,
                     RiskState.class
             );
 
@@ -314,12 +350,14 @@ public class RiskStateRecoveryService {
     /**
      * Десериализация persisted risk event.
      */
-    private RiskEvent deserializeEvent(RiskEventEntity entity) {
+    private RiskEvent deserializeEvent(
+            RiskEventRecord record
+    ) {
 
         try {
 
             Class<? extends RiskEvent> type =
-                    switch (entity.getEventType()) {
+                    switch (record.eventType()) {
 
                         case "TradeExecuted" ->
                                 RiskEvent.TradeExecuted.class;
@@ -344,12 +382,13 @@ public class RiskStateRecoveryService {
 
                         default ->
                                 throw new IllegalArgumentException(
-                                        "unknown event: " + entity.getEventType()
+                                        "unknown event: " +
+                                                record.eventType()
                                 );
                     };
 
             return objectMapper.readValue(
-                    entity.getPayload(),
+                    record.payload(),
                     type
             );
 
@@ -363,18 +402,17 @@ public class RiskStateRecoveryService {
     }
 
     /**
-     * Реконсиляция восстановленного состояния с биржей.
-     *
-     * <p>При критической ошибке:
-     * <ul>
-     *     <li>система переводится в HALTED</li>
-     *     <li>RiskEngine переводится в emergency stop</li>
-     * </ul>
+     * Reconciliation восстановленного state с exchange.
      */
-    private RiskState reconcileWithExchange(RiskState state) {
+    private RiskState reconcileWithExchange(
+            RiskState state
+    ) {
 
         BigDecimal exchangeBalance =
-                exchangeQueryService.getAvailableBalance(CAPITAL_ASSET);
+                exchangeQueryService
+                        .getAvailableBalance(
+                                CAPITAL_ASSET
+                        );
 
         try {
 
@@ -395,7 +433,8 @@ public class RiskStateRecoveryService {
             );
 
             riskEngine.emergencyStop(
-                    "Reconciliation failure: " + e.getMessage()
+                    "Reconciliation failure: " +
+                            e.getMessage()
             );
 
             throw e;

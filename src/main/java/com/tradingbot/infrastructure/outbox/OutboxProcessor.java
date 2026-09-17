@@ -29,21 +29,23 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class OutboxProcessor implements ApplicationContextAware {
+public class OutboxProcessor
+        implements ApplicationContextAware {
 
     private final OutboxEventRepository outboxRepository;
+
     private final OutboxEventRouter router;
+
     private final OutboxRetryPolicy retryPolicy;
+
     private final DeadLetterAlertService alertService;
+
     private final ExecutionLogger executionLogger;
+
     private final SystemStateManager systemStateManager;
 
     private ApplicationContext applicationContext;
 
-    /**
-     * Набор aggregateId, которые сейчас обрабатываются
-     * данным экземпляром приложения.
-     */
     private final Set<UUID> activeAggregates =
             ConcurrentHashMap.newKeySet();
 
@@ -54,28 +56,38 @@ public class OutboxProcessor implements ApplicationContextAware {
 
     @PreDestroy
     public void shutdown() {
+
         this.shuttingDown = true;
+
         log.info(
                 "[OUTBOX] Получен сигнал завершения. Остановка процессора..."
         );
     }
 
     @Override
-    public void setApplicationContext(ApplicationContext applicationContext) {
-        this.applicationContext = applicationContext;
+    public void setApplicationContext(
+            ApplicationContext applicationContext
+    ) {
+
+        this.applicationContext =
+                applicationContext;
     }
 
     /**
-     * Получение Spring proxy этого bean.
-     *
-     * Нужно для корректного применения @Transactional
-     * при вызове методов из этого же класса.
+     * Spring proxy для корректного применения
+     * @Transactional при self invocation.
      */
     private OutboxProcessor self() {
-        return applicationContext.getBean(OutboxProcessor.class);
+
+        return applicationContext.getBean(
+                OutboxProcessor.class
+        );
     }
 
-    @Scheduled(fixedDelayString = "${app.outbox.scan-interval:500}")
+    @Scheduled(
+            fixedDelayString =
+                    "${app.outbox.scan-interval:500}"
+    )
     public void scheduledProcess() {
 
         if (!enabled || shuttingDown) {
@@ -91,16 +103,13 @@ public class OutboxProcessor implements ApplicationContextAware {
 
     /**
      * Основной цикл обработки outbox.
-     *
-     * Важно:
-     * - claimBatch() работает в отдельной transaction;
-     * - каждое событие затем обрабатывается в своей transaction;
-     * - при ошибке transaction обработки откатывается;
-     * - FAILED/retry записывается после rollback в отдельной transaction.
      */
     public void processOutbox() {
+
         try {
-            List<OutboxEventEntity> events = self().claimBatch();
+
+            List<OutboxEventEntity> events =
+                    self().claimBatch();
 
             if (events.isEmpty()) {
                 return;
@@ -111,7 +120,8 @@ public class OutboxProcessor implements ApplicationContextAware {
                     events.size()
             );
 
-            Map<UUID, List<OutboxEventEntity>> groupedEvents =
+            Map<UUID, List<OutboxEventEntity>>
+                    groupedEvents =
                     events.stream()
                             .collect(
                                     java.util.stream.Collectors.groupingBy(
@@ -124,14 +134,18 @@ public class OutboxProcessor implements ApplicationContextAware {
             for (Map.Entry<UUID, List<OutboxEventEntity>> entry
                     : groupedEvents.entrySet()) {
 
-                UUID aggregateId = entry.getKey();
-                List<OutboxEventEntity> aggregateEvents = entry.getValue();
+                UUID aggregateId =
+                        entry.getKey();
+
+                List<OutboxEventEntity> aggregateEvents =
+                        entry.getValue();
 
                 if (shuttingDown) {
                     break;
                 }
 
-                OutboxEventEntity firstEvent = aggregateEvents.get(0);
+                OutboxEventEntity firstEvent =
+                        aggregateEvents.get(0);
 
                 executionLogger.log(
                         com.tradingbot.tracing.ExecutionLogFactory.forEvent(
@@ -140,33 +154,39 @@ public class OutboxProcessor implements ApplicationContextAware {
                                 firstEvent.getSignalId(),
                                 com.tradingbot.tracing.ExecutionEventType.OUTBOX_CLAIM_START,
                                 "CLAIMED",
-                                "Claimed outbox aggregate " + aggregateId
+                                "Claimed outbox aggregate " +
+                                        aggregateId
                         )
                 );
 
-                if (!activeAggregates.add(aggregateId)) {
+                if (!activeAggregates.add(
+                        aggregateId
+                )) {
+
                     log.debug(
-                            "[OUTBOX] Aggregate {} is already being processed, skipping batch",
+                            "[OUTBOX] Aggregate {} is already being processed, " +
+                                    "skipping batch",
                             aggregateId
                     );
+
                     continue;
                 }
 
                 try {
-                    /*
-                     * Если существует более раннее событие этого aggregate,
-                     * которое ещё не PROCESSED, последовательность нарушать нельзя.
-                     */
+
                     if (outboxRepository.existsUnprocessedBefore(
                             aggregateId,
                             aggregateEvents
                                     .get(0)
                                     .getSequenceNumber()
                     )) {
+
                         log.warn(
-                                "[OUTBOX] Gap detected for aggregate {}, skipping batch",
+                                "[OUTBOX] Gap detected for aggregate {}, " +
+                                        "skipping batch",
                                 aggregateId
                         );
+
                         continue;
                     }
 
@@ -176,25 +196,18 @@ public class OutboxProcessor implements ApplicationContextAware {
                             aggregateId
                     );
 
-                    for (OutboxEventEntity event : aggregateEvents) {
+                    for (OutboxEventEntity event :
+                            aggregateEvents) {
 
                         if (shuttingDown) {
                             break;
                         }
 
                         try {
-                            /*
-                             * ВАЖНО:
-                             *
-                             * Если consumer падает, processSingleEvent()
-                             * выбрасывает исключение наружу.
-                             *
-                             * Его transaction будет откатана.
-                             *
-                             * Только после rollback мы создаём FAILED
-                             * в отдельной transaction.
-                             */
-                            self().processSingleEvent(event);
+
+                            self().processSingleEvent(
+                                    event
+                            );
 
                         } catch (Exception e) {
 
@@ -214,16 +227,23 @@ public class OutboxProcessor implements ApplicationContextAware {
                     }
 
                 } finally {
-                    activeAggregates.remove(aggregateId);
+
+                    activeAggregates.remove(
+                            aggregateId
+                    );
                 }
             }
 
-        } catch (InvalidDataAccessResourceUsageException e) {
+        } catch (
+                InvalidDataAccessResourceUsageException e
+        ) {
 
             if (shuttingDown
                     || (
                     e.getMessage() != null
-                            && e.getMessage().contains("outbox_events")
+                            && e.getMessage().contains(
+                            "outbox_events"
+                    )
             )) {
 
                 log.debug(
@@ -262,33 +282,29 @@ public class OutboxProcessor implements ApplicationContextAware {
     /**
      * Обработка одного Outbox-события.
      *
-     * КРИТИЧЕСКИЙ ИНВАРИАНТ:
+     * ВАЖНО:
      *
-     * router.route(event)
+     * router.route(...)
      * +
      * status = PROCESSED
      *
-     * находятся в ОДНОЙ transaction.
-     *
-     * Если consumer падает:
-     *
-     * business mutation -> ROLLBACK
-     * status PROCESSED   -> ROLLBACK
-     *
-     * После rollback внешний caller ставит FAILED
-     * отдельной transaction.
+     * находятся в одной transaction.
      */
     @Transactional(
             propagation = Propagation.REQUIRES_NEW,
             rollbackFor = Exception.class
     )
-    public void processSingleEvent(OutboxEventEntity event) throws Exception {
+    public void processSingleEvent(
+            OutboxEventEntity event
+    ) throws Exception {
 
         if (event.getStatus() == OutboxStatus.DEAD) {
             return;
         }
 
-        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+        if (!TransactionSynchronizationManager
+                .isActualTransactionActive()) {
+
             log.error(
                     "[OUTBOX] No transaction active for event {}",
                     event.getId()
@@ -300,6 +316,7 @@ public class OutboxProcessor implements ApplicationContextAware {
         }
 
         if (event.getAttemptCount() > 5) {
+
             log.warn(
                     "[OUTBOX] High attempt count for event {}",
                     event.getId()
@@ -307,17 +324,18 @@ public class OutboxProcessor implements ApplicationContextAware {
         }
 
         /*
-         * Consumer выполняет ВСЮ бизнес-логику внутри этой transaction.
+         * JPA entity конвертируется в чистую модель
+         * до передачи в application.
          */
-        router.route(event);
+        router.route(
+                OutboxEventMapper.toDomain(
+                        event
+                )
+        );
 
-        /*
-         * Только если router.route() полностью завершился успешно,
-         * событие становится PROCESSED.
-         *
-         * Это обычная mutation внутри уже существующей transaction.
-         */
-        finalizeProcessedInCurrentTransaction(event.getId());
+        finalizeProcessedInCurrentTransaction(
+                event.getId()
+        );
 
         log.info(
                 "[OUTBOX] Event {} processed successfully",
@@ -329,35 +347,47 @@ public class OutboxProcessor implements ApplicationContextAware {
      * Финализация текущей обработки.
      *
      * НЕ REQUIRES_NEW.
-     *
-     * Метод работает внутри transaction processSingleEvent().
      */
-    private void finalizeProcessedInCurrentTransaction(UUID eventId) {
+    private void finalizeProcessedInCurrentTransaction(
+            UUID eventId
+    ) {
 
         OutboxEventEntity event =
                 outboxRepository.findById(eventId)
                         .orElseThrow(
                                 () -> new IllegalStateException(
-                                        "Outbox event not found: " + eventId
+                                        "Outbox event not found: " +
+                                                eventId
                                 )
                         );
 
-        event.setStatus(OutboxStatus.PROCESSED);
-        event.setProcessedAt(Instant.now());
+        event.setStatus(
+                OutboxStatus.PROCESSED
+        );
+
+        event.setProcessedAt(
+                Instant.now()
+        );
+
         event.setLastError(null);
         event.setLockOwner(null);
         event.setLockedUntil(null);
         event.setClaimedBy(null);
         event.setClaimedAt(null);
         event.setLeaseUntil(null);
-        event.setUpdatedAt(Instant.now());
 
-        outboxRepository.saveAndFlush(event);
+        event.setUpdatedAt(
+                Instant.now()
+        );
+
+        outboxRepository.saveAndFlush(
+                event
+        );
     }
 
     /**
-     * Retry/DLQ mutation выполняется ПОСЛЕ rollback
-     * исходной transaction обработки.
+     * Retry/DLQ mutation после rollback
+     * исходной business transaction.
      */
     @Transactional(
             propagation = Propagation.REQUIRES_NEW,
@@ -368,59 +398,80 @@ public class OutboxProcessor implements ApplicationContextAware {
             String errorMessage
     ) {
 
-        outboxRepository.findById(eventId).ifPresent(event -> {
+        outboxRepository
+                .findById(eventId)
+                .ifPresent(event -> {
 
-            /*
-             * Если другой worker уже успел успешно завершить event,
-             * не переводим PROCESSED обратно в FAILED.
-             */
-            if (event.getStatus() == OutboxStatus.PROCESSED
-                    || event.getStatus() == OutboxStatus.DEAD) {
-                return;
-            }
+                    if (event.getStatus()
+                            == OutboxStatus.PROCESSED
+                            || event.getStatus()
+                            == OutboxStatus.DEAD) {
 
-            int retries = event.getRetryCount() + 1;
+                        return;
+                    }
 
-            event.setRetryCount(retries);
-            event.setUpdatedAt(Instant.now());
-            event.setLastError(errorMessage);
+                    int retries =
+                            event.getRetryCount() + 1;
 
-            if (retryPolicy.shouldRetry(event)) {
+                    event.setRetryCount(
+                            retries
+                    );
 
-                event.setStatus(OutboxStatus.FAILED);
+                    event.setUpdatedAt(
+                            Instant.now()
+                    );
 
-                long delaySeconds =
-                        (long) Math.pow(2, retries);
+                    event.setLastError(
+                            errorMessage
+                    );
 
-                event.setNextAttemptAt(
-                        Instant.now().plusSeconds(delaySeconds)
-                );
+                    if (retryPolicy.shouldRetry(event)) {
 
-                /*
-                 * Lease очищаем, чтобы event был доступен retry-процессору.
-                 */
-                event.setLockOwner(null);
-                event.setLockedUntil(null);
-                event.setClaimedBy(null);
-                event.setClaimedAt(null);
-                event.setLeaseUntil(null);
+                        event.setStatus(
+                                OutboxStatus.FAILED
+                        );
 
-            } else {
+                        long delaySeconds =
+                                (long) Math.pow(
+                                        2,
+                                        retries
+                                );
 
-                event.setStatus(OutboxStatus.DEAD);
+                        event.setNextAttemptAt(
+                                Instant.now()
+                                        .plusSeconds(
+                                                delaySeconds
+                                        )
+                        );
 
-                alertService.sendAlert(event);
-            }
+                        event.setLockOwner(null);
+                        event.setLockedUntil(null);
+                        event.setClaimedBy(null);
+                        event.setClaimedAt(null);
+                        event.setLeaseUntil(null);
 
-            outboxRepository.saveAndFlush(event);
-        });
+                    } else {
+
+                        event.setStatus(
+                                OutboxStatus.DEAD
+                        );
+
+                        alertService.sendAlert(
+                                event
+                        );
+                    }
+
+                    outboxRepository.saveAndFlush(
+                            event
+                    );
+                });
     }
 
     /**
      * Захват batch.
      *
-     * Отдельная transaction заканчивается до начала
-     * business processing.
+     * Отдельная transaction завершается
+     * до начала business processing.
      */
     @Transactional(
             propagation = Propagation.REQUIRES_NEW,
@@ -433,8 +484,11 @@ public class OutboxProcessor implements ApplicationContextAware {
                         .getRuntimeMXBean()
                         .getName();
 
-        Instant now = Instant.now();
-        Instant lockUntil = now.plusSeconds(30);
+        Instant now =
+                Instant.now();
+
+        Instant lockUntil =
+                now.plusSeconds(30);
 
         List<OutboxEventEntity> events =
                 outboxRepository.claimBatchWithLock(
@@ -444,18 +498,40 @@ public class OutboxProcessor implements ApplicationContextAware {
 
         events.forEach(event -> {
 
-            event.setStatus(OutboxStatus.PROCESSING);
-            event.setLockOwner(ownerId);
-            event.setLockedUntil(lockUntil);
-            event.setClaimedBy(ownerId);
-            event.setClaimedAt(now);
-            event.setLeaseUntil(lockUntil);
+            event.setStatus(
+                    OutboxStatus.PROCESSING
+            );
+
+            event.setLockOwner(
+                    ownerId
+            );
+
+            event.setLockedUntil(
+                    lockUntil
+            );
+
+            event.setClaimedBy(
+                    ownerId
+            );
+
+            event.setClaimedAt(
+                    now
+            );
+
+            event.setLeaseUntil(
+                    lockUntil
+            );
+
             event.setAttemptCount(
                     event.getAttemptCount() + 1
             );
-            event.setUpdatedAt(now);
+
+            event.setUpdatedAt(
+                    now
+            );
         });
 
-        return outboxRepository.saveAllAndFlush(events);
+        return outboxRepository
+                .saveAllAndFlush(events);
     }
 }

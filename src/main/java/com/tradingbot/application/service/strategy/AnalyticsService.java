@@ -1,7 +1,7 @@
 package com.tradingbot.application.service.strategy;
 
-import com.tradingbot.infrastructure.persistence.entity.TradeEntity;
-import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
+import com.tradingbot.domain.model.Trade;
+import com.tradingbot.domain.model.TradePort;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -11,43 +11,31 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Сервис аналитики торговой системы.
+ * Application service аналитики торговой системы.
  *
- * <p>Отвечает за расчёт агрегированных метрик производительности стратегии
- * на основе истории совершённых сделок.</p>
+ * <p>
+ * Работает только с domain model {@link Trade}
+ * и persistence boundary {@link TradePort}.
  *
- * <p>Основные метрики:
- * <ul>
- *     <li>winrate (процент прибыльных сделок)</li>
- *     <li>totalTrades (общее количество сделок)</li>
- *     <li>pnlPercent (суммарный PnL)</li>
- *     <li>profitFactor (отношение прибыли к убыткам)</li>
- * </ul>
+ * <p>
+ * Архитектурные контракты:
+ * SYSTEM_CONTRACT.md
+ * STATE_MACHINE_CONTRACT.md
+ * EXECUTION_ENGINE_CONTRACT.md
  */
 @Service
 @RequiredArgsConstructor
 public class AnalyticsService {
 
-    /**
-     * Репозиторий сделок.
-     */
-    private final TradeRepository tradeRepository;
+    private final TradePort tradePort;
 
     /**
      * Рассчитывает глобальную статистику по всем сделкам.
      *
-     * <p>Метод выполняет агрегацию всей истории сделок без фильтрации.</p>
-     *
-     * @return карта со следующими метриками:
-     * <ul>
-     *     <li>winrate — процент прибыльных сделок</li>
-     *     <li>totalTrades — общее число сделок</li>
-     *     <li>pnlPercent — суммарный PnL</li>
-     *     <li>profitFactor — коэффициент прибыль/убыток</li>
-     * </ul>
+     * @return агрегированные торговые метрики
      */
     public Map<String, Object> getGlobalStats() {
-        List<TradeEntity> allTrades = tradeRepository.findAll();
+        List<Trade> allTrades = tradePort.findAll();
 
         if (allTrades.isEmpty()) {
             return Map.of(
@@ -61,30 +49,41 @@ public class AnalyticsService {
         long totalTrades = allTrades.size();
 
         long winningTrades = allTrades.stream()
-                .filter(t -> t.getRealizedPnl() != null
-                        && t.getRealizedPnl().compareTo(BigDecimal.ZERO) > 0)
+                .filter(this::isWinningTrade)
                 .count();
 
-        double winrate = (double) winningTrades / totalTrades * 100;
+        double winrate =
+                (double) winningTrades / totalTrades * 100.0;
 
         BigDecimal totalPnl = allTrades.stream()
-                .map(t -> t.getRealizedPnl() != null ? t.getRealizedPnl() : BigDecimal.ZERO)
+                .map(this::realizedPnlOrZero)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         BigDecimal grossProfit = allTrades.stream()
-                .map(t -> t.getRealizedPnl() != null ? t.getRealizedPnl() : BigDecimal.ZERO)
-                .filter(pnl -> pnl.compareTo(BigDecimal.ZERO) > 0)
+                .map(this::realizedPnlOrZero)
+                .filter(pnl ->
+                        pnl.compareTo(BigDecimal.ZERO) > 0
+                )
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         BigDecimal grossLoss = allTrades.stream()
-                .map(t -> t.getRealizedPnl() != null ? t.getRealizedPnl() : BigDecimal.ZERO)
-                .filter(pnl -> pnl.compareTo(BigDecimal.ZERO) < 0)
+                .map(this::realizedPnlOrZero)
+                .filter(pnl ->
+                        pnl.compareTo(BigDecimal.ZERO) < 0
+                )
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .abs();
 
-        double profitFactor = grossLoss.compareTo(BigDecimal.ZERO) > 0
-                ? grossProfit.divide(grossLoss, 2, RoundingMode.HALF_UP).doubleValue()
-                : grossProfit.doubleValue();
+        double profitFactor =
+                grossLoss.compareTo(BigDecimal.ZERO) > 0
+                        ? grossProfit
+                          .divide(
+                                  grossLoss,
+                                  2,
+                                  RoundingMode.HALF_UP
+                          )
+                          .doubleValue()
+                        : grossProfit.doubleValue();
 
         return Map.of(
                 "winrate", winrate,
@@ -97,21 +96,42 @@ public class AnalyticsService {
     /**
      * Формирует человекочитаемое сообщение со статистикой.
      *
-     * @param stats агрегированные метрики, полученные из {@link #getGlobalStats()}
-     * @return форматированная строка для отображения пользователю
+     * @param stats агрегированные метрики
+     * @return форматированная строка
      */
-    public String formatStatsMessage(Map<String, Object> stats) {
+    public String formatStatsMessage(
+            Map<String, Object> stats
+    ) {
         return String.format(
-                "📊 *Статистика системы*\n\n" +
-                        "📈 Winrate: `%.1f%%`\n" +
-                        "🔄 Всего сделок: `%d`\n" +
-                        "💰 Общий PnL: `%+.2f` (abs)\n" +
-                        "🏆 Profit Factor: `%.2f`\n\n" +
-                        "_Данные рассчитаны на основе истории торгов_",
+                """
+                📊 *Статистика системы*
+
+                📈 Winrate: `%.1f%%`
+                🔄 Всего сделок: `%d`
+                💰 Общий PnL: `%+.2f` (abs)
+                🏆 Profit Factor: `%.2f`
+
+                _Данные рассчитаны на основе истории торгов_
+                """,
                 stats.get("winrate"),
                 stats.get("totalTrades"),
                 stats.get("pnlPercent"),
                 stats.get("profitFactor")
         );
+    }
+
+    private boolean isWinningTrade(Trade trade) {
+        return trade != null
+                && trade.getRealizedPnl() != null
+                && trade.getRealizedPnl()
+                .compareTo(BigDecimal.ZERO) > 0;
+    }
+
+    private BigDecimal realizedPnlOrZero(Trade trade) {
+        if (trade == null || trade.getRealizedPnl() == null) {
+            return BigDecimal.ZERO;
+        }
+
+        return trade.getRealizedPnl();
     }
 }

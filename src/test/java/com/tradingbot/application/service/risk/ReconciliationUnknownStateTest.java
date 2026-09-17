@@ -12,8 +12,8 @@ import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
+import com.tradingbot.domain.model.OutboxRecoveryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
-import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.ExecutionLogger;
 import com.tradingbot.tracing.IdentityFactory;
@@ -34,7 +34,7 @@ import static org.mockito.Mockito.*;
 class ReconciliationUnknownStateTest {
 
     private OrderRepositoryPort orderRepository;
-    private OutboxEventRepository outboxRepository;
+    private OutboxRecoveryPort outboxRecoveryPort;
     private ExchangeOrderQueryService exchangeQueryService;
     private OrderCompensationService orderCompensationService;
     private RiskEngine riskEngine;
@@ -52,8 +52,8 @@ class ReconciliationUnknownStateTest {
         orderRepository =
                 mock(OrderRepositoryPort.class);
 
-        outboxRepository =
-                mock(OutboxEventRepository.class);
+        outboxRecoveryPort =
+                mock(OutboxRecoveryPort.class);
 
         exchangeQueryService =
                 mock(ExchangeOrderQueryService.class);
@@ -82,7 +82,7 @@ class ReconciliationUnknownStateTest {
         reconciliationService =
                 new ReconciliationService(
                         orderRepository,
-                        outboxRepository,
+                        outboxRecoveryPort,
                         exchangeQueryService,
                         orderCompensationService,
                         riskEngine,
@@ -157,10 +157,6 @@ class ReconciliationUnknownStateTest {
         ExecutionContext context =
                 ExecutionContext.of(order);
 
-        /*
-         * Reconciliation получает тот же Order,
-         * если claimForReconciliation разрешил recovery.
-         */
         when(
                 orderRepository.claimForReconciliation(
                         eq(orderId)
@@ -169,10 +165,6 @@ class ReconciliationUnknownStateTest {
                 Optional.of(order)
         );
 
-        /*
-         * Exchange отвечает:
-         * "мы не знаем, был ли ордер исполнен".
-         */
         when(
                 exchangeQueryService.getOrderStatus(
                         eq(clientOrderId)
@@ -183,33 +175,17 @@ class ReconciliationUnknownStateTest {
                 )
         );
 
-        /*
-         * Запускаем именно тот метод,
-         * который сейчас является ключевой recovery-точкой.
-         */
         reconciliationService.syncOrderWithExchange(
                 order,
                 context
         );
 
-        /*
-         * Главный invariant:
-         *
-         * EXECUTING
-         *      ↓
-         * EXCHANGE_STATE_UNKNOWN
-         *      ↓
-         * UNKNOWN
-         */
         assertEquals(
                 OrderStatus.UNKNOWN,
                 order.getStatus(),
                 "Exchange state unknown must move EXECUTING order to UNKNOWN"
         );
 
-        /*
-         * executionId нельзя потерять при recovery.
-         */
         assertEquals(
                 executionId,
                 order.getExecutionId(),
@@ -221,10 +197,6 @@ class ReconciliationUnknownStateTest {
                 "Execution start timestamp must remain present"
         );
 
-        /*
-         * Из UNKNOWN нельзя сразу делать terminal settlement.
-         * Здесь должен быть только save recovered state.
-         */
         verify(
                 orderRepository,
                 times(1)
@@ -232,10 +204,6 @@ class ReconciliationUnknownStateTest {
                 eq(order)
         );
 
-        /*
-         * Компенсация на этом этапе не должна выполняться:
-         * мы ещё НЕ знаем, был ли ордер реально исполнен.
-         */
         verifyNoInteractions(
                 orderCompensationService
         );

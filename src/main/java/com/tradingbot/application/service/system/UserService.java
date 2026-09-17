@@ -2,53 +2,59 @@ package com.tradingbot.application.service.system;
 
 import com.tradingbot.domain.model.SubscriptionTier;
 import com.tradingbot.domain.model.User;
-import com.tradingbot.infrastructure.persistence.mapper.UserMapper;
-import com.tradingbot.infrastructure.persistence.repository.UserRepository;
+import com.tradingbot.domain.model.UserPort;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 /**
- * Сервис управления пользователями.
+ * Application service управления пользователями.
  *
- * <p>Отвечает за:
- * <ul>
- *     <li>регистрацию новых пользователей</li>
- *     <li>обновление существующих пользователей</li>
- *     <li>синхронизацию domain ↔ persistence моделей</li>
- * </ul>
+ * <p>
+ * Persistence полностью скрыт за UserPort.
+ *
+ * <p>
+ * Архитектурные контракты:
+ * SYSTEM_CONTRACT.md
+ * STATE_MACHINE_CONTRACT.md
+ * EXECUTION_ENGINE_CONTRACT.md
  */
 @Service
 @RequiredArgsConstructor
 public class UserService {
 
-    /**
-     * Репозиторий пользователей.
-     */
-    private final UserRepository userRepository;
+    private final UserPort userPort;
 
     /**
-     * Маппер domain ↔ entity.
-     */
-    private final UserMapper userMapper;
-
-    /**
-     * Регистрирует нового пользователя или обновляет существующего.
+     * Регистрирует нового пользователя
+     * или обновляет существующего.
      *
-     * <p>Поведение:
+     * <p>
+     * Поведение:
      * <ul>
-     *     <li>если пользователь существует — обновляется username</li>
-     *     <li>если не существует — создаётся с тарифом FREE</li>
+     *     <li>существующий пользователь получает новый username;</li>
+     *     <li>новый пользователь создаётся с тарифом FREE;</li>
+     *     <li>новый пользователь активен.</li>
      * </ul>
      *
-     * @param chatId идентификатор Telegram чата
+     * @param chatId идентификатор Telegram chat
      * @param username имя пользователя
-     * @return доменная модель пользователя
+     * @return сохранённая доменная модель пользователя
      */
-    public User registerOrUpdate(Long chatId, String username) {
-        return userRepository.findByChatId(chatId)
-                .map(entity -> {
-                    entity.setUsername(username);
-                    return userMapper.toDomain(userRepository.save(entity));
+    public User registerOrUpdate(
+            Long chatId,
+            String username
+    ) {
+        if (chatId == null) {
+            throw new IllegalArgumentException(
+                    "chatId cannot be null"
+            );
+        }
+
+        return userPort
+                .findByChatId(chatId)
+                .map(existing -> {
+                    existing.setUsername(username);
+                    return userPort.save(existing);
                 })
                 .orElseGet(() -> {
                     User newUser = User.builder()
@@ -58,18 +64,16 @@ public class UserService {
                             .active(true)
                             .build();
 
-                    return userMapper.toDomain(
-                            userRepository.save(userMapper.toEntity(newUser))
-                    );
+                    return userPort.save(newUser);
                 });
     }
 
     /**
-     * Сохраняет доменную модель пользователя в базу данных.
+     * Сохраняет пользователя.
      *
-     * @param user пользователь доменного слоя
+     * @param user доменная модель пользователя
      */
     public void save(User user) {
-        userRepository.save(userMapper.toEntity(user));
+        userPort.save(user);
     }
 }

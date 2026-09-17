@@ -2,12 +2,9 @@ package com.tradingbot.application.service.execution;
 
 import com.tradingbot.domain.event.TradeCreatedEvent;
 import com.tradingbot.domain.model.Position;
-import com.tradingbot.domain.position.PositionReducer;
+import com.tradingbot.domain.model.PositionPort;
 import com.tradingbot.infrastructure.concurrent.PartitionLockManager;
 import com.tradingbot.infrastructure.outbox.IdempotencyService;
-import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
-import com.tradingbot.infrastructure.persistence.mapper.PositionMapper;
-import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
 import com.tradingbot.tracing.IdentityFactory;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -19,30 +16,28 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.UUID;
 
 /**
- * Сервис управления торговыми позициями.
- * <p>
- * Отвечает за:
- * <ul>
- *     <li>локальное кэширование позиций</li>
- *     <li>обновление позиции на основе торговых сделок</li>
- *     <li>обеспечение потокобезопасности через partition lock</li>
- *     <li>идемпотентность обработки событий</li>
- * </ul>
+ * Application service для работы с торговыми позициями.
+ *
+ * <p>Persistence скрыт за {@link PositionPort}.
+ * Application layer не должен зависеть от JPA Entity/Repository/Mapper.
+ *
+ * <p>Контракт:
+ * SYSTEM_CONTRACT.md
+ * STATE_MACHINE_CONTRACT.md
+ * EXECUTION_ENGINE_CONTRACT.md
  */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class PositionService {
 
-    private final PositionRepository repository;
-    private final PositionMapper mapper;
+    private final PositionPort positionPort;
     private final PartitionLockManager lockManager;
-    private final PositionReducer reducer;
     private final IdempotencyService idempotencyService;
 
     private final Map<String, Position> positions = new ConcurrentHashMap<>();
@@ -52,36 +47,41 @@ public class PositionService {
     }
 
     /**
-     * Загружает позиции из базы данных в локальный in-memory cache.
-     * <p>
-     * Выполняется после старта приложения.
+     * Загружает позиции из persistence boundary в локальный cache.
      */
     @PostConstruct
     public void loadPositions() {
         log.info("[POSITIONS] Loading positions from database...");
+
         try {
-            List<PositionEntity> entities = repository.findAll();
-            entities.forEach(entity -> {
-                Position domain = mapper.toDomain(entity);
-                positions.put(getCacheKey(domain.getSymbol(), entity.getStrategyId()), domain);
-            });
-            log.info("[POSITIONS] Loaded {} positions", positions.size());
+            List<Position> loadedPositions = positionPort.findAll();
+
+            loadedPositions.forEach(position ->
+                    positions.put(
+                            getCacheKey(position.getSymbol(), position.getStrategyId()),
+                            position
+                    )
+            );
+
+            log.info(
+                    "[POSITIONS] Loaded {} positions",
+                    positions.size()
+            );
+
         } catch (Exception e) {
-            log.error("[POSITIONS] Failed to load positions: {}", e.getMessage());
+            log.error(
+                    "[POSITIONS] Failed to load positions: {}",
+                    e.getMessage(),
+                    e
+            );
         }
     }
 
     /**
-     * Обновляет позицию на основе торговой сделки.
-     * <p>
-     * Гарантирует:
-     * <ul>
-     *     <li>идемпотентность обработки TradeCreatedEvent</li>
-     *     <li>потокобезопасность через partition lock</li>
-     *     <li>синхронизацию cache + database</li>
-     * </ul>
+     * Обновляет projection позиции по TradeCreatedEvent.
      *
-     * @param event событие создания сделки
+     * <p>Idempotency marker и business mutation остаются частью одной
+     * application transaction.
      */
     @Transactional
     public void updatePosition(
@@ -91,6 +91,12 @@ public class PositionService {
         if (eventId == null) {
             throw new IllegalArgumentException(
                     "eventId cannot be null"
+            );
+        }
+
+        if (event == null) {
+            throw new IllegalArgumentException(
+                    "event cannot be null"
             );
         }
 
@@ -125,37 +131,8 @@ public class PositionService {
                 return;
             }
 
-            PositionEntity entity =
-                    repository
-                            .findBySymbolAndStrategyId(
-                                    event.getSymbol(),
-                                    event.getStrategyId()
-                            )
-                            .orElseGet(
-                                    () -> createNewPositionEntity(event)
-                            );
-
-            BigDecimal signedQuantity =
-                    switch (event.getSide()) {
-                        case BUY -> event.getQuantity();
-                        case SELL -> event.getQuantity().negate();
-                    };
-
-            entity.applyTrade(
-                    signedQuantity,
-                    event.getPrice(),
-                    event.getTradeId()
-            );
-
-            entity.updateStopLoss(
-                    event.getStopLoss()
-            );
-
-            entity.updateTakeProfit(
-                    event.getTakeProfit()
-            );
-
-            repository.save(entity);
+            Position position =
+                    positionPort.applyTrade(event);
 
             /*
              * Business mutation и idempotency marker
@@ -168,7 +145,14 @@ public class PositionService {
 
             positions.put(
                     lockKey,
-                    mapper.toDomain(entity)
+                    position
+            );
+
+            log.info(
+                    "[POSITIONS] Projection updated for symbol={} strategy={} quantity={}",
+                    position.getSymbol(),
+                    position.getStrategyId(),
+                    position.getNetQuantity()
             );
 
         } finally {
@@ -176,47 +160,69 @@ public class PositionService {
         }
     }
 
-    private PositionEntity createNewPositionEntity(TradeCreatedEvent event) {
-        return PositionEntity.builder()
-                .id(IdentityFactory.derive(UUID.fromString(event.getBusiness().orderId()), "position"))
-                .symbol(event.getSymbol())
-                .strategyId(event.getStrategyId())
-                .quantity(BigDecimal.ZERO)
-                .entryPrice(BigDecimal.ZERO)
-                .realizedPnl(BigDecimal.ZERO)
-                .version(0L)
-                .build();
+    public boolean hasOpenPosition(
+            String symbol,
+            String strategyId
+    ) {
+        Position position =
+                positions.get(
+                        getCacheKey(symbol, strategyId)
+                );
+
+        return position != null
+                && position.getNetQuantity() != null
+                && position.getNetQuantity().compareTo(BigDecimal.ZERO) != 0;
     }
 
-    public boolean hasOpenPosition(String symbol, String strategyId) {
-        Position p = positions.get(getCacheKey(symbol, strategyId));
-        return p != null && p.getNetQuantity().compareTo(BigDecimal.ZERO) != 0;
-    }
+    public Position getPosition(
+            String symbol,
+            String strategyId
+    ) {
+        String key =
+                getCacheKey(symbol, strategyId);
 
-    public Position getPosition(String symbol, String strategyId) {
-        String key = getCacheKey(symbol, strategyId);
-        Position cached = positions.get(key);
-        if (cached != null) return cached;
+        Position cached =
+                positions.get(key);
 
-        return repository.findBySymbolAndStrategyId(symbol, strategyId)
-                .map(entity -> {
-                    Position domain = mapper.toDomain(entity);
-                    positions.put(key, domain);
-                    return domain;
+        if (cached != null) {
+            return cached;
+        }
+
+        return positionPort
+                .findBySymbolAndStrategyId(symbol, strategyId)
+                .map(position -> {
+                    positions.put(key, position);
+                    return position;
                 })
                 .orElse(null);
     }
 
-    public BigDecimal calculatePnL(String symbol, String strategyId, BigDecimal currentPrice) {
-        Position position = positions.get(getCacheKey(symbol, strategyId));
-        if (position == null || position.getNetQuantity().signum() == 0) return BigDecimal.ZERO;
+    public BigDecimal calculatePnL(
+            String symbol,
+            String strategyId,
+            BigDecimal currentPrice
+    ) {
+        Position position =
+                positions.get(
+                        getCacheKey(symbol, strategyId)
+                );
 
-        return currentPrice.subtract(position.getAvgEntryPrice())
+        if (position == null
+                || position.getNetQuantity() == null
+                || position.getNetQuantity().signum() == 0) {
+
+            return BigDecimal.ZERO;
+        }
+
+        return currentPrice
+                .subtract(position.getAvgEntryPrice())
                 .multiply(position.getNetQuantity())
                 .setScale(8, RoundingMode.HALF_UP);
     }
 
     public List<Position> getAllPositions() {
-        return List.copyOf(positions.values());
+        return List.copyOf(
+                positions.values()
+        );
     }
 }

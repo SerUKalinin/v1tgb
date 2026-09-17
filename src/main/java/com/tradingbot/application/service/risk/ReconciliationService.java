@@ -11,19 +11,20 @@ import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
+import com.tradingbot.domain.model.OutboxRecoveryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
 import com.tradingbot.infrastructure.binance.BinanceStatusMapper;
-import com.tradingbot.infrastructure.outbox.OutboxStatus;
-import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
-import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
-import com.tradingbot.tracing.*;
+import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.ExecutionEventType;
+import com.tradingbot.tracing.ExecutionLogFactory;
+import com.tradingbot.tracing.ExecutionLogger;
+import com.tradingbot.tracing.ExecutionStateMapper;
 import jakarta.persistence.OptimisticLockException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -47,6 +48,15 @@ import java.util.UUID;
  *
  * <p>Является критическим компонентом обеспечения консистентности между:
  * доменной моделью, биржей и инфраструктурными событиями.
+ *
+ * <p>
+ * Persistence access выполняется через domain ports.
+ *
+ * <p>
+ * Контракты:
+ * SYSTEM_CONTRACT.md
+ * STATE_MACHINE_CONTRACT.md
+ * EXECUTION_ENGINE_CONTRACT.md
  */
 @Service
 @Slf4j
@@ -59,9 +69,13 @@ public class ReconciliationService {
     private final OrderRepositoryPort orderRepository;
 
     /**
-     * Репозиторий outbox событий.
+     * Порт восстановления застрявших outbox-событий.
+     *
+     * <p>
+     * JPA Entity и Spring Data Repository остаются
+     * внутри infrastructure adapter.
      */
-    private final OutboxEventRepository outboxRepository;
+    private final OutboxRecoveryPort outboxRecoveryPort;
 
     /**
      * Сервис запросов состояния ордеров на бирже.
@@ -69,7 +83,8 @@ public class ReconciliationService {
     private final ExchangeOrderQueryService exchangeQueryService;
 
     /**
-     * Сервис компенсации состояния ордеров (освобождение резервов).
+     * Сервис компенсации состояния ордеров
+     * (освобождение резервов).
      */
     private final OrderCompensationService orderCompensationService;
 
@@ -89,7 +104,8 @@ public class ReconciliationService {
     private final PositionRebuildService positionRebuildService;
 
     /**
-     * Менеджер состояния системы (cold start / ready / recovery).
+     * Менеджер состояния системы
+     * (cold start / ready / recovery).
      */
     private final SystemStateManager stateManager;
 
@@ -103,37 +119,51 @@ public class ReconciliationService {
      */
     private final ExecutionLogger executionLogger;
 
-    private static final Duration STALE_THRESHOLD = Duration.ofMinutes(2);
-    private static final Duration DRIFT_DETECTION_WINDOW = Duration.ofSeconds(45);
-    private static final BigDecimal DRIFT_THRESHOLD = new BigDecimal("0.01");
-    private static final Duration RECONCILIATION_GRACE_PERIOD = Duration.ofSeconds(30);
+    private static final Duration STALE_THRESHOLD =
+            Duration.ofMinutes(2);
+
+    private static final Duration DRIFT_DETECTION_WINDOW =
+            Duration.ofSeconds(45);
+
+    private static final BigDecimal DRIFT_THRESHOLD =
+            new BigDecimal("0.01");
+
+    private static final Duration RECONCILIATION_GRACE_PERIOD =
+            Duration.ofSeconds(30);
 
     private Instant lastReconcileTimestamp = Instant.now();
 
     /**
      * Обработка события холодного старта системы.
-     *
-     * @param event событие cold start
      */
     @EventListener
-    public void onColdStart(SystemEvents.ColdStartDetectedEvent event) {
-        log.info("[RECON] Handling Cold Start event. Forcing reconciliation...");
+    public void onColdStart(
+            SystemEvents.ColdStartDetectedEvent event
+    ) {
+        log.info(
+                "[RECON] Handling Cold Start event. " +
+                        "Forcing reconciliation..."
+        );
+
         reconcileAll(true);
     }
 
     /**
      * Обработка запроса стандартной реконсиляции.
-     *
-     * @param event событие запроса reconciliation
      */
     @EventListener
-    public void onStandardRecon(SystemEvents.StandardReconciliationRequestedEvent event) {
-        log.info("[RECON] Handling Standard Reconciliation event.");
+    public void onStandardRecon(
+            SystemEvents.StandardReconciliationRequestedEvent event
+    ) {
+        log.info(
+                "[RECON] Handling Standard Reconciliation event."
+        );
+
         reconcileAll(false);
     }
 
     /**
-     * Периодическая реконсиляция системы (фоновой процесс).
+     * Периодическая реконсиляция системы.
      */
     @Scheduled(fixedDelay = 3600000)
     public void reconcileAll() {
@@ -152,16 +182,8 @@ public class ReconciliationService {
     }
 
     /**
-     * Реконсиляция балансов между биржей и внутренним состоянием.
-     *
-     * <p>При критических расхождениях система:
-     * <ul>
-     *     <li>синхронизирует баланс</li>
-     *     <li>пересобирает позиции</li>
-     *     <li>может инициировать emergency stop</li>
-     * </ul>
-     *
-     * @param force принудительная проверка
+     * Реконсиляция балансов между биржей
+     * и внутренним состоянием.
      */
     public void reconcileBalances(boolean force) {
         try {
@@ -186,6 +208,7 @@ public class ReconciliationService {
 
                 riskEngine.syncBalance(exchangeBalance);
                 positionRebuildService.rebuildAllPositions();
+
                 lastReconcileTimestamp = Instant.now();
                 return;
             }
@@ -196,7 +219,9 @@ public class ReconciliationService {
             }
 
             BigDecimal diff =
-                    exchangeBalance.subtract(internalBalance).abs();
+                    exchangeBalance
+                            .subtract(internalBalance)
+                            .abs();
 
             if (diff.signum() == 0) {
                 return;
@@ -215,7 +240,8 @@ public class ReconciliationService {
 
             if (!force
                     && now.isBefore(
-                    lastReconcileTimestamp.plus(DRIFT_DETECTION_WINDOW)
+                    lastReconcileTimestamp
+                            .plus(DRIFT_DETECTION_WINDOW)
             )) {
                 return;
             }
@@ -223,7 +249,10 @@ public class ReconciliationService {
             if (driftPercent.compareTo(DRIFT_THRESHOLD) > 0) {
                 log.error(
                         "[RECON-CRITICAL] CRITICAL balance drift detected: Drift={}%",
-                        driftPercent.multiply(new BigDecimal("100"))
+
+                        driftPercent.multiply(
+                                new BigDecimal("100")
+                        )
                 );
 
                 riskEngine.syncBalance(exchangeBalance);
@@ -235,12 +264,14 @@ public class ReconciliationService {
                     );
 
                     riskEngine.emergencyStop(
-                            "Critical balance drift: " + driftPercent
+                            "Critical balance drift: "
+                                    + driftPercent
                     );
                 }
             } else {
                 log.info(
-                        "[RECON] Minor drift detected. Auto-repairing state."
+                        "[RECON] Minor drift detected. " +
+                                "Auto-repairing state."
                 );
 
                 riskEngine.syncBalance(exchangeBalance);
@@ -258,29 +289,29 @@ public class ReconciliationService {
     }
 
     /**
-     * Реконсиляция outbox событий (очистка застрявших сообщений).
+     * Реконсиляция outbox событий
+     * (восстановление застрявших PROCESSING событий).
+     *
+     * <p>
+     * Persistence details скрыты за OutboxRecoveryPort.
+     * DB transaction находится внутри infrastructure adapter.
      */
     @Scheduled(fixedDelay = 30000)
-    @Transactional
     public void reconcileOutbox() {
         Instant threshold =
                 Instant.now().minusSeconds(30);
 
-        List<OutboxEventEntity> stuckEvents =
-                outboxRepository.findStaleProcessingEvents(threshold);
+        int recovered =
+                outboxRecoveryPort.resetStaleProcessingEvents(
+                        threshold
+                );
 
-        if (!stuckEvents.isEmpty()) {
+        if (recovered > 0) {
             log.warn(
-                    "[RECON] Found {} stuck outbox events. Resetting to FAILED.",
-                    stuckEvents.size()
+                    "[RECON] Found {} stuck outbox events. " +
+                            "Resetting to FAILED.",
+                    recovered
             );
-
-            stuckEvents.forEach(event -> {
-                event.setStatus(OutboxStatus.FAILED);
-                event.setUpdatedAt(Instant.now());
-            });
-
-            outboxRepository.saveAll(stuckEvents);
         }
     }
 
@@ -316,18 +347,19 @@ public class ReconciliationService {
      * Реконсиляция конкретного ордера.
      *
      * <p>
-     * ВАЖНО: метод НЕ является transactional.
-     *
-     * <p>
-     * Это гарантирует, что внешний запрос к бирже внутри
-     * {@link #syncOrderWithExchange(Order, ExecutionContext)}
-     * не выполняется внутри DB transaction.
+     * Метод НЕ является transactional.
+     * Внешний запрос к бирже поэтому не выполняется
+     * внутри DB transaction.
      *
      * @param context контекст исполнения
      */
-    public void reconcile(ExecutionContext context) {
+    public void reconcile(
+            ExecutionContext context
+    ) {
         orderRepository.findById(
-                UUID.fromString(context.business().orderId())
+                UUID.fromString(
+                        context.business().orderId()
+                )
         ).ifPresent(order ->
                 syncOrderWithExchange(
                         order,
@@ -344,14 +376,11 @@ public class ReconciliationService {
      * устанавливающей ownership reconciliation.
      *
      * <p>
-     * После commit claim-транзакции запрос к бирже выполняется
-     * без открытой DB transaction.
+     * После commit claim-транзакции запрос к бирже
+     * выполняется без открытой DB transaction.
      *
      * <p>
      * Финальный save() выполняется отдельной DB transaction.
-     *
-     * @param targetOrder целевой ордер
-     * @param context контекст исполнения
      */
     public void syncOrderWithExchange(
             Order targetOrder,
@@ -377,14 +406,17 @@ public class ReconciliationService {
 
             if (orderOpt.isEmpty()) {
                 log.debug(
-                        "[RECON-SKIP] Order {} is currently owned by another " +
-                                "execution/reconciliation worker or is terminal.",
+                        "[RECON-SKIP] Order {} is currently owned by " +
+                                "another execution/reconciliation worker " +
+                                "or is terminal.",
                         targetOrder.getId()
                 );
+
                 return;
             }
 
-            Order order = orderOpt.get();
+            Order order =
+                    orderOpt.get();
 
             executionLogger.log(
                     ExecutionLogFactory.from(
@@ -429,6 +461,7 @@ public class ReconciliationService {
                                     exchangeState.getExecutedQty(),
                                     exchangeState.getExecutedPrice()
                             );
+
                             yield true;
                         }
 
@@ -438,6 +471,7 @@ public class ReconciliationService {
                                     exchangeState.getExecutedQty(),
                                     exchangeState.getExecutedPrice()
                             );
+
                             yield true;
                         }
 
@@ -491,7 +525,8 @@ public class ReconciliationService {
 
         } catch (OptimisticLockException e) {
             log.warn(
-                    "[RECON-CONFLICT] Stale version for order {}. Skipping.",
+                    "[RECON-CONFLICT] Stale version for order {}. " +
+                            "Skipping.",
                     targetOrder.getId()
             );
 

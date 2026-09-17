@@ -4,13 +4,12 @@ import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.domain.event.OrderExecutedEvent;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.event.TradeCreatedEvent;
+import com.tradingbot.domain.model.Order;
+import com.tradingbot.domain.model.OrderPort;
 import com.tradingbot.domain.model.Trade;
+import com.tradingbot.domain.model.TradePort;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.infrastructure.outbox.OutboxService;
-import com.tradingbot.infrastructure.persistence.entity.TradeEntity;
-import com.tradingbot.infrastructure.persistence.mapper.TradeMapper;
-import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
-import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
 import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.IdentityFactory;
 import lombok.RequiredArgsConstructor;
@@ -18,43 +17,47 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 
 /**
- * Сервис обработки торговых сделок.
+ * Application service обработки торговых сделок.
+ *
  * <p>
- * Отвечает за:
- * <ul>
- *     <li>обработку события исполнения ордера</li>
- *     <li>создание сущности Trade</li>
- *     <li>публикацию outbox событий (ORDER_FILLED, TRADE_CREATED)</li>
- *     <li>уведомление RiskEngine о факте сделки</li>
- *     <li>предоставление истории торгов</li>
- * </ul>
+ * Persistence детали полностью скрыты за domain/application ports.
+ *
  * <p>
- * Является частью execution pipeline и не содержит бизнес-логики риск-менеджмента
- * или построения позиций (делегируется downstream компонентам).
+ * Архитектурные контракты:
+ * SYSTEM_CONTRACT.md
+ * STATE_MACHINE_CONTRACT.md
+ * EXECUTION_ENGINE_CONTRACT.md
  */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class TradeService {
 
-    private final TradeRepository tradeRepository;
-    private final TradeMapper tradeMapper;
+    private final TradePort tradePort;
+    private final OrderPort orderPort;
     private final OutboxService outboxService;
-    private final OrderRepository orderRepository;
     private final RiskEngine riskEngine;
 
     /**
-     * Обрабатывает факт исполнения ордера и создаёт торговую сделку.
+     * Обрабатывает факт исполнения ордера и создаёт Trade.
      *
-     * @param event событие исполнения ордера
+     * @param event событие исполнения
      */
     @Transactional
     public void onOrderFilled(OrderFilledEvent event) {
-        log.info("[TRADE-SERVICE] Handling order fill for order: {}", event.getOrderId());
+        if (event == null) {
+            throw new IllegalArgumentException("event cannot be null");
+        }
+
+        log.info(
+                "[TRADE-SERVICE] Handling order fill for order: {}",
+                event.getOrderId()
+        );
 
         ExecutionContext context = ExecutionContext.of(
                 event.getIdentity(),
@@ -62,7 +65,10 @@ public class TradeService {
                 event.getBusiness()
         );
 
-        // 1. Outbox: ORDER_FILLED
+        /*
+         * ORDER_FILLED публикуется до проверки duplicate trade
+         * в соответствии с текущим поведением системы.
+         */
         outboxService.publishEvent(
                 context,
                 "ORDER",
@@ -70,108 +76,87 @@ public class TradeService {
                 event
         );
 
-        if (tradeRepository.existsByExchangeTradeId(event.getExternalExecutionId())) {
-            log.warn("[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.", event.getExternalExecutionId());
+        if (tradePort.existsByExchangeTradeId(
+                event.getExternalExecutionId()
+        )) {
+            log.warn(
+                    "[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.",
+                    event.getExternalExecutionId()
+            );
             return;
         }
 
-        var order = orderRepository.findById(event.getOrderId())
-                .orElseThrow(() -> new RuntimeException("Order not found: " + event.getOrderId()));
+        Order order = orderPort
+                .findById(event.getOrderId())
+                .orElseThrow(() ->
+                        new IllegalStateException(
+                                "Order not found: " + event.getOrderId()
+                        )
+                );
 
-        // 2. Создание Trade сущности
-        TradeEntity entity = new TradeEntity();
-        entity.setId(IdentityFactory.deriveEventId(context.attempt().executionId(), "trade"));
-        entity.setOrder(order);
-        entity.setClientOrderId(order.getClientOrderId());
-        entity.setExchangeTradeId(event.getExternalExecutionId());
-        entity.setSymbol(event.getSymbol());
-        entity.setQuantity(event.getQuantity());
-        entity.setPrice(event.getPrice());
-        entity.setSide(order.getSide());
-        entity.setStrategyId(order.getStrategyId());
-        entity.setExecutedAt(Instant.now());
-        entity.setRealizedPnl(java.math.BigDecimal.ZERO);
-
-        TradeEntity saved = tradeRepository.save(entity);
-
-        // 3. Outbox: TRADE_CREATED
-        ExecutionContext tradeContext = context.withNextStep(
-                IdentityFactory.deriveEventId(context.attempt().executionId(), "trade-publish")
+        Trade trade = buildTrade(
+                event.getExternalExecutionId(),
+                event.getQuantity(),
+                event.getPrice(),
+                order,
+                context
         );
 
-        TradeCreatedEvent tradeCreatedEvent = new TradeCreatedEvent(
-                tradeContext.identity(),
-                tradeContext.attempt(),
-                tradeContext.business(),
-                saved.getId(),
-                saved.getOrder().getId(),
-                saved.getSymbol(),
-                saved.getStrategyId(),
-                saved.getQuantity(),
-                saved.getPrice(),
-                saved.getSide(),
-                order.getStopLoss(),
-                order.getTakeProfit()
-        );
+        Trade saved = tradePort.save(trade);
 
-        outboxService.publishEvent(
-                tradeContext,
-                "TRADE",
-                "TRADE_CREATED",
-                tradeCreatedEvent
-        );
+        publishTradeCreated(saved, order, context);
 
-        // 4. Уведомление RiskEngine
-        riskEngine.publish(new RiskEvent.TradeExecuted(
-                saved.getExchangeTradeId(),
-                saved.getSymbol(),
-                saved.getQuantity(),
-                saved.getPrice(),
-                saved.getRealizedPnl(),
-                saved.getExecutedAt()
-        ));
-
-        // 5. Projection updates выполняются асинхронно через Outbox consumers
+        publishRiskEvent(saved);
     }
 
     /**
      * Получает историю сделок по символу и стратегии.
-     *
-     * @param symbol торговый инструмент
-     * @param strategyId идентификатор стратегии
-     * @return список сделок в хронологическом порядке
      */
-    public List<Trade> getTradeHistory(String symbol, String strategyId) {
-        return tradeRepository.findBySymbolAndStrategyIdOrderByExecutedAtAsc(symbol, strategyId)
-                .stream()
-                .map(tradeMapper::toDomain)
-                .toList();
+    public List<Trade> getTradeHistory(
+            String symbol,
+            String strategyId
+    ) {
+        return tradePort.findBySymbolAndStrategyId(
+                symbol,
+                strategyId
+        );
     }
 
     /**
-     * Возвращает все сделки системы.
-     *
-     * @return список всех сделок, отсортированных по времени исполнения
+     * Возвращает всю торговую историю.
      */
     public List<Trade> getAllTrades() {
-        return tradeRepository.findAllByOrderByExecutedAtAsc()
-                .stream()
-                .map(tradeMapper::toDomain)
-                .toList();
+        return tradePort.findAll();
     }
 
+    /**
+     * Обрабатывает ORDER_EXECUTED.
+     */
     @Transactional
     public void onOrderExecuted(
             OrderExecutedEvent event,
             ExecutionContext context
     ) {
+        if (event == null) {
+            throw new IllegalArgumentException("event cannot be null");
+        }
+
+        if (context == null) {
+            throw new IllegalArgumentException(
+                    "ExecutionContext cannot be null"
+            );
+        }
+
         log.info(
-                "[TRADE-SERVICE] Creating trade from ORDER_EXECUTED for order: {} exchangeTradeId: {}",
+                "[TRADE-SERVICE] Creating trade from ORDER_EXECUTED " +
+                        "for order: {} exchangeTradeId: {}",
                 event.getOrderId(),
                 event.getExchangeTradeId()
         );
 
-        if (tradeRepository.existsByExchangeTradeId(event.getExchangeTradeId())) {
+        if (tradePort.existsByExchangeTradeId(
+                event.getExchangeTradeId()
+        )) {
             log.warn(
                     "[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.",
                     event.getExchangeTradeId()
@@ -179,56 +164,112 @@ public class TradeService {
             return;
         }
 
-        var order = orderRepository.findById(event.getOrderId())
+        Order order = orderPort
+                .findById(event.getOrderId())
                 .orElseThrow(() ->
                         new IllegalStateException(
                                 "Order not found: " + event.getOrderId()
                         )
                 );
 
-        TradeEntity entity = new TradeEntity();
-
-        entity.setId(
-                IdentityFactory.deriveEventId(
-                        context.attempt().executionId(),
-                        "trade"
-                )
+        Trade trade = buildTrade(
+                event.getExchangeTradeId(),
+                event.getQuantity(),
+                event.getPrice(),
+                order,
+                context
         );
 
-        entity.setOrder(order);
-        entity.setClientOrderId(order.getClientOrderId());
-        entity.setExchangeTradeId(event.getExchangeTradeId());
-        entity.setSymbol(event.getSymbol());
-        entity.setQuantity(event.getQuantity());
-        entity.setPrice(event.getPrice());
-        entity.setSide(order.getSide());
-        entity.setStrategyId(order.getStrategyId());
-        entity.setExecutedAt(Instant.now());
-        entity.setRealizedPnl(java.math.BigDecimal.ZERO);
+        Trade saved = tradePort.save(trade);
 
-        TradeEntity saved = tradeRepository.save(entity);
+        publishTradeCreated(saved, order, context);
 
-        ExecutionContext tradeContext = context.withNextStep(
-                IdentityFactory.deriveEventId(
-                        context.attempt().executionId(),
-                        "trade-publish"
-                )
-        );
+        publishRiskEvent(saved);
 
-        TradeCreatedEvent tradeCreatedEvent = new TradeCreatedEvent(
-                tradeContext.identity(),
-                tradeContext.attempt(),
-                tradeContext.business(),
+        log.info(
+                "[TRADE-SERVICE] Trade created successfully. " +
+                        "tradeId={}, orderId={}, exchangeTradeId={}",
                 saved.getId(),
-                saved.getOrder().getId(),
-                saved.getSymbol(),
-                saved.getStrategyId(),
-                saved.getQuantity(),
-                saved.getPrice(),
-                saved.getSide(),
-                order.getStopLoss(),
-                order.getTakeProfit()
+                saved.getOrderId(),
+                saved.getExchangeTradeId()
         );
+    }
+
+    private Trade buildTrade(
+            String exchangeTradeId,
+            BigDecimal quantity,
+            BigDecimal price,
+            Order order,
+            ExecutionContext context
+    ) {
+        if (exchangeTradeId == null) {
+            throw new IllegalArgumentException(
+                    "exchangeTradeId cannot be null"
+            );
+        }
+
+        if (quantity == null) {
+            throw new IllegalArgumentException(
+                    "quantity cannot be null"
+            );
+        }
+
+        if (price == null) {
+            throw new IllegalArgumentException(
+                    "price cannot be null"
+            );
+        }
+
+        return Trade.builder()
+                .id(
+                        IdentityFactory.deriveEventId(
+                                context.attempt().executionId(),
+                                "trade"
+                        )
+                )
+                .orderId(order.getId())
+                .clientOrderId(order.getClientOrderId())
+                .exchangeTradeId(exchangeTradeId)
+                .symbol(order.getSymbol())
+                .strategyId(order.getStrategyId())
+                .side(order.getSide())
+                .quantity(quantity)
+                .price(price)
+                .feeAmount(BigDecimal.ZERO)
+                .feeAsset(null)
+                .realizedPnl(BigDecimal.ZERO)
+                .executedAt(Instant.now())
+                .build();
+    }
+
+    private void publishTradeCreated(
+            Trade trade,
+            Order order,
+            ExecutionContext context
+    ) {
+        ExecutionContext tradeContext =
+                context.withNextStep(
+                        IdentityFactory.deriveEventId(
+                                context.attempt().executionId(),
+                                "trade-publish"
+                        )
+                );
+
+        TradeCreatedEvent tradeCreatedEvent =
+                new TradeCreatedEvent(
+                        tradeContext.identity(),
+                        tradeContext.attempt(),
+                        tradeContext.business(),
+                        trade.getId(),
+                        trade.getOrderId(),
+                        trade.getSymbol(),
+                        trade.getStrategyId(),
+                        trade.getQuantity(),
+                        trade.getPrice(),
+                        trade.getSide(),
+                        null,
+                        null
+                );
 
         outboxService.publishEvent(
                 tradeContext,
@@ -236,21 +277,18 @@ public class TradeService {
                 "TRADE_CREATED",
                 tradeCreatedEvent
         );
+    }
 
-        riskEngine.publish(new RiskEvent.TradeExecuted(
-                saved.getExchangeTradeId(),
-                saved.getSymbol(),
-                saved.getQuantity(),
-                saved.getPrice(),
-                saved.getRealizedPnl(),
-                saved.getExecutedAt()
-        ));
-
-        log.info(
-                "[TRADE-SERVICE] Trade created successfully. tradeId={}, orderId={}, exchangeTradeId={}",
-                saved.getId(),
-                saved.getOrder().getId(),
-                saved.getExchangeTradeId()
+    private void publishRiskEvent(Trade trade) {
+        riskEngine.publish(
+                new RiskEvent.TradeExecuted(
+                        trade.getExchangeTradeId(),
+                        trade.getSymbol(),
+                        trade.getQuantity(),
+                        trade.getPrice(),
+                        trade.getRealizedPnl(),
+                        trade.getExecutedAt()
+                )
         );
     }
 }

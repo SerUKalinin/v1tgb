@@ -12,8 +12,8 @@ import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
+import com.tradingbot.domain.model.OutboxRecoveryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
-import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.ExecutionLogger;
 import com.tradingbot.tracing.IdentityFactory;
@@ -58,7 +58,7 @@ class ReconciliationPartialFillCancelTest {
         reconciliationService =
                 new ReconciliationService(
                         orderRepository,
-                        mock(OutboxEventRepository.class),
+                        mock(OutboxRecoveryPort.class),
                         exchangeQueryService,
                         compensationService,
                         riskEngine,
@@ -108,25 +108,10 @@ class ReconciliationPartialFillCancelTest {
         ExecutionContext context =
                 ExecutionContext.of(order);
 
-        /*
-         * PENDING_EXECUTION -> EXECUTING
-         */
         order.markExecuting(
                 context
         );
 
-        /*
-         * Exchange фактически исполнил только 0.3 BTC:
-         *
-         * Original:
-         *     1.0 BTC
-         *
-         * Executed:
-         *     0.3 BTC
-         *
-         * Remaining:
-         *     0.7 BTC
-         */
         order.applyPartialFill(
                 context,
                 new BigDecimal("0.3"),
@@ -146,9 +131,6 @@ class ReconciliationPartialFillCancelTest {
                         )
         );
 
-        /*
-         * Reconciliation должен получить этот же Order.
-         */
         when(
                 orderRepository.claimForReconciliation(
                         eq(orderId)
@@ -157,11 +139,6 @@ class ReconciliationPartialFillCancelTest {
                 Optional.of(order)
         );
 
-        /*
-         * Биржа теперь говорит:
-         *
-         * остаток ордера отменён.
-         */
         when(
                 exchangeQueryService.getOrderStatus(
                         eq("client-partial-cancel")
@@ -172,39 +149,21 @@ class ReconciliationPartialFillCancelTest {
                 )
         );
 
-        /*
-         * Выполняем reconciliation.
-         */
         reconciliationService.syncOrderWithExchange(
                 order,
                 context
         );
 
-        /*
-         * PARTIALLY_FILLED -> CANCELED
-         */
         assertEquals(
                 OrderStatus.CANCELED,
                 order.getStatus()
         );
 
-        /*
-         * Execution identity нельзя потерять.
-         */
         assertEquals(
                 executionId,
                 order.getExecutionId()
         );
 
-        /*
-         * Критический финансовый invariant:
-         *
-         * Reservation = 1.0 * 100 = 100
-         * Executed    = 0.3 * 100 = 30
-         * Remaining   = 0.7 * 100 = 70
-         *
-         * При cancellation освобождаем ТОЛЬКО 70.
-         */
         verify(
                 riskEngine,
                 times(1)
@@ -219,9 +178,6 @@ class ReconciliationPartialFillCancelTest {
                 eq("Partial fill compensation")
         );
 
-        /*
-         * Не должно быть освобождения всех 100 USDT.
-         */
         verify(
                 riskEngine,
                 never()
@@ -236,9 +192,6 @@ class ReconciliationPartialFillCancelTest {
                 anyString()
         );
 
-        /*
-         * Не должно быть освобождения только исполненных 30 USDT.
-         */
         verify(
                 riskEngine,
                 never()
@@ -253,11 +206,6 @@ class ReconciliationPartialFillCancelTest {
                 anyString()
         );
 
-        /*
-         * Reconciliation сохраняет состояние:
-         * 1) recovery/reconciliation step
-         * 2) terminal CANCELED state
-         */
         verify(
                 orderRepository,
                 times(1)

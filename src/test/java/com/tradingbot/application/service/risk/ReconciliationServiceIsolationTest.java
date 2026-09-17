@@ -12,8 +12,8 @@ import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
+import com.tradingbot.domain.model.OutboxRecoveryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
-import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.ExecutionLogger;
 import org.junit.jupiter.api.BeforeEach;
@@ -35,104 +35,204 @@ class ReconciliationServiceIsolationTest {
 
     @BeforeEach
     void setUp() {
-        orderRepository = mock(OrderRepositoryPort.class);
-        exchangeQueryService = mock(ExchangeOrderQueryService.class);
+        orderRepository =
+                mock(OrderRepositoryPort.class);
 
-        reconciliationService = new ReconciliationService(
-                orderRepository,
-                mock(OutboxEventRepository.class),
-                exchangeQueryService,
-                mock(OrderCompensationService.class),
-                mock(RiskEngine.class),
-                mock(AdminNotificationService.class),
-                mock(PositionRebuildService.class),
-                mock(SystemStateManager.class),
-                mock(TransitionValidator.class),
-                mock(ExecutionLogger.class)
-        );
+        exchangeQueryService =
+                mock(ExchangeOrderQueryService.class);
+
+        reconciliationService =
+                new ReconciliationService(
+                        orderRepository,
+                        mock(OutboxRecoveryPort.class),
+                        exchangeQueryService,
+                        mock(OrderCompensationService.class),
+                        mock(RiskEngine.class),
+                        mock(AdminNotificationService.class),
+                        mock(PositionRebuildService.class),
+                        mock(SystemStateManager.class),
+                        mock(TransitionValidator.class),
+                        mock(ExecutionLogger.class)
+                );
     }
 
     @Test
     void shouldSkipReconciliationWhenClaimReturnsEmpty() {
-        UUID orderId = UUID.randomUUID();
-        Order order = Order.createPendingExecution(
-                orderId, "client-123", "BTCUSDT",
-                OrderSide.BUY, OrderType.MARKET,
-                BigDecimal.ONE, BigDecimal.TEN,
-                "strategy-1", UUID.randomUUID());
 
-        when(orderRepository.claimForReconciliation(orderId))
-                .thenReturn(Optional.empty());
+        UUID orderId =
+                UUID.randomUUID();
 
-        reconciliationService.syncOrderWithExchange(order, mock(ExecutionContext.class));
+        Order order =
+                Order.createPendingExecution(
+                        orderId,
+                        "client-123",
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        OrderType.MARKET,
+                        BigDecimal.ONE,
+                        BigDecimal.TEN,
+                        "strategy-1",
+                        UUID.randomUUID()
+                );
 
-        verify(exchangeQueryService, never()).getOrderStatus(any());
-        verify(orderRepository, never()).save(any());
+        when(
+                orderRepository.claimForReconciliation(
+                        orderId
+                )
+        ).thenReturn(
+                Optional.empty()
+        );
+
+        reconciliationService.syncOrderWithExchange(
+                order,
+                mock(ExecutionContext.class)
+        );
+
+        verify(
+                exchangeQueryService,
+                never()
+        ).getOrderStatus(any());
+
+        verify(
+                orderRepository,
+                never()
+        ).save(any());
     }
 
     @Test
     void shouldRecoverUnknownOrderToFilled() {
-        UUID orderId = UUID.randomUUID();
-        UUID signalId = UUID.randomUUID();
 
-        Order order = Order.createPendingExecution(
-                orderId, "client-123", "BTCUSDT",
-                OrderSide.BUY, OrderType.MARKET,
-                BigDecimal.ONE, BigDecimal.TEN,
-                "strategy-1", signalId
-        );
+        UUID orderId =
+                UUID.randomUUID();
 
-        UUID executionId = order.getExecutionId();
+        UUID signalId =
+                UUID.randomUUID();
 
-// Simulate: order was sent to exchange, timed out → UNKNOWN
-        ExecutionContext context = ExecutionContext.of(order);
+        Order order =
+                Order.createPendingExecution(
+                        orderId,
+                        "client-123",
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        OrderType.MARKET,
+                        BigDecimal.ONE,
+                        BigDecimal.TEN,
+                        "strategy-1",
+                        signalId
+                );
+
+        UUID executionId =
+                order.getExecutionId();
+
+        ExecutionContext context =
+                ExecutionContext.of(order);
+
         order.markExecuting(context);
         order.markAsUnknown(context);
 
-        when(orderRepository.claimForReconciliation(orderId))
-                .thenReturn(Optional.of(order));
+        when(
+                orderRepository.claimForReconciliation(
+                        orderId
+                )
+        ).thenReturn(
+                Optional.of(order)
+        );
 
-        when(exchangeQueryService.getOrderStatus("client-123"))
-                .thenReturn(ExecutionResult.filled(
-                        orderId, "ex-123", "trade-123",
-                        "BTCUSDT", OrderSide.BUY,
-                        BigDecimal.ONE, BigDecimal.TEN,
-                        BigDecimal.ZERO, "USDT", "client-123"));
+        when(
+                exchangeQueryService.getOrderStatus(
+                        "client-123"
+                )
+        ).thenReturn(
+                ExecutionResult.filled(
+                        orderId,
+                        "ex-123",
+                        "trade-123",
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        BigDecimal.ONE,
+                        BigDecimal.TEN,
+                        BigDecimal.ZERO,
+                        "USDT",
+                        "client-123"
+                )
+        );
 
-        reconciliationService.syncOrderWithExchange(order, context);
+        reconciliationService.syncOrderWithExchange(
+                order,
+                context
+        );
 
-        // UNKNOWN → RECOVERING выполняется внутри claimForReconciliation().
-        // syncOrderWithExchange() после успешного claim выполняет только
-        // финальный переход RECOVERING → FILLED и сохраняет его.
-        verify(orderRepository, times(1)).save(order);
-        assertEquals(OrderStatus.FILLED, order.getStatus());
+        verify(
+                orderRepository,
+                times(1)
+        ).save(order);
+
+        assertEquals(
+                OrderStatus.FILLED,
+                order.getStatus()
+        );
+
+        assertEquals(
+                executionId,
+                order.getExecutionId()
+        );
     }
 
     @Test
     void shouldSkipReconciliationWhenOrderIsAlreadyFilled() {
-        UUID orderId = UUID.randomUUID();
-        UUID signalId = UUID.randomUUID();
 
-        Order order = Order.createPendingExecution(
-                orderId, "client-123", "BTCUSDT",
-                OrderSide.BUY, OrderType.MARKET,
-                BigDecimal.ONE, BigDecimal.TEN,
-                "strategy-1", signalId
+        UUID orderId =
+                UUID.randomUUID();
+
+        UUID signalId =
+                UUID.randomUUID();
+
+        Order order =
+                Order.createPendingExecution(
+                        orderId,
+                        "client-123",
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        OrderType.MARKET,
+                        BigDecimal.ONE,
+                        BigDecimal.TEN,
+                        "strategy-1",
+                        signalId
+                );
+
+        ExecutionContext context =
+                ExecutionContext.of(order);
+
+        order.markExecuting(context);
+
+        order.fill(
+                context,
+                "ex-123",
+                BigDecimal.ONE,
+                BigDecimal.TEN
         );
 
-        UUID executionId = order.getExecutionId();
+        when(
+                orderRepository.claimForReconciliation(
+                        orderId
+                )
+        ).thenReturn(
+                Optional.empty()
+        );
 
-// Move to FILLED terminal state
-        ExecutionContext context = ExecutionContext.of(order);
-        order.markExecuting(context);
-        order.fill(context, "ex-123", BigDecimal.ONE, BigDecimal.TEN);
+        reconciliationService.syncOrderWithExchange(
+                order,
+                context
+        );
 
-        when(orderRepository.claimForReconciliation(orderId))
-                .thenReturn(Optional.empty());
+        verify(
+                exchangeQueryService,
+                never()
+        ).getOrderStatus(any());
 
-        reconciliationService.syncOrderWithExchange(order, context);
-
-        verify(exchangeQueryService, never()).getOrderStatus(any());
-        verify(orderRepository, never()).save(any());
+        verify(
+                orderRepository,
+                never()
+        ).save(any());
     }
 }

@@ -1,21 +1,24 @@
 package com.tradingbot.application.risk;
 
+import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.risk.RiskDecision;
 import com.tradingbot.domain.risk.RiskEvent;
+import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.domain.risk.RiskState;
 import com.tradingbot.tracing.ExecutionContext;
-import com.tradingbot.domain.risk.RiskService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.Optional;
-import java.util.UUID;
 
 /**
- * Фасадный слой поверх RiskService.
- * Используется слоем application для операций управления рисками.
+ * Фасадный application-слой поверх RiskService.
+ *
+ * <p>Именно application-слой владеет транзакционной границей.
+ * Доменный RiskService не зависит от Spring.</p>
  */
 @Component
 @RequiredArgsConstructor
@@ -24,42 +27,56 @@ public class RiskEngine {
     private final RiskService riskService;
 
     /**
-     * Публикует событие риска в систему.
+     * Публикует событие риска.
      *
-     * @param event событие риска для публикации
+     * @param event событие риска
      */
     public void publish(RiskEvent event) {
         riskService.publish(event);
     }
 
     /**
-     * Пытается зарезервировать указанную сумму в контексте исполнения.
+     * Пытается зарезервировать указанную сумму.
      *
-     * @param context контекст исполнения
-     * @param amount сумма для резерва
-     * @return решение по риску (разрешено/отклонено)
+     * @param context execution context
+     * @param amount сумма
+     * @return решение по риску
      */
-    public RiskDecision reserve(ExecutionContext context, BigDecimal amount) {
-        return riskService.reserve(context, amount);
+    public RiskDecision reserve(
+            ExecutionContext context,
+            BigDecimal amount
+    ) {
+        return riskService.reserve(
+                context,
+                amount
+        );
     }
 
     /**
-     * Освобождает ранее зарезервированные средства с указанием причины.
+     * Освобождает ранее зарезервированные средства.
      *
-     * @param context контекст исполнения
-     * @param amount сумма для освобождения
-     * @param reason причина освобождения
+     * @param context execution context
+     * @param amount сумма
+     * @param reason причина
      */
-    public void release(ExecutionContext context, BigDecimal amount, String reason) {
-        riskService.release(context, amount, reason);
+    public void release(
+            ExecutionContext context,
+            BigDecimal amount,
+            String reason
+    ) {
+        riskService.release(
+                context,
+                amount,
+                reason
+        );
     }
+
     /**
-     * Помечает reservation как использованную фактическим исполнением ордера.
+     * Помечает reservation как использованную фактическим исполнением.
      *
-     * <p>
-     * CONSUME удаляет reservation, но не возвращает
-     * средства в available balance.
-     * </p>
+     * @param context execution context
+     * @param executedNotional фактический notional
+     * @param reason причина
      */
     public void consumeReservation(
             ExecutionContext context,
@@ -74,45 +91,63 @@ public class RiskEngine {
     }
 
     /**
-     * Оценивает сигнал и возвращает соответствующий заказ, если он сформирован.
+     * Оценивает сигнал и создаёт Order.
      *
-     * @param context контекст исполнения
-     * @param signal событие сигнала
-     * @return опциональный заказ, сформированный на основе сигнала
+     * <p>Транзакционная граница находится в application-слое,
+     * а не в domain.</p>
+     *
+     * @param context execution context
+     * @param signal торговый сигнал
+     * @return созданный Order
      */
-    public Optional<Order> evaluateSignal(ExecutionContext context, com.tradingbot.domain.event.SignalEvent signal) {
-        return riskService.evaluateSignal(context, signal);
+    @Transactional
+    public Optional<Order> evaluateSignal(
+            ExecutionContext context,
+            SignalEvent signal
+    ) {
+        return riskService.evaluateSignal(
+                context,
+                signal
+        );
     }
 
     /**
-     * Освобождает средства с фиктивной суммой (COMPENSATION).
+     * Освобождает средства с фиктивной суммой COMPENSATION.
      *
-     * @param context контекст исполнения
+     * @param context execution context
      */
     public void release(ExecutionContext context) {
-        riskService.release(context, BigDecimal.ZERO, "COMPENSATION");
+        riskService.release(
+                context,
+                BigDecimal.ZERO,
+                "COMPENSATION"
+        );
     }
 
     /**
-     * Синхронизирует текущий баланс с фактическим значением.
+     * Синхронизирует текущий баланс.
      *
      * @param actualBalance фактический баланс
      */
-    public void syncBalance(BigDecimal actualBalance) {
-        riskService.syncBalance(actualBalance);
+    public void syncBalance(
+            BigDecimal actualBalance
+    ) {
+        riskService.syncBalance(
+                actualBalance
+        );
     }
 
     /**
-     * Включает аварийную остановку торговли с указанной причиной.
+     * Включает аварийную остановку.
      *
-     * @param reason причина остановки
+     * @param reason причина
      */
     public void emergencyStop(String reason) {
         riskService.emergencyStop(reason);
     }
 
     /**
-     * Возобновляет торговлю после аварийной остановки.
+     * Возобновляет торговлю.
      */
     public void resumeTrading() {
         riskService.resumeTrading();
@@ -121,7 +156,7 @@ public class RiskEngine {
     /**
      * Инициализирует состояние рисков.
      *
-     * @param state начальное состояние рисков
+     * @param state начальное состояние
      */
     public void initialize(RiskState state) {
         riskService.initialize(state);
@@ -130,7 +165,7 @@ public class RiskEngine {
     /**
      * Возвращает текущее состояние рисков.
      *
-     * @return состояние рисков
+     * @return RiskState
      */
     public RiskState getState() {
         return riskService.getState();

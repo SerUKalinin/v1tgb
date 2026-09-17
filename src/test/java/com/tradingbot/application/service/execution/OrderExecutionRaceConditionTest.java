@@ -11,6 +11,7 @@ import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.infrastructure.outbox.OutboxEventMapper;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
@@ -38,7 +39,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
+class OrderExecutionRaceConditionTest
+        extends BaseIntegrationTest {
 
     @Autowired
     private OrderExecutionHandler executionHandler;
@@ -53,12 +55,6 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
     private ObjectMapper objectMapper;
 
     @MockBean
-    private ReconciliationService reconciliationService;
-
-    @MockBean
-    private TradingSystemBootstrapper tradingSystemBootstrapper;
-
-    @MockBean
     private SystemStateManager systemStateManager;
 
     @MockBean
@@ -66,21 +62,28 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
 
     @BeforeEach
     void setUpSystemState() {
-        when(systemStateManager.isReady()).thenReturn(true);
+
+        when(
+                systemStateManager.isReady()
+        ).thenReturn(true);
     }
 
     @Test
-    void testParallelExecutionDoesNotDoubleFill() throws Exception {
+    void testParallelExecutionDoesNotDoubleFill()
+            throws Exception {
 
-        UUID signalId = UUID.randomUUID();
-        UUID orderId = UUID.randomUUID();
-        UUID executionId = UUID.randomUUID();
+        UUID signalId =
+                UUID.randomUUID();
 
-        String clientOrderId = "CL-" + orderId;
+        UUID orderId =
+                UUID.randomUUID();
 
-        /*
-         * Один Order с одним executionId.
-         */
+        UUID executionId =
+                UUID.randomUUID();
+
+        String clientOrderId =
+                "CL-" + orderId;
+
         OrderEntity orderEntity =
                 OrderEntity.builder()
                         .id(orderId)
@@ -91,18 +94,21 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
                         .side(OrderSide.BUY)
                         .type(OrderType.MARKET)
                         .strategyId("test-strat")
-                        .status(OrderStatus.PENDING_EXECUTION)
+                        .status(
+                                OrderStatus.PENDING_EXECUTION
+                        )
                         .quantity(BigDecimal.ONE)
-                        .price(BigDecimal.valueOf(50000))
+                        .price(
+                                BigDecimal.valueOf(50000)
+                        )
                         .version(0L)
                         .executionAttempts(0)
                         .build();
 
-        orderRepository.saveAndFlush(orderEntity);
+        orderRepository.saveAndFlush(
+                orderEntity
+        );
 
-        /*
-         * ORDER_CREATED payload.
-         */
         OrderCreatedEvent payload =
                 new OrderCreatedEvent(
                         signalId,
@@ -110,10 +116,6 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
                         executionId
                 );
 
-        /*
-         * Реальный OutboxEvent, который одновременно
-         * передаётся трём конкурентным consume().
-         */
         OutboxEventEntity event =
                 OutboxEventEntity.builder()
                         .id(UUID.randomUUID())
@@ -125,7 +127,11 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
                         .causationId(orderId)
                         .aggregateType("ORDER")
                         .eventType("ORDER_CREATED")
-                        .payload(objectMapper.writeValueAsString(payload))
+                        .payload(
+                                objectMapper.writeValueAsString(
+                                        payload
+                                )
+                        )
                         .status(OutboxStatus.NEW)
                         .sequenceNumber(1L)
                         .retryCount(0)
@@ -134,69 +140,72 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
                         .createdAt(Instant.now())
                         .build();
 
-        outboxRepository.saveAndFlush(event);
+        outboxRepository.saveAndFlush(
+                event
+        );
 
-        /*
-         * Биржа возвращает UNKNOWN.
-         *
-         * Нам здесь важно проверить именно execution claim:
-         * один Order не должен попасть в ExecutionPort несколько раз.
-         */
-        when(executionPort.placeOrder(any()))
-                .thenAnswer(invocation ->
-                        ExecutionResult.exchangeStateUnknown(orderId)
-                );
+        when(
+                executionPort.placeOrder(any())
+        ).thenAnswer(
+                invocation ->
+                        ExecutionResult.exchangeStateUnknown(
+                                orderId
+                        )
+        );
 
         int threadCount = 3;
 
         ExecutorService executor =
-                Executors.newFixedThreadPool(threadCount);
+                Executors.newFixedThreadPool(
+                        threadCount
+                );
 
         List<Throwable> failures =
                 new CopyOnWriteArrayList<>();
 
+        OutboxEventMapper.toDomain(event);
+
         try {
+
             List<CompletableFuture<Void>> futures =
                     new ArrayList<>(threadCount);
 
-            /*
-             * Три конкурентных consume() для одного
-             * ORDER_CREATED.
-             */
             for (int i = 0; i < threadCount; i++) {
 
                 futures.add(
                         CompletableFuture.runAsync(
                                 () -> {
+
                                     try {
-                                        executionHandler.consume(event);
+
+                                        executionHandler.consume(
+                                                OutboxEventMapper.toDomain(
+                                                        event
+                                                )
+                                        );
+
                                     } catch (Throwable e) {
+
                                         failures.add(e);
                                     }
+
                                 },
                                 executor
                         )
                 );
             }
 
-            /*
-             * Ждём завершения всех трёх потоков.
-             */
             CompletableFuture.allOf(
-                    futures.toArray(new CompletableFuture[0])
+                    futures.toArray(
+                            new CompletableFuture[0]
+                    )
             ).join();
 
         } finally {
+
             executor.shutdown();
         }
 
-        /*
-         * Ни один конкурентный consume() не должен завершиться
-         * неожиданным исключением.
-         *
-         * Проигравший claim должен штатно вернуть управление,
-         * а не бросать exception.
-         */
         if (!failures.isEmpty()) {
 
             StringBuilder message =
@@ -204,9 +213,12 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
                             "Конкурентный consume() завершился исключением."
                     );
 
-            for (int i = 0; i < failures.size(); i++) {
+            for (int i = 0;
+                 i < failures.size();
+                 i++) {
 
-                Throwable failure = failures.get(i);
+                Throwable failure =
+                        failures.get(i);
 
                 message
                         .append("\n\n--- FAILURE ")
@@ -214,32 +226,29 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
                         .append(" ---\n")
                         .append(failure);
 
-                Throwable cause = failure.getCause();
+                Throwable cause =
+                        failure.getCause();
 
                 if (cause != null) {
+
                     message
                             .append("\nCAUSE: ")
                             .append(cause);
                 }
             }
 
-            fail(message.toString());
+            fail(
+                    message.toString()
+            );
         }
 
-        /*
-         * ==========================================
-         * ОСНОВНАЯ ПРОВЕРКА RACE CONDITION
-         * ==========================================
-         *
-         * Три consume() должны привести максимум
-         * к одному фактическому обращению к бирже.
-         */
-        verify(executionPort, times(1))
-                .placeOrder(any());
+        verify(
+                executionPort,
+                times(1)
+        ).placeOrder(
+                any()
+        );
 
-        /*
-         * В БД должна быть только одна execution attempt.
-         */
         OrderEntity finalOrder =
                 orderRepository
                         .findById(orderId)
@@ -248,18 +257,15 @@ class OrderExecutionRaceConditionTest extends BaseIntegrationTest {
         assertEquals(
                 1,
                 finalOrder.getExecutionAttempts(),
-                "Один ORDER_CREATED не должен приводить более чем к одной попытке исполнения"
+                "Один ORDER_CREATED не должен приводить " +
+                        "более чем к одной попытке исполнения"
         );
 
-        /*
-         * executionId является identity всего execution lifecycle.
-         *
-         * Конкурентное исполнение не должно его менять.
-         */
         assertEquals(
                 executionId,
                 finalOrder.getExecutionId(),
-                "executionId ордера не должен измениться во время конкурентного исполнения"
+                "executionId ордера не должен измениться " +
+                        "во время конкурентного исполнения"
         );
     }
 }

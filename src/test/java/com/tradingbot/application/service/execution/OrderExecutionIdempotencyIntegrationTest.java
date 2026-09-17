@@ -11,6 +11,7 @@ import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.infrastructure.outbox.OutboxEventMapper;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
@@ -31,7 +32,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
-class OrderExecutionIdempotencyIntegrationTest extends BaseIntegrationTest {
+class OrderExecutionIdempotencyIntegrationTest
+        extends BaseIntegrationTest {
 
     @Autowired
     private OrderExecutionHandler executionHandler;
@@ -48,63 +50,56 @@ class OrderExecutionIdempotencyIntegrationTest extends BaseIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
-    /**
-     * Не допускаем реальный Binance/reconciliation во время теста.
-     */
     @MockBean
     private ReconciliationService reconciliationService;
 
-    /**
-     * Отключаем реальный bootstrap, который иначе запускает
-     * reconciliation и внешний Binance API.
-     */
     @MockBean
     private TradingSystemBootstrapper tradingSystemBootstrapper;
 
-    /**
-     * OrderExecutionClaimService требует READY-состояние системы.
-     */
     @MockBean
     private SystemStateManager systemStateManager;
 
-    /**
-     * Execution должен оставаться полностью внутри теста.
-     */
     @MockBean
     private ExecutionPort executionPort;
 
     @BeforeEach
     void setUp() {
-        when(systemStateManager.isReady()).thenReturn(true);
 
-        /*
-         * Нам здесь не нужен реальный Binance.
-         * UNKNOWN удобен для проверки idempotency:
-         * главное — claim должен быть создан только один раз,
-         * повторная обработка не должна повторно размещать ордер.
-         */
-        when(executionPort.placeOrder(any()))
-                .thenAnswer(invocation ->
+        when(
+                systemStateManager.isReady()
+        ).thenReturn(true);
+
+        when(
+                executionPort.placeOrder(any())
+        ).thenAnswer(
+                invocation ->
                         ExecutionResult.exchangeStateUnknown(
-                                invocation.getArgument(0, com.tradingbot.domain.model.Order.class)
+                                invocation
+                                        .getArgument(
+                                                0,
+                                                com.tradingbot.domain.model.Order.class
+                                        )
                                         .getId()
                         )
-                );
+        );
     }
 
     @Test
-    void testDuplicateOutboxEventDoesNotCreateNewClaim() throws Exception {
+    void testDuplicateOutboxEventDoesNotCreateNewClaim()
+            throws Exception {
 
-        UUID signalId = UUID.randomUUID();
-        UUID orderId = UUID.randomUUID();
-        UUID executionId = UUID.randomUUID();
+        UUID signalId =
+                UUID.randomUUID();
 
-        String clientOrderId = "CL-" + orderId;
+        UUID orderId =
+                UUID.randomUUID();
 
-        /*
-         * ВАЖНО:
-         * executionId должен быть сохранён в persistence ДО claim.
-         */
+        UUID executionId =
+                UUID.randomUUID();
+
+        String clientOrderId =
+                "CL-" + orderId;
+
         OrderEntity orderEntity =
                 OrderEntity.builder()
                         .id(orderId)
@@ -116,13 +111,19 @@ class OrderExecutionIdempotencyIntegrationTest extends BaseIntegrationTest {
                         .signalId(signalId)
                         .executionId(executionId)
                         .quantity(BigDecimal.ONE)
-                        .price(BigDecimal.valueOf(50000))
-                        .status(OrderStatus.PENDING_EXECUTION)
+                        .price(
+                                BigDecimal.valueOf(50000)
+                        )
+                        .status(
+                                OrderStatus.PENDING_EXECUTION
+                        )
                         .version(0L)
                         .executionAttempts(0)
                         .build();
 
-        orderRepository.saveAndFlush(orderEntity);
+        orderRepository.saveAndFlush(
+                orderEntity
+        );
 
         OrderCreatedEvent payload =
                 new OrderCreatedEvent(
@@ -131,9 +132,6 @@ class OrderExecutionIdempotencyIntegrationTest extends BaseIntegrationTest {
                         executionId
                 );
 
-        /*
-         * Первый execution attempt имеет номер 1.
-         */
         OutboxEventEntity event =
                 OutboxEventEntity.builder()
                         .id(UUID.randomUUID())
@@ -146,7 +144,9 @@ class OrderExecutionIdempotencyIntegrationTest extends BaseIntegrationTest {
                         .aggregateType("ORDER")
                         .eventType("ORDER_CREATED")
                         .payload(
-                                objectMapper.writeValueAsString(payload)
+                                objectMapper.writeValueAsString(
+                                        payload
+                                )
                         )
                         .status(OutboxStatus.NEW)
                         .sequenceNumber(1L)
@@ -156,12 +156,16 @@ class OrderExecutionIdempotencyIntegrationTest extends BaseIntegrationTest {
                         .createdAt(Instant.now())
                         .build();
 
-        outboxRepository.saveAndFlush(event);
+        outboxRepository.saveAndFlush(
+                event
+        );
 
         /*
-         * 1. Первая обработка.
+         * FIRST PROCESSING
          */
-        executionHandler.consume(event);
+        executionHandler.consume(
+                OutboxEventMapper.toDomain(event)
+        );
 
         long countAfterFirst =
                 claimRepository.count();
@@ -171,33 +175,30 @@ class OrderExecutionIdempotencyIntegrationTest extends BaseIntegrationTest {
                 "First consume should create an execution claim"
         );
 
-        /*
-         * Проверяем, что claim относится именно к нашему executionId.
-         */
         assertTrue(
-                claimRepository.existsByExecutionId(executionId),
+                claimRepository.existsByExecutionId(
+                        executionId
+                ),
                 "First consume must create claim for the expected executionId"
         );
 
         /*
-         * 2. Повторная доставка ТОГО ЖЕ ORDER_CREATED.
+         * SECOND PROCESSING OF THE SAME EVENT
          */
-        executionHandler.consume(event);
+        executionHandler.consume(
+                OutboxEventMapper.toDomain(event)
+        );
 
-        /*
-         * Количество claims не должно измениться.
-         */
         assertEquals(
                 countAfterFirst,
                 claimRepository.count(),
                 "Second processing of the same ORDER_CREATED must not create additional claims"
         );
 
-        /*
-         * executionId также остаётся единственным.
-         */
         assertTrue(
-                claimRepository.existsByExecutionId(executionId),
+                claimRepository.existsByExecutionId(
+                        executionId
+                ),
                 "Original execution claim must remain present"
         );
     }

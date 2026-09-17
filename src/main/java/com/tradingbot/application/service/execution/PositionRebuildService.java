@@ -1,9 +1,9 @@
 package com.tradingbot.application.service.execution;
 
 import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.domain.model.Position;
+import com.tradingbot.domain.model.PositionRebuildPort;
 import com.tradingbot.domain.model.Trade;
-import com.tradingbot.infrastructure.persistence.entity.PositionEntity;
-import com.tradingbot.infrastructure.persistence.repository.PositionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -18,11 +18,15 @@ import java.util.stream.Collectors;
 
 /**
  * Сервис пересборки позиций из истории сделок.
+ *
  * <p>
- * Используется для восстановления актуального состояния позиций при старте приложения
- * на основе полной истории торговых операций (Trade ledger).
+ * Application layer работает только с domain model и domain ports.
+ *
  * <p>
- * Реализует детерминированный пересчет состояния портфеля.
+ * Контракты:
+ * SYSTEM_CONTRACT.md
+ * STATE_MACHINE_CONTRACT.md
+ * EXECUTION_ENGINE_CONTRACT.md
  */
 @Service
 @Slf4j
@@ -30,57 +34,72 @@ import java.util.stream.Collectors;
 public class PositionRebuildService {
 
     private final TradeService tradeService;
-    private final PositionRepository positionRepository;
+    private final PositionRebuildPort positionRebuildPort;
 
     /**
      * Полный пересчет всех позиций из истории сделок.
+     *
      * <p>
-     * Запускается автоматически после старта приложения (ApplicationReadyEvent).
-     * Выполняет полную реконструкцию состояния позиций из торговой истории.
+     * Источник истины — история Trade.
+     * Текущая projection позиций полностью пересоздаётся.
      */
     @Transactional
     public void rebuildAllPositions() {
         log.info("[REBUILD] Starting full position rebuild from trade history...");
 
         List<Trade> allTrades = tradeService.getAllTrades();
+
+        positionRebuildPort.clear();
+
         if (allTrades.isEmpty()) {
-            log.info("[REBUILD] No trades found. Clearing positions cache.");
-            positionRepository.deleteAll();
+            log.info("[REBUILD] No trades found. Positions cleared.");
             return;
         }
 
-        Map<String, List<Trade>> tradesByGroup = allTrades.stream()
-                .collect(Collectors.groupingBy(t -> t.getSymbol() + ":" + t.getStrategyId()));
-
-        positionRepository.deleteAllInBatch();
+        Map<String, List<Trade>> tradesByGroup =
+                allTrades.stream()
+                        .collect(Collectors.groupingBy(
+                                trade -> trade.getSymbol() + ":" + trade.getStrategyId()
+                        ));
 
         for (Map.Entry<String, List<Trade>> entry : tradesByGroup.entrySet()) {
-            String[] parts = entry.getKey().split(":");
+            String[] parts = entry.getKey().split(":", 2);
+
             String symbol = parts[0];
             String strategyId = parts[1];
 
-            PositionEntity position = calculatePosition(symbol, strategyId, entry.getValue());
-            positionRepository.save(position);
+            RebuildResult result =
+                    calculatePosition(symbol, strategyId, entry.getValue());
 
-            log.info("[REBUILD] Restored position for {}:{}. Qty: {}, AvgPrice: {}",
-                    symbol, strategyId, position.getQuantity(), position.getEntryPrice());
+            positionRebuildPort.save(
+                    result.position(),
+                    result.realizedPnl()
+            );
+
+            log.info(
+                    "[REBUILD] Restored position for {}:{}. Qty: {}, AvgPrice: {}",
+                    symbol,
+                    strategyId,
+                    result.position().getNetQuantity(),
+                    result.position().getAvgEntryPrice()
+            );
         }
 
-        log.info("[REBUILD] Completed. Restored {} positions.", tradesByGroup.size());
+        log.info(
+                "[REBUILD] Completed. Restored {} positions.",
+                tradesByGroup.size()
+        );
     }
 
     /**
      * Математическое ядро пересчета позиции.
-     * <p>
-     * Реализует алгоритм средней цены входа (Moving Average Cost Basis)
-     * и расчет реализованного PnL на основе последовательности сделок.
      *
-     * @param symbol торговый инструмент
-     * @param strategyId идентификатор стратегии
-     * @param trades список сделок в хронологическом порядке
-     * @return восстановленная позиция
+     * <p>
+     * Реализует алгоритм средней цены входа
+     * (Moving Average Cost Basis) и расчет
+     * реализованного PnL.
      */
-    private PositionEntity calculatePosition(
+    private RebuildResult calculatePosition(
             String symbol,
             String strategyId,
             List<Trade> trades
@@ -94,6 +113,7 @@ public class PositionRebuildService {
 
             if (trade.getQuantity() == null
                     || trade.getQuantity().signum() <= 0) {
+
                 throw new IllegalStateException(
                         String.format(
                                 "Invalid trade quantity during position rebuild: " +
@@ -112,6 +132,7 @@ public class PositionRebuildService {
 
             if (trade.getPrice() == null
                     || trade.getPrice().signum() <= 0) {
+
                 throw new IllegalStateException(
                         String.format(
                                 "Invalid trade price during position rebuild: " +
@@ -133,15 +154,21 @@ public class PositionRebuildService {
 
             if (trade.getSide() == OrderSide.BUY) {
 
-                netQuantity = netQuantity.add(trade.getQuantity());
-                boughtQuantity = boughtQuantity.add(trade.getQuantity());
-                boughtCost = boughtCost.add(tradeValue);
+                netQuantity =
+                        netQuantity.add(trade.getQuantity());
+
+                boughtQuantity =
+                        boughtQuantity.add(trade.getQuantity());
+
+                boughtCost =
+                        boughtCost.add(tradeValue);
 
             } else if (trade.getSide() == OrderSide.SELL) {
 
                 /*
                  * Position model is long-only.
-                 * SELL is valid only when there is enough existing quantity.
+                 * SELL is valid only when sufficient
+                 * position inventory exists.
                  */
                 if (trade.getQuantity().compareTo(netQuantity) > 0) {
                     throw new IllegalStateException(
@@ -177,20 +204,30 @@ public class PositionRebuildService {
                     );
                 }
 
-                BigDecimal sellRatio = trade.getQuantity()
-                        .divide(boughtQuantity, 18, RoundingMode.HALF_UP);
+                BigDecimal sellRatio =
+                        trade.getQuantity()
+                                .divide(
+                                        boughtQuantity,
+                                        18,
+                                        RoundingMode.HALF_UP
+                                );
 
                 BigDecimal soldCostBasis =
                         boughtCost.multiply(sellRatio);
 
-                boughtCost = boughtCost.subtract(soldCostBasis);
-                boughtQuantity = boughtQuantity.subtract(trade.getQuantity());
+                boughtCost =
+                        boughtCost.subtract(soldCostBasis);
 
-                netQuantity = netQuantity.subtract(trade.getQuantity());
+                boughtQuantity =
+                        boughtQuantity.subtract(trade.getQuantity());
 
-                realizedPnl = realizedPnl.add(
-                        tradeValue.subtract(soldCostBasis)
-                );
+                netQuantity =
+                        netQuantity.subtract(trade.getQuantity());
+
+                realizedPnl =
+                        realizedPnl.add(
+                                tradeValue.subtract(soldCostBasis)
+                        );
 
                 if (netQuantity.signum() < 0) {
                     throw new IllegalStateException(
@@ -225,21 +262,32 @@ public class PositionRebuildService {
         BigDecimal avgPrice = BigDecimal.ZERO;
 
         if (boughtQuantity.compareTo(BigDecimal.ZERO) > 0) {
-            avgPrice = boughtCost.divide(
-                    boughtQuantity,
-                    8,
-                    RoundingMode.HALF_UP
-            );
+            avgPrice =
+                    boughtCost.divide(
+                            boughtQuantity,
+                            8,
+                            RoundingMode.HALF_UP
+                    );
         }
 
-        return PositionEntity.builder()
-                .symbol(symbol)
-                .strategyId(strategyId)
-                .quantity(netQuantity)
-                .entryPrice(avgPrice)
-                .realizedPnl(realizedPnl)
-                .updatedAt(Instant.now())
-                .version(0L)
-                .build();
+        Position position =
+                Position.builder()
+                        .symbol(symbol)
+                        .strategyId(strategyId)
+                        .netQuantity(netQuantity)
+                        .avgEntryPrice(avgPrice)
+                        .updatedAt(Instant.now())
+                        .build();
+
+        return new RebuildResult(
+                position,
+                realizedPnl
+        );
+    }
+
+    private record RebuildResult(
+            Position position,
+            BigDecimal realizedPnl
+    ) {
     }
 }

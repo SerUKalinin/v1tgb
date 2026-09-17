@@ -7,7 +7,6 @@ import com.tradingbot.domain.risk.RiskReservationLogPort;
 import com.tradingbot.domain.risk.RiskService;
 import com.tradingbot.domain.risk.RiskStatePort;
 import com.tradingbot.domain.risk.RiskStateReducer;
-import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.tracing.ExecutionLogger;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -15,19 +14,14 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Конфигурация доменного риск-слоя.
  *
- * <p>Отвечает за явное связывание доменных компонентов риск-менеджмента
- * с их зависимостями из портов и инфраструктурных сервисов.</p>
- *
- * <p>Фактически определяет composition root для Risk domain.</p>
+ * <p>Явно связывает доменные компоненты с их портами.
+ * Инфраструктурные зависимости не передаются в RiskService.</p>
  */
 @Configuration
 public class RiskDomainConfig {
 
     /**
      * Создаёт редьюсер риск-состояния.
-     *
-     * <p>Используется для детерминированного применения risk events
-     * к текущему состоянию системы.</p>
      *
      * @return RiskStateReducer
      */
@@ -39,21 +33,13 @@ public class RiskDomainConfig {
     /**
      * Создаёт основной RiskService.
      *
-     * <p>Инкапсулирует всю бизнес-логику риск-менеджмента:
-     * <ul>
-     *     <li>валидацию ордеров</li>
-     *     <li>резервацию капитала</li>
-     *     <li>проверку feasibility через exchange слой</li>
-     *     <li>логирование и outbox интеграцию</li>
-     * </ul>
-     *
      * @param port хранилище риск-состояния
      * @param reducer редьюсер событий
-     * @param logPort лог резервирования капитала
-     * @param feasibilityPort проверка ограничений биржи
-     * @param normalizationService нормализация ордеров под биржу
+     * @param logPort лог резервирования
+     * @param feasibilityPort проверка исполнимости
+     * @param normalizationService нормализация ордеров
      * @param executionLogger логгер исполнения
-     * @param outboxService сервис outbox событий
+     * @param positionAvailabilityPort доступная позиция
      * @return RiskService
      */
     @Bean
@@ -64,7 +50,6 @@ public class RiskDomainConfig {
             ExchangeFeasibilityPort feasibilityPort,
             OrderNormalizationService normalizationService,
             ExecutionLogger executionLogger,
-            OutboxService outboxService,
             PositionAvailabilityPort positionAvailabilityPort
     ) {
         return new RiskService(
@@ -74,7 +59,6 @@ public class RiskDomainConfig {
                 feasibilityPort,
                 normalizationService,
                 executionLogger,
-                outboxService,
                 positionAvailabilityPort
         );
     }

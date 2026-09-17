@@ -2,10 +2,8 @@ package com.tradingbot.domain.risk;
 
 import com.tradingbot.common.util.MoneyMath;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -29,7 +27,6 @@ import java.util.UUID;
  * </ul>
  */
 @Slf4j
-@Component
 public class RiskStateReducer {
 
     public RiskState reduce(

@@ -7,11 +7,9 @@ import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.exchange.*;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.position.PositionAvailabilityPort;
-import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.tracing.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -24,10 +22,14 @@ import java.util.UUID;
  *
  * <p>Отвечает за проверку сигналов, резервирование и освобождение капитала,
  * управление состоянием рисков, аварийную остановку и синхронизацию баланса.</p>
+ *
+ * <p>Доменный сервис не зависит от Spring, JPA или infrastructure.
+ * Транзакционные границы задаются application-слоем.</p>
  */
 public class RiskService {
 
-    private static final Logger log = LoggerFactory.getLogger(RiskService.class);
+    private static final Logger log =
+            LoggerFactory.getLogger(RiskService.class);
 
     private final RiskStatePort riskStatePort;
     private final RiskStateReducer reducer;
@@ -35,7 +37,6 @@ public class RiskService {
     private final ExchangeFeasibilityPort feasibilityPort;
     private final OrderNormalizationService normalizationService;
     private final ExecutionLogger executionLogger;
-    private final OutboxService outboxService;
     private final PositionAvailabilityPort positionAvailabilityPort;
 
     /**
@@ -44,10 +45,9 @@ public class RiskService {
      * @param riskStatePort порт для получения и сохранения состояния риска
      * @param reducer редьюсер состояния риска
      * @param riskReservationLogPort порт для логирования резервов капитала
-     * @param feasibilityPort порт для проверки исполнимости ордера на бирже
-     * @param normalizationService сервис для нормализации ордеров под биржевые ограничения
+     * @param feasibilityPort порт для проверки исполнимости ордера
+     * @param normalizationService сервис нормализации ордера
      * @param executionLogger логгер исполнения
-     * @param outboxService сервис для отправки событий в outbox
      * @param positionAvailabilityPort порт доступного количества позиции
      */
     public RiskService(
@@ -57,7 +57,6 @@ public class RiskService {
             ExchangeFeasibilityPort feasibilityPort,
             OrderNormalizationService normalizationService,
             ExecutionLogger executionLogger,
-            OutboxService outboxService,
             PositionAvailabilityPort positionAvailabilityPort
     ) {
         this.riskStatePort = riskStatePort;
@@ -66,7 +65,6 @@ public class RiskService {
         this.feasibilityPort = feasibilityPort;
         this.normalizationService = normalizationService;
         this.executionLogger = executionLogger;
-        this.outboxService = outboxService;
         this.positionAvailabilityPort = positionAvailabilityPort;
     }
 
@@ -75,22 +73,23 @@ public class RiskService {
     /**
      * Оценивает торговый сигнал и формирует заказ.
      *
-     * <p>Выполняет последовательность шагов:
+     * <p>Выполняет последовательность шагов:</p>
+     *
      * <ol>
-     *     <li>Проверка состояния системы (HALT)</li>
-     *     <li>Расчет объема сделки</li>
+     *     <li>Проверка состояния системы</li>
+     *     <li>Расчёт объёма сделки</li>
      *     <li>Нормализация под требования биржи</li>
-     *     <li>Проверка возможности исполнения (Feasibility)</li>
-     *     <li>Проверка лимитов капитала и резервирование для BUY</li>
-     *     <li>Проверка доступной позиции для SELL</li>
-     *     <li>Создание доменного объекта Order</li>
-     * </ol></p>
+     *     <li>Проверка feasibility</li>
+     *     <li>Проверка лимитов капитала</li>
+     *     <li>Резервирование для BUY</li>
+     *     <li>Проверка позиции для SELL</li>
+     *     <li>Создание Order</li>
+     * </ol>
      *
      * @param context контекст исполнения
      * @param signal событие торгового сигнала
-     * @return опциональный заказ, если сигнал одобрен, иначе пустой Optional
+     * @return заказ, если сигнал одобрен
      */
-    @Transactional
     public Optional<Order> evaluateSignal(
             ExecutionContext context,
             SignalEvent signal
@@ -102,25 +101,29 @@ public class RiskService {
                 identity
         );
 
+        RiskState state = riskStatePort.get();
+
         log.info(
                 "[TRACE_FLOW] Current RiskState: halted={}, balance={}, reserved={}",
-                riskStatePort.get().isHalted(),
-                riskStatePort.get().getBalance(),
-                riskStatePort.get().getReservedMargin()
+                state.isHalted(),
+                state.getBalance(),
+                state.getReservedMargin()
         );
-
-        RiskState state = riskStatePort.get();
 
         if (state.isHalted()) {
             log.warn(
-                    "[TRACE_FLOW] EXIT RiskService - REJECTED: System is HALTED for identity: {}",
+                    "[TRACE_FLOW] EXIT RiskService - REJECTED: " +
+                            "System is HALTED for identity: {}",
                     identity
             );
             return Optional.empty();
         }
 
         BigDecimal rawQuantity =
-                calculateQuantity(signal, state);
+                calculateQuantity(
+                        signal,
+                        state
+                );
 
         log.info(
                 "[TRACE_FLOW] Calculated raw quantity: {} for identity: {}",
@@ -147,8 +150,7 @@ public class RiskService {
         /*
          * SELL работает только при наличии достаточной базовой позиции.
          *
-         * SELL не резервирует quote capital (USDT), потому что
-         * quote funds поступят только после фактического исполнения.
+         * SELL не резервирует quote capital.
          */
         if (signal.getType() == SignalType.SELL) {
 
@@ -159,17 +161,22 @@ public class RiskService {
                     );
 
             log.info(
-                    "[TRACE_FLOW] SELL position check: symbol={}, strategyId={}, requestedQty={}, availableQty={}",
+                    "[TRACE_FLOW] SELL position check: " +
+                            "symbol={}, strategyId={}, requestedQty={}, availableQty={}",
                     signal.getSymbol(),
                     signal.getStrategyId(),
                     normalized.getQuantity(),
                     availableQuantity
             );
 
-            if (availableQuantity.compareTo(normalized.getQuantity()) < 0) {
+            if (availableQuantity.compareTo(
+                    normalized.getQuantity()
+            ) < 0) {
+
                 log.warn(
-                        "[TRACE_FLOW] EXIT RiskService.evaluateSignal - REJECTED: " +
-                                "SELL exceeds available position. symbol={}, strategyId={}, requestedQty={}, availableQty={}",
+                        "[TRACE_FLOW] EXIT RiskService.evaluateSignal - " +
+                                "REJECTED: SELL exceeds available position. " +
+                                "symbol={}, strategyId={}, requestedQty={}, availableQty={}",
                         signal.getSymbol(),
                         signal.getStrategyId(),
                         normalized.getQuantity(),
@@ -198,7 +205,8 @@ public class RiskService {
 
         if (!feasibility.isFeasible()) {
             log.warn(
-                    "[TRACE_FLOW] EXIT RiskService - REJECTED: Not feasible. Reason: {} for identity: {}",
+                    "[TRACE_FLOW] EXIT RiskService - REJECTED: " +
+                            "Not feasible. Reason: {} for identity: {}",
                     feasibility.getReason(),
                     identity
             );
@@ -212,15 +220,14 @@ public class RiskService {
 
         /*
          * Только BUY резервирует quote capital.
-         *
-         * SELL не проходит через RiskPolicy.canReserve()
-         * и не создаёт CapitalReserved.
          */
         if (signal.getType() == SignalType.BUY) {
 
             BigDecimal requiredCapital =
                     normalized.getQuantity()
-                            .multiply(normalized.getPrice());
+                            .multiply(
+                                    normalized.getPrice()
+                            );
 
             RiskDecision decision =
                     RiskPolicy.canReserve(
@@ -230,7 +237,8 @@ public class RiskService {
                     );
 
             log.info(
-                    "[TRACE_FLOW] BUY RiskPolicy decision: approved={}, reason={} for identity: {}",
+                    "[TRACE_FLOW] BUY RiskPolicy decision: " +
+                            "approved={}, reason={} for identity: {}",
                     decision.isApproved(),
                     decision.getReason(),
                     identity
@@ -238,7 +246,8 @@ public class RiskService {
 
             if (!decision.isApproved()) {
                 log.warn(
-                        "[TRACE_FLOW] EXIT RiskService - REJECTED: Policy violation. Reason: {} for identity: {}",
+                        "[TRACE_FLOW] EXIT RiskService - REJECTED: " +
+                                "Policy violation. Reason: {} for identity: {}",
                         decision.getReason(),
                         identity
                 );
@@ -287,8 +296,10 @@ public class RiskService {
             );
 
         } else {
+
             log.info(
-                    "[TRACE_FLOW] SELL does not reserve quote capital: orderId={}, symbol={}, quantity={}, price={}",
+                    "[TRACE_FLOW] SELL does not reserve quote capital: " +
+                            "orderId={}, symbol={}, quantity={}, price={}",
                     orderId,
                     normalized.getSymbol(),
                     normalized.getQuantity(),
@@ -312,7 +323,8 @@ public class RiskService {
                 );
 
         log.info(
-                "[TRACE_FLOW] EXIT RiskService.evaluateSignal - APPROVED for identity: {}",
+                "[TRACE_FLOW] EXIT RiskService.evaluateSignal - " +
+                        "APPROVED for identity: {}",
                 identity
         );
 
@@ -324,28 +336,22 @@ public class RiskService {
     /**
      * Публикует событие риска и обновляет состояние RiskState.
      *
-     * <p>Игнорирует события, если система в HALT, кроме TradingHalted.</p>
-     *
-     * @param event событие риска для публикации
+     * @param event событие риска
      */
     public void publish(RiskEvent event) {
-        RiskState state = riskStatePort.get();
+
+        RiskState state =
+                riskStatePort.get();
 
         if (state.isHalted()
                 && !(event instanceof RiskEvent.TradingHalted)) {
             return;
         }
 
-        UUID eventId;
-        try {
-            eventId = UUID.fromString(
-                    event.getEventId()
-            );
-        } catch (IllegalArgumentException e) {
-            eventId = UUID.nameUUIDFromBytes(
-                    event.getEventId().getBytes()
-            );
-        }
+        UUID eventId =
+                parseEventId(
+                        event.getEventId()
+                );
 
         if (riskStatePort.isEventProcessed(eventId)) {
             return;
@@ -354,11 +360,13 @@ public class RiskService {
         BigDecimal reservedBefore = null;
 
         if (event instanceof RiskEvent.CapitalReleased e) {
+
             reservedBefore =
                     state.getActiveReservations()
                             .get(e.orderId());
 
         } else if (event instanceof RiskEvent.CapitalConsumed e) {
+
             reservedBefore =
                     state.getActiveReservations()
                             .get(e.orderId());
@@ -377,6 +385,7 @@ public class RiskService {
         );
 
         if (event instanceof RiskEvent.CapitalReserved e) {
+
             logReservation(
                     e.orderId(),
                     RiskReservationEventType.RESERVE,
@@ -408,16 +417,17 @@ public class RiskService {
     // ==================== COMMANDS ====================
 
     /**
-     * Пытается зарезервировать указанную сумму капитала для ордера.
+     * Пытается зарезервировать указанную сумму капитала.
      *
      * @param context контекст исполнения
      * @param amount сумма для резервирования
-     * @return решение по риску (одобрено/отклонено)
+     * @return решение по риску
      */
     public RiskDecision reserve(
             ExecutionContext context,
             BigDecimal amount
     ) {
+
         UUID orderId =
                 UUID.fromString(
                         context.business().orderId()
@@ -439,7 +449,8 @@ public class RiskService {
                     IdentityFactory.deriveEventId(
                             orderId,
                             "capital-reserved-"
-                                    + context.attempt().attemptNumber()
+                                    + context.attempt()
+                                    .attemptNumber()
                     );
 
             RiskEvent.CapitalReserved event =
@@ -481,7 +492,7 @@ public class RiskService {
      * Освобождает ранее зарезервированные средства.
      *
      * @param context контекст исполнения
-     * @param amount сумма для освобождения
+     * @param amount сумма
      * @param reason причина освобождения
      */
     public void release(
@@ -489,6 +500,7 @@ public class RiskService {
             BigDecimal amount,
             String reason
     ) {
+
         UUID orderId =
                 UUID.fromString(
                         context.business().orderId()
@@ -539,22 +551,18 @@ public class RiskService {
     }
 
     /**
-     * Помечает reservation как использованную фактическим исполнением ордера.
-     *
-     * <p>
-     * В отличие от RELEASE этот метод не возвращает капитал
-     * в available balance. Он только удаляет reservation
-     * из activeReservations.
-     * </p>
+     * Помечает reservation как использованную фактическим исполнением.
      *
      * @param context execution context ордера
-     * @param reason причина использования reservation
+     * @param executedNotional фактический notional
+     * @param reason причина
      */
     public void consumeReservation(
             ExecutionContext context,
             BigDecimal executedNotional,
             String reason
     ) {
+
         UUID orderId =
                 UUID.fromString(
                         context.business().orderId()
@@ -562,6 +570,7 @@ public class RiskService {
 
         if (executedNotional == null
                 || executedNotional.signum() <= 0) {
+
             throw new IllegalArgumentException(
                     "Executed BUY notional must be positive"
             );
@@ -575,10 +584,12 @@ public class RiskService {
                         .get(orderId);
 
         if (reservedAmount == null) {
+
             log.warn(
                     "[RISK] No active reservation to consume for order {}",
                     orderId
             );
+
             return;
         }
 
@@ -615,7 +626,8 @@ public class RiskService {
         );
 
         log.info(
-                "[RISK] Settled BUY execution {} for order {}. Reserved={} Actual={}",
+                "[RISK] Settled BUY execution {} for order {}. " +
+                        "Reserved={} Actual={}",
                 executedNotional,
                 orderId,
                 reservedAmount,
@@ -629,14 +641,18 @@ public class RiskService {
      * @param reason причина остановки
      */
     public void emergencyStop(String reason) {
-        RiskState state = riskStatePort.get();
+
+        RiskState state =
+                riskStatePort.get();
 
         RiskState newState =
                 state.toBuilder()
                         .halted(true)
                         .build();
 
-        riskStatePort.save(newState);
+        riskStatePort.save(
+                newState
+        );
 
         log.error(
                 "[RISK] EMERGENCY STOP: {}",
@@ -648,6 +664,7 @@ public class RiskService {
      * Возобновляет торговлю после аварийной остановки.
      */
     public void resumeTrading() {
+
         RiskState state =
                 riskStatePort.get();
 
@@ -656,7 +673,9 @@ public class RiskService {
                         .halted(false)
                         .build();
 
-        riskStatePort.save(newState);
+        riskStatePort.save(
+                newState
+        );
 
         log.info(
                 "[RISK] Trading resumed"
@@ -666,18 +685,19 @@ public class RiskService {
     /**
      * Инициализирует состояние рисков.
      *
-     * @param state начальное состояние рисков
+     * @param state начальное состояние
      */
     public void initialize(RiskState state) {
         riskStatePort.save(state);
     }
 
     /**
-     * Синхронизирует баланс с фактическим значением.
+     * Синхронизирует баланс.
      *
      * @param actualBalance фактический баланс
      */
     public void syncBalance(BigDecimal actualBalance) {
+
         RiskState state =
                 riskStatePort.get();
 
@@ -686,7 +706,9 @@ public class RiskService {
                         .balance(actualBalance)
                         .build();
 
-        riskStatePort.save(newState);
+        riskStatePort.save(
+                newState
+        );
 
         log.info(
                 "[RISK] Balance synchronized to: {}",
@@ -697,7 +719,7 @@ public class RiskService {
     /**
      * Возвращает текущее состояние рисков.
      *
-     * @return состояние рисков
+     * @return RiskState
      */
     public RiskState getState() {
         return riskStatePort.get();
@@ -707,16 +729,13 @@ public class RiskService {
 
     /**
      * Логирует операцию резервирования или освобождения капитала.
-     *
-     * @param orderId идентификатор ордера
-     * @param type тип события (RESERVE/RELEASE)
-     * @param amount сумма
      */
     private void logReservation(
             UUID orderId,
             RiskReservationEventType type,
             BigDecimal amount
     ) {
+
         riskReservationLogPort.append(
                 new RiskReservationLog(
                         orderId,
@@ -728,22 +747,21 @@ public class RiskService {
     }
 
     /**
-     * Вычисляет количество актива для сделки на основе сигнала и состояния рисков.
-     *
-     * @param signal сигнал
-     * @param state состояние рисков
-     * @return расчетное количество актива
+     * Вычисляет количество актива для сделки.
      */
     private BigDecimal calculateQuantity(
             SignalEvent signal,
             RiskState state
     ) {
+
         BigDecimal riskPercent =
-                new BigDecimal("0.01"); // 1% риск
+                new BigDecimal("0.01");
 
         BigDecimal baseCapital =
                 state.getTotalEquity()
-                        .max(state.getBalance());
+                        .max(
+                                state.getBalance()
+                        );
 
         if (baseCapital.compareTo(BigDecimal.ZERO) <= 0
                 || signal.getPrice() == null
@@ -762,12 +780,10 @@ public class RiskService {
     }
 
     /**
-     * Парсит строку в UUID, при ошибке формирует UUID на основе имени.
-     *
-     * @param eventId строка идентификатора события
-     * @return UUID события
+     * Парсит строковый eventId.
      */
     private UUID parseEventId(String eventId) {
+
         try {
             return UUID.fromString(eventId);
         } catch (Exception e) {

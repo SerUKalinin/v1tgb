@@ -1,7 +1,7 @@
 package com.tradingbot.application.event;
 
+import com.tradingbot.domain.model.OutboxEvent;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
-import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.stereotype.Component;
@@ -12,24 +12,17 @@ import java.util.List;
 /**
  * Роутер событий Outbox.
  *
- * Отвечает за распределение событий из Outbox между соответствующими
- * обработчиками (consumers).
- *
- * Используется внутри OutboxProcessor для детерминированного dispatching
- * событий на основе их типа.
+ * Получает только чистую OutboxEvent-модель.
+ * JPA entity не пересекает application boundary.
  */
 @Slf4j
 @Component
 public class OutboxEventRouter {
 
-    /**
-     * Отсортированный список consumers.
-     *
-     * Порядок определяется через Spring @Order / Ordered.
-     */
     private final List<OutboxConsumer> consumers;
 
     public OutboxEventRouter(List<OutboxConsumer> consumers) {
+
         List<OutboxConsumer> orderedConsumers =
                 new ArrayList<>(consumers);
 
@@ -48,16 +41,17 @@ public class OutboxEventRouter {
     }
 
     /**
-     * Маршрутизирует событие соответствующим consumer'ам по типу события.
-     *
-     * Все consumers, поддерживающие данный тип события, выполняются
-     * последовательно в установленном порядке.
-     *
-     * @param event событие из Outbox
-     * @throws Exception если consumer выбросил исключение
+     * Маршрутизация события по eventType.
      */
-    public void route(OutboxEventEntity event) throws Exception {
-        String eventType = event.getEventType();
+    public void route(OutboxEvent event) throws Exception {
+
+        if (event == null) {
+            throw new IllegalArgumentException(
+                    "OutboxEvent cannot be null"
+            );
+        }
+
+        String eventType = event.eventType();
 
         log.debug(
                 "[ROUTER] Маршрутизация события типа: {}",
@@ -67,6 +61,7 @@ public class OutboxEventRouter {
         boolean handled = false;
 
         for (OutboxConsumer consumer : consumers) {
+
             if (!consumer.supports(eventType)) {
                 continue;
             }
@@ -83,6 +78,7 @@ public class OutboxEventRouter {
         }
 
         if (!handled) {
+
             log.warn(
                     "[ROUTER] Не найден обработчик для типа события: {}",
                     eventType

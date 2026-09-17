@@ -1,16 +1,15 @@
 package com.tradingbot.application.service.risk;
 
 import com.tradingbot.application.service.execution.PositionService;
+import com.tradingbot.domain.model.EquitySnapshot;
+import com.tradingbot.domain.model.EquitySnapshotPort;
 import com.tradingbot.domain.model.Position;
 import com.tradingbot.domain.risk.RiskState;
 import com.tradingbot.domain.risk.RiskStatePort;
-import com.tradingbot.infrastructure.persistence.entity.EquitySnapshotEntity;
-import com.tradingbot.infrastructure.persistence.repository.EquitySnapshotRepository;
 import com.tradingbot.infrastructure.persistence.repository.TradeRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -23,9 +22,6 @@ import static org.mockito.Mockito.*;
 class EquityServiceTest {
 
     @Mock
-    private EquitySnapshotRepository equityRepository;
-
-    @Mock
     private PositionService positionService;
 
     @Mock
@@ -34,11 +30,15 @@ class EquityServiceTest {
     @Mock
     private RiskStatePort riskStatePort;
 
-    @InjectMocks
+    @Mock
+    private EquitySnapshotPort equitySnapshotPort;
+
+    @org.mockito.InjectMocks
     private EquityService equityService;
 
     @Test
     void shouldUseCanonicalRiskStateBalanceForSnapshot() {
+
         BigDecimal canonicalBalance =
                 new BigDecimal("17402.38684110");
 
@@ -63,28 +63,28 @@ class EquityServiceTest {
                 new BigDecimal("77416.01")
         );
 
-        ArgumentCaptor<EquitySnapshotEntity> snapshotCaptor =
+        ArgumentCaptor<EquitySnapshot> snapshotCaptor =
                 ArgumentCaptor.forClass(
-                        EquitySnapshotEntity.class
+                        EquitySnapshot.class
                 );
 
-        verify(equityRepository)
+        verify(equitySnapshotPort)
                 .save(snapshotCaptor.capture());
 
-        EquitySnapshotEntity snapshot =
+        EquitySnapshot snapshot =
                 snapshotCaptor.getValue();
 
-        assertThat(snapshot.getBalance())
+        assertThat(readProperty(snapshot, "balance"))
                 .isEqualByComparingTo(
                         canonicalBalance
                 );
 
-        assertThat(snapshot.getUnrealizedPnl())
+        assertThat(readProperty(snapshot, "unrealizedPnl"))
                 .isEqualByComparingTo(
                         BigDecimal.ZERO
                 );
 
-        assertThat(snapshot.getEquity())
+        assertThat(readProperty(snapshot, "equity"))
                 .isEqualByComparingTo(
                         canonicalBalance
                 );
@@ -101,6 +101,7 @@ class EquityServiceTest {
 
     @Test
     void shouldCalculateEquityUsingCanonicalBalanceAndUnrealizedPnl() {
+
         BigDecimal canonicalBalance =
                 new BigDecimal("17000.00");
 
@@ -138,28 +139,28 @@ class EquityServiceTest {
                 new BigDecimal("77400")
         );
 
-        ArgumentCaptor<EquitySnapshotEntity> snapshotCaptor =
+        ArgumentCaptor<EquitySnapshot> snapshotCaptor =
                 ArgumentCaptor.forClass(
-                        EquitySnapshotEntity.class
+                        EquitySnapshot.class
                 );
 
-        verify(equityRepository)
+        verify(equitySnapshotPort)
                 .save(snapshotCaptor.capture());
 
-        EquitySnapshotEntity snapshot =
+        EquitySnapshot snapshot =
                 snapshotCaptor.getValue();
 
-        assertThat(snapshot.getBalance())
+        assertThat(readProperty(snapshot, "balance"))
                 .isEqualByComparingTo(
                         new BigDecimal("17000.00")
                 );
 
-        assertThat(snapshot.getUnrealizedPnl())
+        assertThat(readProperty(snapshot, "unrealizedPnl"))
                 .isEqualByComparingTo(
                         new BigDecimal("0.400")
                 );
 
-        assertThat(snapshot.getEquity())
+        assertThat(readProperty(snapshot, "equity"))
                 .isEqualByComparingTo(
                         new BigDecimal("17000.400")
                 );
@@ -172,5 +173,48 @@ class EquityServiceTest {
                         "BTCUSDT",
                         "test-strategy"
                 );
+    }
+
+    private static BigDecimal readProperty(
+            EquitySnapshot snapshot,
+            String property
+    ) {
+        try {
+            String getterName =
+                    "get"
+                            + Character.toUpperCase(
+                            property.charAt(0)
+                    )
+                            + property.substring(1);
+
+            try {
+                Object value =
+                        snapshot
+                                .getClass()
+                                .getMethod(getterName)
+                                .invoke(snapshot);
+
+                return (BigDecimal) value;
+
+            } catch (NoSuchMethodException ignored) {
+
+                Object value =
+                        snapshot
+                                .getClass()
+                                .getMethod(property)
+                                .invoke(snapshot);
+
+                return (BigDecimal) value;
+            }
+
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError(
+                    "Cannot read EquitySnapshot property '"
+                            + property
+                            + "' from "
+                            + snapshot.getClass().getName(),
+                    e
+            );
+        }
     }
 }

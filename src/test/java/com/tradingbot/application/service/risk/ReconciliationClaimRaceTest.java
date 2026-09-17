@@ -12,8 +12,8 @@ import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
+import com.tradingbot.domain.model.OutboxRecoveryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
-import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.ExecutionLogger;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,7 +31,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class ReconciliationClaimRaceTest {
@@ -47,7 +46,7 @@ class ReconciliationClaimRaceTest {
 
         reconciliationService = new ReconciliationService(
                 orderRepository,
-                mock(OutboxEventRepository.class),
+                mock(OutboxRecoveryPort.class),
                 exchangeQueryService,
                 mock(OrderCompensationService.class),
                 mock(RiskEngine.class),
@@ -60,7 +59,9 @@ class ReconciliationClaimRaceTest {
     }
 
     @Test
-    void shouldAllowOnlyOneWorkerToReconcileSameSentOrder() throws Exception {
+    void shouldAllowOnlyOneWorkerToReconcileSameSentOrder()
+            throws Exception {
+
         UUID orderId = UUID.randomUUID();
         UUID signalId = UUID.randomUUID();
 
@@ -77,16 +78,11 @@ class ReconciliationClaimRaceTest {
         );
 
         /*
-         * Формируем валидный lifecycle:
-         *
          * PENDING_EXECUTION
          *        ↓
          *    EXECUTING
          *        ↓
          * SENT_TO_EXCHANGE
-         *
-         * Только после этого reconciliation имеет право
-         * перевести ордер в FILLED.
          */
         ExecutionContext context = ExecutionContext.of(order);
 
@@ -102,16 +98,6 @@ class ReconciliationClaimRaceTest {
         AtomicInteger claimCount = new AtomicInteger(0);
         AtomicInteger exchangeQueryCount = new AtomicInteger(0);
 
-        /*
-         * Моделируем контракт claimForReconciliation():
-         *
-         * первый worker получает ownership;
-         * второй worker получает EMPTY.
-         *
-         * Это именно тот контракт, который production-реализация
-         * должна обеспечить через SELECT FOR UPDATE +
-         * durable ownership barrier.
-         */
         when(orderRepository.claimForReconciliation(orderId))
                 .thenAnswer(invocation -> {
                     claimCount.incrementAndGet();
@@ -182,9 +168,6 @@ class ReconciliationClaimRaceTest {
             }
         });
 
-        /*
-         * Одновременно запускаем оба reconciliation worker.
-         */
         start.countDown();
 
         assertTrue(
@@ -194,29 +177,18 @@ class ReconciliationClaimRaceTest {
 
         executor.shutdownNow();
 
-        /*
-         * Оба worker должны попытаться получить ownership.
-         */
         assertEquals(
                 2,
                 claimCount.get(),
                 "Both reconciliation workers must attempt to claim the order"
         );
 
-        /*
-         * Но только один worker должен получить ownership
-         * и обратиться к бирже.
-         */
         assertEquals(
                 1,
                 exchangeQueryCount.get(),
                 "Only one reconciliation worker may query the exchange"
         );
 
-        /*
-         * Единственный владелец должен применить результат
-         * reconciliation.
-         */
         assertEquals(
                 OrderStatus.FILLED,
                 order.getStatus()
@@ -237,9 +209,6 @@ class ReconciliationClaimRaceTest {
                 order.getAveragePrice()
         );
 
-        /*
-         * Финальный результат должен быть сохранён ровно один раз.
-         */
         verify(
                 orderRepository,
                 times(1)

@@ -1,31 +1,30 @@
 package com.tradingbot.infrastructure.outbox;
 
-import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
+import com.tradingbot.domain.model.OutboxEvent;
 
 /**
  * Контракт обработчика outbox-событий.
  *
- * <p>Определяет компонент, способный обрабатывать события,
- * извлечённые из outbox-таблицы.</p>
+ * Persistence entity не выходит за infrastructure boundary.
  *
- * <p>Реализация используется dispatcher'ом для маршрутизации
- * событий по типам.</p>
+ * OutboxEventEntity используется только внутри infrastructure/persistence.
+ * Consumers получают чистую OutboxEvent-модель.
  */
 public interface OutboxConsumer {
 
     /**
-     * Проверяет, поддерживает ли обработчик данный тип события.
+     * Проверяет, поддерживает ли consumer данный тип события.
      *
-     * @param eventType тип события из outbox
-     * @return true если обработчик может обработать событие
+     * @param eventType тип события
+     * @return true если consumer обрабатывает данный тип
      */
     boolean supports(String eventType);
 
     /**
      * Обрабатывает outbox-событие.
      *
-     * @param event сущность outbox-события
-     * @throws Exception при ошибке обработки события
+     * @param event чистая модель outbox-события
+     * @throws Exception при ошибке обработки
      */
-    void consume(OutboxEventEntity event) throws Exception;
+    void consume(OutboxEvent event) throws Exception;
 }

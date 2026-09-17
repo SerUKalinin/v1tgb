@@ -1,88 +1,98 @@
 package com.tradingbot.application.service.strategy;
 
-import com.tradingbot.infrastructure.persistence.entity.SignalEntity;
 import com.tradingbot.domain.model.SubscriptionTier;
 import org.springframework.stereotype.Service;
 
 /**
- * Сервис форматирования торговых сигналов под разные уровни подписки.
+ * Application service форматирования торговых сигналов.
  *
- * <p>Отвечает за преобразование {@link SignalEntity} в человекочитаемый
- * текстовый формат для отправки пользователям.</p>
+ * <p>
+ * Работает только с application DTO и domain model.
  *
- * <p>Поддерживает дифференциацию контента в зависимости от тарифа:
- * <ul>
- *     <li>PRO — полный набор торговых параметров</li>
- *     <li>FREE — ограниченный доступ к информации</li>
- * </ul>
+ * <p>
+ * Архитектурные контракты:
+ * SYSTEM_CONTRACT.md
+ * STATE_MACHINE_CONTRACT.md
+ * EXECUTION_ENGINE_CONTRACT.md
  */
 @Service
 public class SignalFormatterService {
 
     /**
-     * Формирует сигнал в зависимости от уровня подписки пользователя.
+     * Формирует сигнал в зависимости от уровня подписки.
      *
-     * @param signal торговый сигнал
-     * @param tier уровень подписки пользователя
-     * @return отформатированное сообщение
+     * @param signal данные сигнала
+     * @param tier уровень подписки
+     * @return форматированное сообщение
      */
-    public String format(SignalEntity signal, SubscriptionTier tier) {
+    public String format(
+            SignalFormatData signal,
+            SubscriptionTier tier
+    ) {
+        if (signal == null) {
+            throw new IllegalArgumentException(
+                    "signal cannot be null"
+            );
+        }
+
         if (tier == SubscriptionTier.PRO) {
             return formatPro(signal);
-        } else {
-            return formatFree(signal);
         }
+
+        return formatFree(signal);
     }
 
     /**
-     * Форматирование PRO-сигнала с полным раскрытием торговых параметров.
-     *
-     * @param signal торговый сигнал
-     * @return форматированный PRO сигнал
+     * Форматирование PRO-сигнала
+     * с полным набором торговых параметров.
      */
-    private String formatPro(SignalEntity signal) {
-        return String.format("""
+    private String formatPro(
+            SignalFormatData signal
+    ) {
+        return String.format(
+                """
                 🚀 *PRO SIGNAL: %s %s*
-                
+
                 📈 *Вход:* `%s`
                 🎯 *Цель 1:* `%s`
                 🎯 *Цель 2:* `%s`
                 🛡 *Стоп-лосс:* `%s`
-                
+
                 📊 *Риск:* 1%% | *Плечо:* x10
                 🕒 %s
                 """,
-                signal.getSymbol(),
-                signal.getType(),
-                signal.getPrice(),
-                signal.getTakeProfit1(),
-                signal.getTakeProfit2(),
-                signal.getStopLoss(),
-                signal.getTimestamp());
+                signal.symbol(),
+                signal.type(),
+                signal.price(),
+                signal.takeProfit1(),
+                signal.takeProfit2(),
+                signal.stopLoss(),
+                signal.timestamp()
+        );
     }
 
     /**
-     * Форматирование FREE-сигнала с ограничением информации.
-     *
-     * <p>Скрывает ключевые торговые параметры, мотивируя апгрейд.</p>
-     *
-     * @param signal торговый сигнал
-     * @return урезанный формат сигнала
+     * Форматирование FREE-сигнала
+     * с ограничением информации.
      */
-    private String formatFree(SignalEntity signal) {
-        return String.format("""
+    private String formatFree(
+            SignalFormatData signal
+    ) {
+        return String.format(
+                """
                 📡 *FREE SIGNAL: %s %s*
-                
+
                 📈 *Вход:* `%s`
                 🎯 *Цель 1:* `🔐 Скрыто в PRO`
                 🎯 *Цель 2:* `🔐 Скрыто в PRO`
                 🛡 *Стоп-лосс:* `🔐 Скрыто в PRO`
-                
+
                 🔥 *Хочешь видеть все цели и стопы?*
                 Апгрейднись до *PRO* прямо сейчас!
                 """,
-                signal.getSymbol(),
-                signal.getType(),
-                signal.getPrice());
+                signal.symbol(),
+                signal.type(),
+                signal.price()
+        );
     }
 }

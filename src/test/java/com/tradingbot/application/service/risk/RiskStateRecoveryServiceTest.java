@@ -8,21 +8,13 @@ import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.domain.policy.OrderStateTransitionPolicy;
 import com.tradingbot.domain.risk.RiskEvent;
 import com.tradingbot.domain.risk.RiskState;
+import com.tradingbot.domain.risk.RiskStateRecoveryPort;
+import com.tradingbot.domain.risk.RiskStateRecoveryPort.RiskEventRecord;
 import com.tradingbot.domain.risk.RiskStateReducer;
-import com.tradingbot.infrastructure.persistence.entity.RiskEventEntity;
-import com.tradingbot.infrastructure.persistence.entity.RiskReservationLogEntity;
-import com.tradingbot.infrastructure.persistence.entity.RiskSnapshotEntity;
-import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
-import com.tradingbot.infrastructure.persistence.mapper.RiskStateMapper;
-import com.tradingbot.infrastructure.persistence.repository.RiskEventRepository;
-import com.tradingbot.infrastructure.persistence.repository.RiskReservationLogRepository;
-import com.tradingbot.infrastructure.persistence.repository.RiskSnapshotRepository;
-import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -35,26 +27,16 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class RiskStateRecoveryServiceTest {
 
     @Mock
-    private RiskEventRepository eventRepository;
-
-    @Mock
-    private RiskSnapshotRepository snapshotRepository;
-
-    @Mock
-    private RiskReservationLogRepository reservationLogRepository;
-
-    @Mock
-    private RiskStateRepository riskStateRepository;
-
-    @Mock
-    private RiskStateMapper riskStateMapper;
+    private RiskStateRecoveryPort recoveryPort;
 
     @Mock
     private RiskEngine riskEngine;
@@ -77,138 +59,250 @@ class RiskStateRecoveryServiceTest {
     @Mock
     private OrderRepositoryPort orderRepositoryPort;
 
-    @InjectMocks
     private RiskStateRecoveryService recoveryService;
 
     private RiskState persistedState;
+
     private RiskState reconciledState;
 
     @BeforeEach
     void setUp() {
 
-        UUID reservedOrderId = UUID.randomUUID();
+        recoveryService =
+                new RiskStateRecoveryService(
+                        recoveryPort,
+                        riskEngine,
+                        reducer,
+                        objectMapper,
+                        riskReconciler,
+                        exchangeQueryService,
+                        stateManager,
+                        orderRepositoryPort
+                );
 
-        persistedState = RiskState.builder()
-                .balance(new BigDecimal("9900.00000000"))
-                .totalEquity(new BigDecimal("10000.00000000"))
-                .dailyPnl(new BigDecimal("12.50"))
-                .maxEquity(new BigDecimal("10050.00000000"))
-                .activeReservations(
-                        Map.of(
-                                reservedOrderId,
-                                new BigDecimal("100.00000000")
+        UUID reservedOrderId =
+                UUID.randomUUID();
+
+        persistedState =
+                RiskState.builder()
+                        .balance(
+                                new BigDecimal(
+                                        "9900.00000000"
+                                )
                         )
-                )
-                .processedEventIds(Set.of("persisted-event"))
-                .halted(false)
-                .version(10L)
-                .build();
+                        .totalEquity(
+                                new BigDecimal(
+                                        "10000.00000000"
+                                )
+                        )
+                        .dailyPnl(
+                                new BigDecimal("12.50")
+                        )
+                        .maxEquity(
+                                new BigDecimal(
+                                        "10050.00000000"
+                                )
+                        )
+                        .activeReservations(
+                                Map.of(
+                                        reservedOrderId,
+                                        new BigDecimal(
+                                                "100.00000000"
+                                        )
+                                )
+                        )
+                        .processedEventIds(
+                                Set.of(
+                                        "persisted-event"
+                                )
+                        )
+                        .halted(false)
+                        .version(10L)
+                        .build();
 
-        reconciledState = persistedState.toBuilder()
-                .activeReservations(Collections.emptyMap())
-                .balance(new BigDecimal("9900.00000000"))
-                .totalEquity(new BigDecimal("9900.00000000"))
-                .build();
+        reconciledState =
+                persistedState
+                        .toBuilder()
+                        .activeReservations(
+                                Collections.emptyMap()
+                        )
+                        .balance(
+                                new BigDecimal(
+                                        "9900.00000000"
+                                )
+                        )
+                        .totalEquity(
+                                new BigDecimal(
+                                        "9900.00000000"
+                                )
+                        )
+                        .build();
     }
 
     @Test
     void shouldRecoverFromPersistedRiskStateWhenSnapshotIsMissing() {
 
-        RiskStateEntity entity = new RiskStateEntity();
-        entity.setId(RiskStateEntity.SINGLETON_ID);
+        when(
+                stateManager.getState()
+        ).thenReturn(
+                SystemStateManager.SystemState.RISK_RECOVERING
+        );
 
-        when(stateManager.getState())
-                .thenReturn(SystemStateManager.SystemState.RISK_RECOVERING);
+        when(
+                recoveryPort.findLatestSnapshotStateJson(
+                        "GLOBAL"
+                )
+        ).thenReturn(
+                Optional.empty()
+        );
 
-        when(snapshotRepository.findFirstByAggregateIdOrderByLastVersionDesc(
-                RiskStateEntity.SINGLETON_ID
-        )).thenReturn(Optional.empty());
+        when(
+                recoveryPort.findPersistedState(
+                        "GLOBAL"
+                )
+        ).thenReturn(
+                Optional.of(
+                        persistedState
+                )
+        );
 
-        when(riskStateRepository.findById(RiskStateEntity.SINGLETON_ID))
-                .thenReturn(Optional.of(entity));
+        when(
+                recoveryPort.findEventsAfter(
+                        "GLOBAL",
+                        persistedState.getVersion()
+                )
+        ).thenReturn(
+                Collections.emptyList()
+        );
 
-        when(riskStateMapper.toDomain(entity))
-                .thenReturn(persistedState);
+        when(
+                recoveryPort.findAllReservations()
+        ).thenReturn(
+                Collections.emptyList()
+        );
 
-        when(eventRepository.findByAggregateIdAndVersionGreaterThanOrderByVersionAsc(
-                RiskStateEntity.SINGLETON_ID,
-                persistedState.getVersion()
-        )).thenReturn(Collections.emptyList());
+        when(
+                orderRepositoryPort.findOrderIdsByStatusIn(
+                        OrderStateTransitionPolicy
+                                .getReconcilableStatuses()
+                )
+        ).thenReturn(
+                Collections.emptySet()
+        );
 
-        when(reservationLogRepository.findAllByOrderBySequenceIdAsc())
-                .thenReturn(Collections.emptyList());
+        when(
+                exchangeQueryService
+                        .getAvailableBalance("USDT")
+        ).thenReturn(
+                new BigDecimal(
+                        "9900.00000000"
+                )
+        );
 
-        when(orderRepositoryPort.findOrderIdsByStatusIn(
-                OrderStateTransitionPolicy.getReconcilableStatuses()
-        )).thenReturn(Collections.emptySet());
-
-        when(exchangeQueryService.getAvailableBalance("USDT"))
-                .thenReturn(new BigDecimal("9900.00000000"));
-
-        when(riskReconciler.reconcile(
-                any(RiskState.class),
-                any(BigDecimal.class)
-        )).thenReturn(reconciledState);
+        when(
+                riskReconciler.reconcile(
+                        any(RiskState.class),
+                        any(BigDecimal.class)
+                )
+        ).thenReturn(
+                reconciledState
+        );
 
         recoveryService.recover();
 
-        verify(riskStateRepository)
-                .findById(RiskStateEntity.SINGLETON_ID);
-
-        verify(riskStateMapper)
-                .toDomain(entity);
+        verify(
+                recoveryPort
+        ).findPersistedState(
+                "GLOBAL"
+        );
 
         ArgumentCaptor<RiskState> stateCaptor =
-                ArgumentCaptor.forClass(RiskState.class);
+                ArgumentCaptor.forClass(
+                        RiskState.class
+                );
 
-        verify(riskEngine)
-                .initialize(stateCaptor.capture());
+        verify(
+                riskEngine
+        ).initialize(
+                stateCaptor.capture()
+        );
 
         RiskState initializedState =
                 stateCaptor.getValue();
 
-        assertThat(initializedState.getBalance())
-                .isEqualByComparingTo("9900.00000000");
+        assertThat(
+                initializedState.getBalance()
+        ).isEqualByComparingTo(
+                "9900.00000000"
+        );
 
-        assertThat(initializedState.getDailyPnl())
-                .isEqualByComparingTo("12.50");
+        assertThat(
+                initializedState.getDailyPnl()
+        ).isEqualByComparingTo(
+                "12.50"
+        );
 
-        assertThat(initializedState.getVersion())
-                .isEqualTo(10L);
+        assertThat(
+                initializedState.getVersion()
+        ).isEqualTo(10L);
 
-        assertThat(initializedState.isHalted())
-                .isFalse();
+        assertThat(
+                initializedState.isHalted()
+        ).isFalse();
     }
 
     @Test
-    void shouldDeserializeCapitalCreditedEvent() throws Exception {
+    void shouldDeserializeCapitalCreditedEvent()
+            throws Exception {
 
-        when(stateManager.getState())
-                .thenReturn(SystemStateManager.SystemState.RISK_RECOVERING);
+        when(
+                stateManager.getState()
+        ).thenReturn(
+                SystemStateManager.SystemState.RISK_RECOVERING
+        );
 
-        when(snapshotRepository.findFirstByAggregateIdOrderByLastVersionDesc(
-                RiskStateEntity.SINGLETON_ID
-        )).thenReturn(Optional.empty());
+        when(
+                recoveryPort.findLatestSnapshotStateJson(
+                        "GLOBAL"
+                )
+        ).thenReturn(
+                Optional.empty()
+        );
 
-        RiskState baseState = RiskState.builder()
-                .balance(new BigDecimal("9900.00000000"))
-                .totalEquity(new BigDecimal("9900.00000000"))
-                .version(10L)
-                .activeReservations(Collections.emptyMap())
-                .processedEventIds(Collections.emptySet())
-                .halted(false)
-                .build();
+        RiskState baseState =
+                RiskState.builder()
+                        .balance(
+                                new BigDecimal(
+                                        "9900.00000000"
+                                )
+                        )
+                        .totalEquity(
+                                new BigDecimal(
+                                        "9900.00000000"
+                                )
+                        )
+                        .version(10L)
+                        .activeReservations(
+                                Collections.emptyMap()
+                        )
+                        .processedEventIds(
+                                Collections.emptySet()
+                        )
+                        .halted(false)
+                        .build();
 
-        RiskStateEntity entity = new RiskStateEntity();
-        entity.setId(RiskStateEntity.SINGLETON_ID);
+        when(
+                recoveryPort.findPersistedState(
+                        "GLOBAL"
+                )
+        ).thenReturn(
+                Optional.of(
+                        baseState
+                )
+        );
 
-        when(riskStateRepository.findById(RiskStateEntity.SINGLETON_ID))
-                .thenReturn(Optional.of(entity));
-
-        when(riskStateMapper.toDomain(entity))
-                .thenReturn(baseState);
-
-        UUID orderId = UUID.randomUUID();
+        UUID orderId =
+                UUID.randomUUID();
 
         RiskEvent.CapitalCredited credited =
                 new RiskEvent.CapitalCredited(
@@ -219,70 +313,122 @@ class RiskStateRecoveryServiceTest {
                         Instant.now()
                 );
 
-        RiskEventEntity eventEntity =
-                RiskEventEntity.builder()
-                        .eventId(UUID.fromString(credited.eventId()))
-                        .aggregateId(RiskStateEntity.SINGLETON_ID)
-                        .version(11L)
-                        .eventType("CapitalCredited")
-                        .payload("{\"eventId\":\"" + credited.eventId() + "\"}")
-                        .build();
-
-        when(eventRepository
-                .findByAggregateIdAndVersionGreaterThanOrderByVersionAsc(
-                        RiskStateEntity.SINGLETON_ID,
+        when(
+                recoveryPort.findEventsAfter(
+                        "GLOBAL",
                         10L
-                ))
-                .thenReturn(java.util.List.of(eventEntity));
+                )
+        ).thenReturn(
+                java.util.List.of(
+                        new RiskEventRecord(
+                                "CapitalCredited",
+                                "{\"eventId\":\"" +
+                                        credited.eventId() +
+                                        "\"}"
+                        )
+                )
+        );
 
-        when(objectMapper.readValue(
-                eq(eventEntity.getPayload()),
-                eq(RiskEvent.CapitalCredited.class)
-        )).thenReturn(credited);
+        when(
+                objectMapper.readValue(
+                        eq(
+                                "{\"eventId\":\"" +
+                                        credited.eventId() +
+                                        "\"}"
+                        ),
+                        eq(
+                                RiskEvent.CapitalCredited.class
+                        )
+                )
+        ).thenReturn(
+                credited
+        );
 
         RiskState afterCredit =
-                baseState.toBuilder()
-                        .balance(new BigDecimal("9999.35104"))
-                        .totalEquity(new BigDecimal("9999.35104"))
+                baseState
+                        .toBuilder()
+                        .balance(
+                                new BigDecimal(
+                                        "9999.35104"
+                                )
+                        )
+                        .totalEquity(
+                                new BigDecimal(
+                                        "9999.35104"
+                                )
+                        )
                         .build();
 
-        when(reducer.reduce(
-                eq(baseState),
-                eq(credited),
-                eq(true)
-        )).thenReturn(afterCredit);
-
-        when(reservationLogRepository.findAllByOrderBySequenceIdAsc())
-                .thenReturn(Collections.emptyList());
-
-        when(orderRepositoryPort.findOrderIdsByStatusIn(
-                OrderStateTransitionPolicy.getReconcilableStatuses()
-        )).thenReturn(Collections.emptySet());
-
-        when(exchangeQueryService.getAvailableBalance("USDT"))
-                .thenReturn(new BigDecimal("9999.35104"));
-
-        when(riskReconciler.reconcile(
-                any(RiskState.class),
-                any(BigDecimal.class)
-        )).thenReturn(afterCredit);
-
-        recoveryService.recover();
-
-        verify(objectMapper)
-                .readValue(
-                        eq(eventEntity.getPayload()),
-                        eq(RiskEvent.CapitalCredited.class)
-                );
-
-        verify(reducer)
-                .reduce(
+        when(
+                reducer.reduce(
                         eq(baseState),
                         eq(credited),
                         eq(true)
-                );
+                )
+        ).thenReturn(
+                afterCredit
+        );
 
-        verify(riskEngine)
-                .initialize(afterCredit);
+        when(
+                recoveryPort.findAllReservations()
+        ).thenReturn(
+                Collections.emptyList()
+        );
+
+        when(
+                orderRepositoryPort.findOrderIdsByStatusIn(
+                        OrderStateTransitionPolicy
+                                .getReconcilableStatuses()
+                )
+        ).thenReturn(
+                Collections.emptySet()
+        );
+
+        when(
+                exchangeQueryService
+                        .getAvailableBalance("USDT")
+        ).thenReturn(
+                new BigDecimal(
+                        "9999.35104"
+                )
+        );
+
+        when(
+                riskReconciler.reconcile(
+                        any(RiskState.class),
+                        any(BigDecimal.class)
+                )
+        ).thenReturn(
+                afterCredit
+        );
+
+        recoveryService.recover();
+
+        verify(
+                objectMapper
+        ).readValue(
+                eq(
+                        "{\"eventId\":\"" +
+                                credited.eventId() +
+                                "\"}"
+                ),
+                eq(
+                        RiskEvent.CapitalCredited.class
+                )
+        );
+
+        verify(
+                reducer
+        ).reduce(
+                eq(baseState),
+                eq(credited),
+                eq(true)
+        );
+
+        verify(
+                riskEngine
+        ).initialize(
+                afterCredit
+        );
     }
 }

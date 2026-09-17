@@ -10,6 +10,7 @@ import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.infrastructure.execution.ExecutionLockService;
+import com.tradingbot.infrastructure.outbox.OutboxEventMapper;
 import com.tradingbot.infrastructure.outbox.OutboxService;
 import com.tradingbot.infrastructure.persistence.entity.OutboxEventEntity;
 import com.tradingbot.tracing.ExecutionLogger;
@@ -24,7 +25,6 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -106,12 +106,6 @@ class ExchangeTimeoutRecoveryTest {
                         signalId
                 );
 
-        /*
-         * Устанавливаем состояние, которое реально получает
-         * Order после claim:
-         *
-         * PENDING_EXECUTION -> EXECUTING
-         */
         ReflectionTestUtils.setField(
                 order,
                 "executionId",
@@ -163,14 +157,6 @@ class ExchangeTimeoutRecoveryTest {
                         )
                         .build();
 
-        /*
-         * Первый заход:
-         *
-         * claim успешен -> EXECUTING
-         * exchange кидает timeout
-         *
-         * Сам handler НЕ должен делать commit.
-         */
         when(
                 orderExecutionClaimService.claim(
                         any(),
@@ -192,12 +178,9 @@ class ExchangeTimeoutRecoveryTest {
         );
 
         handler.consume(
-                event
+                OutboxEventMapper.toDomain(event)
         );
 
-        /*
-         * Claim произошёл.
-         */
         verify(
                 orderExecutionClaimService,
                 times(1)
@@ -207,9 +190,6 @@ class ExchangeTimeoutRecoveryTest {
                 any()
         );
 
-        /*
-         * Биржа была вызвана ровно один раз.
-         */
         verify(
                 executionPort,
                 times(1)
@@ -217,10 +197,6 @@ class ExchangeTimeoutRecoveryTest {
                 eq(order)
         );
 
-        /*
-         * После timeout commit результата исполнения
-         * НЕ должен происходить.
-         */
         verify(
                 orderExecutionCommitService,
                 never()
@@ -232,16 +208,6 @@ class ExchangeTimeoutRecoveryTest {
                 anyString()
         );
 
-        /*
-         * Сам Order остаётся EXECUTING.
-         *
-         * Это ожидаемо:
-         * handler не имеет права самовольно переводить
-         * EXECUTING -> UNKNOWN/ERROR после неопределённого
-         * результата внешнего exchange.
-         *
-         * Дальнейшее состояние определяет reconciliation/watchdog.
-         */
         assertEquals(
                 OrderStatus.EXECUTING,
                 order.getStatus()
@@ -262,16 +228,7 @@ class ExchangeTimeoutRecoveryTest {
         );
 
         /*
-         * ============================================================
          * SECOND PASS
-         * ============================================================
-         *
-         * Повторная обработка того же ORDER_CREATED после того,
-         * как execution уже был claimed, не должна снова отправить
-         * ордер на биржу.
-         *
-         * Имитируем это так же, как работает recovery:
-         * claim возвращает Optional.empty().
          */
         when(
                 orderExecutionClaimService.claim(
@@ -284,12 +241,9 @@ class ExchangeTimeoutRecoveryTest {
         );
 
         handler.consume(
-                event
+                OutboxEventMapper.toDomain(event)
         );
 
-        /*
-         * Claim был вызван второй раз.
-         */
         verify(
                 orderExecutionClaimService,
                 times(2)
@@ -299,9 +253,6 @@ class ExchangeTimeoutRecoveryTest {
                 any()
         );
 
-        /*
-         * Но exchange получил только ОДИН placement.
-         */
         verify(
                 executionPort,
                 times(1)
@@ -309,9 +260,6 @@ class ExchangeTimeoutRecoveryTest {
                 eq(order)
         );
 
-        /*
-         * Commit по-прежнему не выполнялся.
-         */
         verify(
                 orderExecutionCommitService,
                 never()
@@ -323,10 +271,6 @@ class ExchangeTimeoutRecoveryTest {
                 anyString()
         );
 
-        /*
-         * Handler не должен напрямую сохранять Order
-         * в timeout-path.
-         */
         verify(
                 orderRepository,
                 never()
