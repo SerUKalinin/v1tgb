@@ -6,6 +6,7 @@ import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.persistence.adapter.OrderRepositoryAdapter;
+import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.mapper.OrderMapper;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.testutil.TestOrderFactory;
@@ -15,16 +16,25 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
-import java.util.*;
-import java.util.concurrent.*;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.mockito.Mockito.mock;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -41,232 +51,530 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
     private OrderMapper orderMapper;
 
     private TestOrderFactory orderFactory;
-    private ExecutionContext mockCtx;
 
     @BeforeEach
     void setUp() {
-        orderFactory = new TestOrderFactory(orderRepository, orderMapper);
-        mockCtx = mock(ExecutionContext.class);
+        orderFactory = new TestOrderFactory(
+                orderRepository,
+                orderMapper
+        );
     }
 
     private Order persistOrder(OrderStatus status) {
         return orderFactory.create(status);
     }
 
-    // =========================
-    // UTILS
-    // =========================
+    private ExecutionContext contextOf(Order order) {
+        return ExecutionContext.of(order);
+    }
 
-    private void await(CountDownLatch latch) {
+    private void await(
+            CountDownLatch latch,
+            Duration timeout,
+            String message
+    ) {
         try {
-            latch.await();
+            boolean completed = latch.await(
+                    timeout.toMillis(),
+                    TimeUnit.MILLISECONDS
+            );
+
+            Assertions.assertThat(completed)
+                    .as(message)
+                    .isTrue();
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RuntimeException(e);
+            throw new AssertionError(
+                    "Interrupted while waiting for concurrency barrier",
+                    e
+            );
         }
     }
 
-    // =========================
-    // TESTS
-    // =========================
+    private void shutdown(ExecutorService executor) {
+        executor.shutdownNow();
+
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                throw new AssertionError(
+                        "Executor did not terminate within timeout"
+                );
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(
+                    "Interrupted while shutting down executor",
+                    e
+            );
+        }
+    }
+
+    private void rethrowFutureFailure(Future<?> future) {
+        try {
+            future.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(
+                    "Interrupted while waiting for concurrent worker",
+                    e
+            );
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+
+            if (cause instanceof AssertionError assertionError) {
+                throw assertionError;
+            }
+
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+
+            throw new AssertionError(
+                    "Concurrent worker failed",
+                    cause
+            );
+        }
+    }
+
+    // ============================================================
+    // 1. EXECUTION MUST WIN AGAINST RECONCILIATION
+    // ============================================================
 
     @Test
     void executionAlwaysWinsReconciliationRace() {
-        Order entity = persistOrder(OrderStatus.PENDING_EXECUTION);
 
-        CountDownLatch reconStart = new CountDownLatch(1);
-        CountDownLatch finished = new CountDownLatch(2);
+        Order persistedOrder =
+                persistOrder(OrderStatus.PENDING_EXECUTION);
 
-        AtomicBoolean reconClaimed = new AtomicBoolean(false);
+        UUID orderId = persistedOrder.getId();
 
-        ExecutorService executor = Executors.newFixedThreadPool(2);
+        ExecutionContext executionContext =
+                contextOf(persistedOrder);
+
+        CountDownLatch executionClaimed =
+                new CountDownLatch(1);
+
+        AtomicBoolean reconciliationClaimed =
+                new AtomicBoolean(false);
+
+        ExecutorService executor =
+                Executors.newFixedThreadPool(2);
+
+        Future<?> executionFuture = executor.submit(() -> {
+
+            Optional<Order> executionOrder =
+                    orderRepositoryAdapter.claimForExecution(
+                            orderId,
+                            executionContext
+                    );
+
+            Assertions.assertThat(executionOrder)
+                    .as("execution worker must acquire PENDING_EXECUTION order")
+                    .isPresent();
+
+            /*
+             * Важно:
+             * claimForExecution() уже завершил REQUIRED transaction
+             * к моменту возврата из метода.
+             *
+             * Следовательно после countDown row уже находится
+             * в EXECUTING и ownership принадлежит execution worker.
+             */
+            executionClaimed.countDown();
+
+            Order order = executionOrder.orElseThrow();
+
+            order.fill(
+                    executionContext,
+                    "exchange-order-execution",
+                    BigDecimal.ONE,
+                    new BigDecimal("10001")
+            );
+
+            orderRepositoryAdapter.save(order);
+        });
+
+        Future<?> reconciliationFuture = executor.submit(() -> {
+
+            await(
+                    executionClaimed,
+                    Duration.ofSeconds(10),
+                    "execution worker did not claim order in time"
+            );
+
+            Optional<Order> reconciliationOrder =
+                    orderRepositoryAdapter.claimForReconciliation(orderId);
+
+            reconciliationClaimed.set(
+                    reconciliationOrder.isPresent()
+            );
+        });
 
         try {
-            executor.submit(() -> {
-                Optional<Order> executionOrder =
-                        orderRepositoryAdapter.claimForExecution(entity.getId(), mockCtx);
-
-                Assertions.assertThat(executionOrder).isPresent();
-
-                Order order = executionOrder.get();
-
-                reconStart.countDown();
-
-                order.fill(mockCtx, "ex-1", BigDecimal.ONE, new BigDecimal("10001"));
-                orderRepositoryAdapter.save(order);
-
-                finished.countDown();
-            });
-
-            executor.submit(() -> {
-                await(reconStart);
-
-                Optional<Order> reconOrder =
-                        orderRepositoryAdapter.claimForReconciliation(entity.getId());
-
-                reconClaimed.set(reconOrder.isPresent());
-
-                reconOrder.ifPresent(o -> {
-                    o.markAsRejected(mockCtx, "race");
-                    try {
-                        orderRepositoryAdapter.save(o);
-                    } catch (Exception ignored) {}
-                });
-
-                finished.countDown();
-            });
-
-            await(finished);
-
+            rethrowFutureFailure(executionFuture);
+            rethrowFutureFailure(reconciliationFuture);
         } finally {
-            executor.shutdownNow();
+            shutdown(executor);
         }
 
         Order finalState =
-                orderRepositoryAdapter.findById(entity.getId()).orElseThrow();
+                orderRepositoryAdapter.findById(orderId)
+                        .orElseThrow();
 
-        Assertions.assertThat(finalState.getStatus())
+        Assertions.assertThat(
+                        finalState.getStatus()
+                )
+                .as("execution worker must finish the order")
                 .isEqualTo(OrderStatus.FILLED);
 
-        Assertions.assertThat(reconClaimed.get())
+        Assertions.assertThat(
+                        reconciliationClaimed.get()
+                )
+                .as("reconciliation must not steal an active execution")
                 .isFalse();
+
+        Assertions.assertThat(
+                        finalState.getExecutionId()
+                )
+                .isEqualTo(
+                        executionContext.attempt().executionId()
+                );
     }
+
+    // ============================================================
+    // 2. REAL @VERSION STALE ENTITY MUST BE REJECTED
+    // ============================================================
 
     @Test
     void staleVersionReconciliationIsRejected() {
-        Order entity = persistOrder(OrderStatus.PENDING_EXECUTION);
 
-        Order staleSnapshot =
-                orderRepositoryAdapter.findById(entity.getId()).orElseThrow();
+        Order persistedOrder =
+                persistOrder(OrderStatus.PENDING_EXECUTION);
 
-        ExecutorService executor = Executors.newSingleThreadExecutor();
+        UUID orderId = persistedOrder.getId();
 
-        try {
-            executor.submit(() -> {
-                Order executionOrder =
-                        orderRepositoryAdapter.claimForExecution(entity.getId(), mockCtx)
-                                .orElseThrow();
+        ExecutionContext executionContext =
+                contextOf(persistedOrder);
 
-                executionOrder.fill(mockCtx, "ex-2", BigDecimal.ONE, new BigDecimal("10002"));
-                orderRepositoryAdapter.save(executionOrder);
-            }).get();
+        /*
+         * Получаем detached persistence snapshot
+         * с исходной @Version.
+         */
+        OrderEntity staleEntity =
+                orderRepository.findById(orderId)
+                        .orElseThrow();
 
-        } catch (Exception e) {
-            throw new AssertionError(e);
-        } finally {
-            executor.shutdownNow();
-        }
+        Long staleVersion =
+                staleEntity.getVersion();
 
-        // корректное поведение — state machine reject
-        Assertions.assertThatThrownBy(() -> {
-            staleSnapshot.markAsRejected(mockCtx, "stale");
-        }).isInstanceOf(IllegalStateException.class);
+        /*
+         * Execution worker меняет Order.
+         *
+         * Hibernate увеличивает @Version при flush.
+         */
+        Order executionOrder =
+                orderRepositoryAdapter.claimForExecution(
+                                orderId,
+                                executionContext
+                        )
+                        .orElseThrow();
+
+        Assertions.assertThat(
+                        executionOrder.getStatus()
+                )
+                .isEqualTo(OrderStatus.EXECUTING);
+
+        /*
+         * Не используем executionOrder.getVersion():
+         * это domain snapshot, созданный до Hibernate version increment.
+         *
+         * Читаем authoritative persistence state из БД.
+         */
+        OrderEntity currentEntity =
+                orderRepository.findById(orderId)
+                        .orElseThrow();
+
+        Long currentVersion =
+                currentEntity.getVersion();
+
+        Assertions.assertThat(currentVersion)
+                .as("Hibernate @Version must increase after execution claim")
+                .isGreaterThan(staleVersion);
+
+        /*
+         * Теперь stale detached entity пытается записаться
+         * с устаревшей @Version.
+         */
+        staleEntity.setStatus(OrderStatus.REJECTED);
+        staleEntity.setUpdatedAt(Instant.now());
+
+        Assertions.assertThatThrownBy(
+                        () -> orderRepository.saveAndFlush(staleEntity)
+                )
+                .as(
+                        "stale persistence snapshot must be rejected by @Version"
+                )
+                .isInstanceOf(
+                        ObjectOptimisticLockingFailureException.class
+                );
     }
+
+    // ============================================================
+    // 3. TERMINAL STATES ARE IMMUTABLE
+    // ============================================================
 
     @Test
     void terminalStatesAreImmutableUnderRace() {
-        Order entity = persistOrder(OrderStatus.FILLED);
+
+        Order persistedOrder =
+                persistOrder(OrderStatus.FILLED);
+
+        ExecutionContext context =
+                contextOf(persistedOrder);
 
         Order terminalOrder =
-                orderRepositoryAdapter.findById(entity.getId()).orElseThrow();
+                orderRepositoryAdapter.findById(
+                                persistedOrder.getId()
+                        )
+                        .orElseThrow();
 
-        Assertions.assertThatThrownBy(() ->
-                terminalOrder.markAsRejected(mockCtx, "illegal")
-        );
+        Assertions.assertThatThrownBy(
+                        () -> terminalOrder.markAsRejected(
+                                context,
+                                "illegal"
+                        )
+                )
+                .as("FILLED must remain terminal")
+                .isInstanceOf(IllegalStateException.class);
 
         Order finalState =
-                orderRepositoryAdapter.findById(entity.getId()).orElseThrow();
+                orderRepositoryAdapter.findById(
+                                persistedOrder.getId()
+                        )
+                        .orElseThrow();
 
-        Assertions.assertThat(finalState.getStatus())
+        Assertions.assertThat(
+                        finalState.getStatus()
+                )
                 .isEqualTo(OrderStatus.FILLED);
     }
 
+    // ============================================================
+    // 4. UNKNOWN CONCURRENT FINALIZERS
+    // ============================================================
+
     @Test
     void unknownLifecycleWithConcurrentFinalizers() {
-        Order entity = persistOrder(OrderStatus.UNKNOWN);
 
-        CountDownLatch start = new CountDownLatch(1);
+        Order persistedOrder =
+                persistOrder(OrderStatus.UNKNOWN);
 
-        ExecutorService executor = Executors.newFixedThreadPool(2);
+        UUID orderId =
+                persistedOrder.getId();
 
-        List<Future<?>> futures = new ArrayList<>();
+        CountDownLatch start =
+                new CountDownLatch(1);
 
-        futures.add(executor.submit(() -> {
-            await(start);
+        AtomicInteger successfulFinalizations =
+                new AtomicInteger(0);
 
-            Order executionOrder =
-                    orderRepositoryAdapter.findById(entity.getId()).orElseThrow();
+        ExecutorService executor =
+                Executors.newFixedThreadPool(2);
 
-            executionOrder.fill(mockCtx, "ex-3", BigDecimal.ONE, new BigDecimal("10003"));
-            orderRepositoryAdapter.save(executionOrder);
-        }));
+        List<Future<?>> futures =
+                new ArrayList<>();
 
-        futures.add(executor.submit(() -> {
-            await(start);
+        /*
+         * Worker #1: exchange reconciliation result = FILLED
+         */
+        futures.add(
+                executor.submit(() -> {
 
-            Order reconOrder =
-                    orderRepositoryAdapter.findById(entity.getId()).orElseThrow();
+                    await(
+                            start,
+                            Duration.ofSeconds(10),
+                            "FILLED worker start barrier timed out"
+                    );
 
-            reconOrder.markAsRejected(mockCtx, "exchange");
+                    Order order =
+                            orderRepositoryAdapter.findById(orderId)
+                                    .orElseThrow();
 
-            try {
-                orderRepositoryAdapter.save(reconOrder);
-            } catch (Exception ignored) {}
-        }));
+                    ExecutionContext context =
+                            contextOf(order);
+
+                    order.fill(
+                            context,
+                            "exchange-order-filled",
+                            BigDecimal.ONE,
+                            new BigDecimal("10003")
+                    );
+
+                    orderRepositoryAdapter.save(order);
+
+                    successfulFinalizations.incrementAndGet();
+                })
+        );
+
+        /*
+         * Worker #2: exchange reconciliation result = REJECTED
+         */
+        futures.add(
+                executor.submit(() -> {
+
+                    await(
+                            start,
+                            Duration.ofSeconds(10),
+                            "REJECTED worker start barrier timed out"
+                    );
+
+                    Order order =
+                            orderRepositoryAdapter.findById(orderId)
+                                    .orElseThrow();
+
+                    ExecutionContext context =
+                            contextOf(order);
+
+                    order.markAsRejected(
+                            context,
+                            "exchange"
+                    );
+
+                    orderRepositoryAdapter.save(order);
+
+                    successfulFinalizations.incrementAndGet();
+                })
+        );
 
         start.countDown();
 
-        for (Future<?> f : futures) {
-            try {
-                f.get();
-            } catch (Exception ignored) {}
+        try {
+
+            for (Future<?> future : futures) {
+                rethrowFutureFailure(future);
+            }
+
+        } finally {
+            shutdown(executor);
         }
 
-        executor.shutdownNow();
-
         Order finalState =
-                orderRepositoryAdapter.findById(entity.getId()).orElseThrow();
+                orderRepositoryAdapter.findById(orderId)
+                        .orElseThrow();
 
-        Assertions.assertThat(finalState.getStatus())
-                .isIn(OrderStatus.FILLED, OrderStatus.REJECTED);
+        /*
+         * Оба перехода UNKNOWN -> FILLED и
+         * UNKNOWN -> REJECTED разрешены state machine.
+         *
+         * Конкретный победитель зависит от serialisation
+         * двух finalizer transactions.
+         */
+        Assertions.assertThat(
+                        finalState.getStatus()
+                )
+                .as(
+                        "UNKNOWN must not remain unresolved after concurrent finalizers"
+                )
+                .isIn(
+                        OrderStatus.FILLED,
+                        OrderStatus.REJECTED
+                );
+
+        Assertions.assertThat(
+                        successfulFinalizations.get()
+                )
+                .isGreaterThanOrEqualTo(1);
     }
+
+    // ============================================================
+    // 5. ONLY ONE EXECUTION WORKER MAY CLAIM THE ORDER
+    // ============================================================
 
     @Test
     void doubleExecutionAttemptOnlyOneClaimSucceeds() {
-        Order entity = persistOrder(OrderStatus.PENDING_EXECUTION);
+
+        Order persistedOrder =
+                persistOrder(OrderStatus.PENDING_EXECUTION);
+
+        UUID orderId =
+                persistedOrder.getId();
+
+        ExecutionContext executionContext =
+                contextOf(persistedOrder);
 
         int threads = 5;
 
         ExecutorService executor =
                 Executors.newFixedThreadPool(threads);
 
-        CountDownLatch latch = new CountDownLatch(1);
+        CountDownLatch start =
+                new CountDownLatch(1);
 
-        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger successCount =
+                new AtomicInteger(0);
 
-        List<Future<?>> futures = new ArrayList<>();
+        List<Future<?>> futures =
+                new ArrayList<>();
 
         for (int i = 0; i < threads; i++) {
-            futures.add(executor.submit(() -> {
-                await(latch);
 
-                if (orderRepositoryAdapter.claimForExecution(entity.getId(), mockCtx).isPresent()) {
-                    successCount.incrementAndGet();
-                }
-            }));
+            futures.add(
+                    executor.submit(() -> {
+
+                        await(
+                                start,
+                                Duration.ofSeconds(10),
+                                "execution claim barrier timed out"
+                        );
+
+                        Optional<Order> claimed =
+                                orderRepositoryAdapter.claimForExecution(
+                                        orderId,
+                                        executionContext
+                                );
+
+                        if (claimed.isPresent()) {
+                            successCount.incrementAndGet();
+                        }
+                    })
+            );
         }
 
-        latch.countDown();
+        start.countDown();
 
-        for (Future<?> f : futures) {
-            try {
-                f.get();
-            } catch (Exception ignored) {}
+        try {
+
+            for (Future<?> future : futures) {
+                rethrowFutureFailure(future);
+            }
+
+        } finally {
+            shutdown(executor);
         }
 
-        executor.shutdownNow();
-
-        Assertions.assertThat(successCount.get())
+        Assertions.assertThat(
+                        successCount.get()
+                )
+                .as(
+                        "exactly one execution worker may claim one Order"
+                )
                 .isEqualTo(1);
+
+        Order finalState =
+                orderRepositoryAdapter.findById(orderId)
+                        .orElseThrow();
+
+        Assertions.assertThat(
+                        finalState.getStatus()
+                )
+                .isEqualTo(OrderStatus.EXECUTING);
+
+        Assertions.assertThat(
+                        finalState.getExecutionId()
+                )
+                .isEqualTo(
+                        executionContext.attempt().executionId()
+                );
     }
 }
