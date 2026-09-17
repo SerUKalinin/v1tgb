@@ -41,7 +41,7 @@ class RiskIdempotencyTest extends BaseIntegrationTest {
 
         ExecutionContext reserveContext = new ExecutionContext(
                 IdentityContext.of(signalId),
-                ExecutionAttemptContext.firstAttempt(signalId),
+                ExecutionAttemptContext.firstAttemptForOrder(orderId),
                 BusinessContext.of(orderId.toString())
         );
 
@@ -76,7 +76,7 @@ class RiskIdempotencyTest extends BaseIntegrationTest {
         // 2. Первое освобождение — успешно
         ExecutionContext releaseContext = new ExecutionContext(
                 IdentityContext.of(signalId),
-                ExecutionAttemptContext.firstAttempt(signalId),
+                ExecutionAttemptContext.firstAttemptForOrder(orderId),
                 BusinessContext.of(orderId.toString())
         );
 
@@ -107,7 +107,7 @@ class RiskIdempotencyTest extends BaseIntegrationTest {
         //    не должно повторно менять баланс.
         ExecutionContext duplicateContext = new ExecutionContext(
                 IdentityContext.of(signalId),
-                ExecutionAttemptContext.firstAttempt(signalId),
+                ExecutionAttemptContext.firstAttemptForOrder(orderId),
                 BusinessContext.of(orderId.toString())
         );
 

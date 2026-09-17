@@ -6,7 +6,9 @@ import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.tracing.BusinessContext;
+import com.tradingbot.tracing.ExecutionAttemptContext;
 import com.tradingbot.tracing.ExecutionContext;
+import com.tradingbot.tracing.IdentityContext;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -27,8 +29,12 @@ class OutboxIdempotencyIntegrationTest extends BaseIntegrationTest {
     void testDuplicatePublicationDoesNotCreateDuplicateEvents() {
         UUID signalId = UUID.randomUUID();
         UUID orderId = UUID.randomUUID();
-        ExecutionContext context = ExecutionContext.of(signalId)
-                .withBusiness(BusinessContext.of(orderId.toString()));
+        ExecutionContext context =
+                ExecutionContext.of(
+                        IdentityContext.of(signalId),
+                        ExecutionAttemptContext.firstAttemptForOrder(orderId),
+                        BusinessContext.of(orderId.toString())
+                );
 
         Order payload = Order.createPendingExecution(
                 orderId,

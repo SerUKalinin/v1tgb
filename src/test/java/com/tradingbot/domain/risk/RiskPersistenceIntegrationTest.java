@@ -53,7 +53,7 @@ class RiskPersistenceIntegrationTest extends BaseIntegrationTest {
         // 1. Reserve capital
         ExecutionContext reserveContext = new ExecutionContext(
                 IdentityContext.of(signalId),
-                ExecutionAttemptContext.firstAttempt(signalId),
+                ExecutionAttemptContext.firstAttemptForOrder(orderId),
                 BusinessContext.of(orderId.toString())
         );
         RiskDecision decision = riskEngine.reserve(reserveContext, reserveAmount);
@@ -75,7 +75,7 @@ class RiskPersistenceIntegrationTest extends BaseIntegrationTest {
         BigDecimal releaseAmount = new BigDecimal("500.00");
         ExecutionContext releaseContext = new ExecutionContext(
                 IdentityContext.of(signalId),
-                ExecutionAttemptContext.firstAttempt(signalId),
+                ExecutionAttemptContext.firstAttemptForOrder(orderId),
                 BusinessContext.of(orderId.toString())
         );
         riskEngine.release(releaseContext, releaseAmount, "Test release");
@@ -92,7 +92,7 @@ class RiskPersistenceIntegrationTest extends BaseIntegrationTest {
         // 5. Test Double Release (Idempotency)
         ExecutionContext duplicateContext = new ExecutionContext(
                 IdentityContext.of(signalId),
-                ExecutionAttemptContext.firstAttempt(signalId),
+                ExecutionAttemptContext.firstAttemptForOrder(orderId),
                 BusinessContext.of(orderId.toString())
         );
         riskEngine.release(duplicateContext, releaseAmount, "Double release test");

@@ -33,6 +33,8 @@ class StateInvariantTest {
                 .build();
 
         UUID signalId = UUID.randomUUID();
+        UUID orderId = UUID.randomUUID();
+
         BigDecimal qty = new BigDecimal("0.1");
         BigDecimal price = new BigDecimal("60000");
 
@@ -54,7 +56,7 @@ class StateInvariantTest {
         // 3. TradeCreatedEvent — полная сигнатура с контекстом
         TradeCreatedEvent event = new TradeCreatedEvent(
                 IdentityContext.of(signalId),
-                ExecutionAttemptContext.firstAttempt(signalId),
+                ExecutionAttemptContext.firstAttemptForOrder(orderId),
                 BusinessContext.of(UUID.randomUUID().toString()),
                 UUID.randomUUID(),        // tradeId
                 UUID.randomUUID(),        // orderId

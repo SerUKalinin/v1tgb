@@ -93,18 +93,6 @@ public record ExecutionContext(
         );
     }
 
-    @Deprecated(
-            since = "Use context from SignalEvent or Outbox recovery"
-    )
-    public static ExecutionContext of(UUID signalId) {
-
-        return new ExecutionContext(
-                IdentityContext.of(signalId),
-                ExecutionAttemptContext.of(signalId),
-                BusinessContext.empty()
-        );
-    }
-
     public ExecutionContext withBusiness(
             BusinessContext business
     ) {

@@ -84,7 +84,7 @@ class RiskServiceTest {
 
         return new ExecutionContext(
                 IdentityContext.of(signalId),
-                ExecutionAttemptContext.firstAttempt(signalId),
+                ExecutionAttemptContext.firstAttemptForOrder(orderId),
                 BusinessContext.of(orderId.toString())
         );
     }
