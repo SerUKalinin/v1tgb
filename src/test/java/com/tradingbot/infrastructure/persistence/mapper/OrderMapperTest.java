@@ -38,6 +38,12 @@ class OrderMapperTest {
                 .averagePrice(avgPrice)
                 .strategyId("STRAT-1")
                 .signalId(UUID.randomUUID())
+                .executionId(
+                        com.tradingbot.tracing.IdentityFactory.deriveExecution(
+                                orderId,
+                                1
+                        )
+                )
                 .build();
 
         // When: Entity -> Domain

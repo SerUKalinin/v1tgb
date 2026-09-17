@@ -41,14 +41,11 @@ class ReconciliationRejectedCanceledTest {
     @BeforeEach
     void setUp() {
 
-        orderRepository =
-                mock(OrderRepositoryPort.class);
+        orderRepository = mock(OrderRepositoryPort.class);
 
-        exchangeQueryService =
-                mock(ExchangeOrderQueryService.class);
+        exchangeQueryService = mock(ExchangeOrderQueryService.class);
 
-        orderCompensationService =
-                mock(OrderCompensationService.class);
+        orderCompensationService = mock(OrderCompensationService.class);
 
         reconciliationService =
                 new ReconciliationService(
@@ -69,11 +66,8 @@ class ReconciliationRejectedCanceledTest {
     void shouldRecoverUnknownOrderToRejectedAndReleaseReservation()
             throws Exception {
 
-        UUID orderId =
-                UUID.randomUUID();
-
-        UUID signalId =
-                UUID.randomUUID();
+        UUID orderId = UUID.randomUUID();
+        UUID signalId = UUID.randomUUID();
 
         Order order =
                 Order.createPendingExecution(
@@ -89,14 +83,13 @@ class ReconciliationRejectedCanceledTest {
                 );
 
         /*
-         * Реальное состояние после:
+         * Реальный lifecycle:
          *
          * PENDING_EXECUTION
          * -> EXECUTING
          * -> UNKNOWN
          *
-         * Делаем executionId детерминированным через доменную
-         * identity chain.
+         * executionId является immutable lifecycle identity.
          */
         UUID executionId =
                 IdentityFactory.deriveExecution(
@@ -113,26 +106,31 @@ class ReconciliationRejectedCanceledTest {
         ExecutionContext context =
                 ExecutionContext.of(order);
 
-        order.markExecuting(
-                context
-        );
+        order.markExecuting(context);
 
-        order.markAsUnknown(
-                context
-        );
+        order.markAsUnknown(context);
 
         assertEquals(
                 OrderStatus.UNKNOWN,
                 order.getStatus()
         );
 
+        /*
+         * Реальный claimForReconciliation() возвращает order
+         * уже после transition:
+         *
+         * UNKNOWN -> RECOVERING
+         *
+         * Unit-test должен моделировать именно этот контракт.
+         */
         when(
                 orderRepository.claimForReconciliation(
                         eq(orderId)
                 )
-        ).thenReturn(
-                Optional.of(order)
-        );
+        ).thenAnswer(invocation -> {
+            order.markRecovering(context);
+            return Optional.of(order);
+        });
 
         when(
                 exchangeQueryService.getOrderStatus(
@@ -160,7 +158,7 @@ class ReconciliationRejectedCanceledTest {
         );
 
         /*
-         * Execution identity cannot disappear during recovery.
+         * Execution identity must remain immutable.
          */
         assertEquals(
                 executionId,
@@ -174,11 +172,7 @@ class ReconciliationRejectedCanceledTest {
         );
 
         /*
-         * Reservation must be released/compensated.
-         *
-         * Для чистого rejected order executedQuantity обычно null,
-         * поэтому проверяем сам факт вызова compensation service
-         * с текущим доменным остатком.
+         * Rejected order must release its reservation.
          */
         verify(
                 orderCompensationService,
@@ -189,21 +183,20 @@ class ReconciliationRejectedCanceledTest {
         );
 
         /*
-         * Order state must be persisted exactly once after the
-         * reconciliation action.
+         * claimForReconciliation() owns its own internal persistence.
          *
-         * Первый save — UNKNOWN -> RECOVERING.
-         * Второй save — RECOVERING -> REJECTED.
+         * ReconciliationService itself performs one final save()
+         * after the exchange result is applied.
          */
         verify(
                 orderRepository,
-                times(2)
+                times(1)
         ).save(
                 eq(order)
         );
 
         /*
-         * Биржа была опрошена ровно один раз.
+         * Exchange must be queried exactly once.
          */
         verify(
                 exchangeQueryService,
@@ -217,11 +210,8 @@ class ReconciliationRejectedCanceledTest {
     void shouldRecoverUnknownOrderToCanceledAndReleaseReservation()
             throws Exception {
 
-        UUID orderId =
-                UUID.randomUUID();
-
-        UUID signalId =
-                UUID.randomUUID();
+        UUID orderId = UUID.randomUUID();
+        UUID signalId = UUID.randomUUID();
 
         Order order =
                 Order.createPendingExecution(
@@ -251,26 +241,28 @@ class ReconciliationRejectedCanceledTest {
         ExecutionContext context =
                 ExecutionContext.of(order);
 
-        order.markExecuting(
-                context
-        );
+        order.markExecuting(context);
 
-        order.markAsUnknown(
-                context
-        );
+        order.markAsUnknown(context);
 
         assertEquals(
                 OrderStatus.UNKNOWN,
                 order.getStatus()
         );
 
+        /*
+         * Реальный claim:
+         *
+         * UNKNOWN -> RECOVERING
+         */
         when(
                 orderRepository.claimForReconciliation(
                         eq(orderId)
                 )
-        ).thenReturn(
-                Optional.of(order)
-        );
+        ).thenAnswer(invocation -> {
+            order.markRecovering(context);
+            return Optional.of(order);
+        });
 
         when(
                 exchangeQueryService.getOrderStatus(
@@ -296,6 +288,9 @@ class ReconciliationRejectedCanceledTest {
                 "Canceled exchange result must produce CANCELED order"
         );
 
+        /*
+         * Execution identity must remain immutable.
+         */
         assertEquals(
                 executionId,
                 order.getExecutionId(),
@@ -303,7 +298,7 @@ class ReconciliationRejectedCanceledTest {
         );
 
         /*
-         * Reservation compensation обязана быть вызвана.
+         * Reservation compensation must be called exactly once.
          */
         verify(
                 orderCompensationService,
@@ -314,16 +309,18 @@ class ReconciliationRejectedCanceledTest {
         );
 
         /*
-         * UNKNOWN -> RECOVERING
-         * RECOVERING -> CANCELED
+         * One final save() by ReconciliationService.
          */
         verify(
                 orderRepository,
-                times(2)
+                times(1)
         ).save(
                 eq(order)
         );
 
+        /*
+         * Exchange must be queried exactly once.
+         */
         verify(
                 exchangeQueryService,
                 times(1)

@@ -40,7 +40,10 @@ class OrderRejectionReasonIntegrationTest extends BaseIntegrationTest {
         );
 
         // 2. Переводим в REJECTED
-        order.markAsRejected(ExecutionContext.of(signalId), reason);
+        order.markAsRejected(
+                ExecutionContext.of(order),
+                reason
+        );
 
         // 3. Сохраняем
         OrderEntity entity = orderMapper.toEntity(order);

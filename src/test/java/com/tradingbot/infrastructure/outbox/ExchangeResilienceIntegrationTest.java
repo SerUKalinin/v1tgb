@@ -45,7 +45,10 @@ class ExchangeResilienceIntegrationTest extends BaseIntegrationTest {
                 .status(OutboxStatus.NEW)
                 .retryCount(0)
                 .attemptCount(0)
-                .build();        outboxEventRepository.saveAndFlush(event);
+                .eventId(eventId)
+                .build();
+
+        outboxEventRepository.saveAndFlush(event);
 
         // First call fails, second succeeds
         doThrow(new RuntimeException("Exchange Down"))

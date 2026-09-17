@@ -43,6 +43,7 @@ class OutboxCrashResilienceTest extends BaseIntegrationTest {
                 .eventType("ORDER_CREATED")
                 .payload("{}")
                 .status(OutboxStatus.NEW)
+                .eventId(eventId)
                 .build();
         outboxRepository.saveAndFlush(event);
 
