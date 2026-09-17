@@ -28,29 +28,51 @@ public class BinanceMarketDataClient {
     /**
      * Получает свечные данные с Binance.
      *
-     * <p>Выполняет HTTP-запрос к endpoint {@code /api/v3/klines} и преобразует
-     * результат в список доменных свечей.
+     * <p>Параметр {@code limit} определяет количество свечей,
+     * которые необходимо запросить.
      *
-     * @param symbol   торговый символ (например, BTCUSDT)
-     * @param interval свечной интервал (например, 1m, 5m, 1h)
+     * <p>Признак {@code isClosed} определяется на основании
+     * серверного времени Binance и closeTime конкретной свечи.
+     *
+     * @param symbol   торговый символ (например BTCUSDT)
+     * @param interval свечной интервал (например 1m, 5m, 1h)
      * @param limit    количество свечей для загрузки
      * @return список свечей; пустой список, если данных нет
      */
-    public List<Candle> getCandles(String symbol, String interval, int limit) {
+    public List<Candle> getCandles(
+            String symbol,
+            String interval,
+            int limit
+    ) {
+        if (limit <= 0) {
+            throw new IllegalArgumentException(
+                    "limit должен быть положительным: " + limit
+            );
+        }
+
         Map<String, String> params = Map.of(
                 "symbol", symbol,
                 "interval", interval,
                 "limit", String.valueOf(limit)
         );
 
-        Object[][] response = binanceClient.get("/api/v3/klines", params, Object[][].class, false);
+        Object[][] response = binanceClient.get(
+                "/api/v3/klines",
+                params,
+                Object[][].class,
+                false
+        );
 
-        if (response == null) {
+        if (response == null || response.length == 0) {
             return List.of();
         }
 
+        Instant serverNow = Instant.ofEpochMilli(
+                binanceClient.getServerTime()
+        );
+
         return Arrays.stream(response)
-                .map(data -> mapToCandle(symbol, data))
+                .map(data -> mapToCandle(symbol, data, serverNow))
                 .toList();
     }
 
@@ -69,21 +91,42 @@ public class BinanceMarketDataClient {
      *   <li>[6] - close time</li>
      * </ul>
      *
-     * @param symbol торговый символ
-     * @param data   массив данных одной свечи
+     * @param symbol    торговый символ
+     * @param data      массив данных одной свечи
+     * @param serverNow текущее время Binance
      * @return доменная свеча {@link Candle}
      */
-    private Candle mapToCandle(String symbol, Object[] data) {
+    private Candle mapToCandle(
+            String symbol,
+            Object[] data,
+            Instant serverNow
+    ) {
+        if (data == null || data.length < 7) {
+            throw new IllegalArgumentException(
+                    "Некорректный Binance kline: недостаточно полей"
+            );
+        }
+
+        Instant openTime = Instant.ofEpochMilli(
+                ((Number) data[0]).longValue()
+        );
+
+        Instant closeTime = Instant.ofEpochMilli(
+                ((Number) data[6]).longValue()
+        );
+
+        boolean isClosed = !closeTime.isAfter(serverNow);
+
         return Candle.builder()
                 .symbol(symbol)
-                .openTime(Instant.ofEpochMilli(((Number) data[0]).longValue()))
+                .openTime(openTime)
                 .open(new BigDecimal(data[1].toString()))
                 .high(new BigDecimal(data[2].toString()))
                 .low(new BigDecimal(data[3].toString()))
                 .close(new BigDecimal(data[4].toString()))
                 .volume(new BigDecimal(data[5].toString()))
-                .closeTime(Instant.ofEpochMilli(((Number) data[6]).longValue()))
-                .isClosed(true)
+                .closeTime(closeTime)
+                .isClosed(isClosed)
                 .build();
     }
 }
