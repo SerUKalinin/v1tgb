@@ -1,5 +1,6 @@
 package com.tradingbot.infrastructure.persistence.repository;
 
+import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
@@ -69,6 +70,25 @@ public interface OrderRepository extends JpaRepository<OrderEntity, UUID> {
     Set<UUID> findOrderIdsByStatusIn(
             @Param("statuses")
             Set<com.tradingbot.common.enums.OrderStatus> statuses
+    );
+
+    @Modifying(
+            clearAutomatically = true,
+            flushAutomatically = true
+    )
+    @Query("""
+    UPDATE OrderEntity o
+       SET o.version = o.version + 1,
+           o.updatedAt = :updatedAt
+     WHERE o.id = :orderId
+       AND o.version = :expectedVersion
+       AND o.status IN :statuses
+    """)
+    int tryClaimForReconciliation(
+            @Param("orderId") UUID orderId,
+            @Param("expectedVersion") Long expectedVersion,
+            @Param("statuses") Set<OrderStatus> statuses,
+            @Param("updatedAt") Instant updatedAt
     );
 
     Optional<OrderEntity> findBySignalId(UUID signalId);

@@ -126,92 +126,187 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
      * @param orderId идентификатор ордера
      * @return Optional с ордером для reconciliation
      */
+
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Optional<Order> claimForReconciliation(UUID orderId) {
-        return orderRepository.findByIdForUpdate(orderId).flatMap(entity -> {
 
-            if (transitionValidator.isTerminal(entity.getStatus())) {
-                return Optional.empty();
-            }
+        /*
+         * Для stale EXECUTING / UNKNOWN нам необходим настоящий
+         * state-machine transition, поэтому используем PESSIMISTIC_WRITE.
+         *
+         * Для обычных reconcilable states используется атомарный
+         * optimistic CAS через @Version.
+         */
+        Optional<OrderEntity> snapshotOpt =
+                orderRepository.findById(orderId);
 
-            boolean isExecuting =
-                    entity.getStatus() == OrderStatus.EXECUTING;
+        if (snapshotOpt.isEmpty()) {
+            return Optional.empty();
+        }
 
-            boolean isStale =
-                    transitionValidator.isStale(
-                            entity.getStatus(),
-                            entity.getExecutionStartedAt()
-                    );
+        OrderEntity snapshot = snapshotOpt.get();
 
-            /*
-             * Active execution owns the order.
-             * Reconciliation cannot steal it.
-             */
-            if (isExecuting && !isStale) {
-                return Optional.empty();
-            }
+        if (transitionValidator.isTerminal(snapshot.getStatus())) {
+            return Optional.empty();
+        }
 
-            /*
-             * RECOVERING means reconciliation already owns this lifecycle.
-             *
-             * The previous worker has already persisted the ownership
-             * transition in its REQUIRES_NEW transaction.
-             */
-            if (entity.getStatus() == OrderStatus.RECOVERING) {
-                return Optional.empty();
-            }
+        boolean isExecuting =
+                snapshot.getStatus() == OrderStatus.EXECUTING;
 
-            Order order = orderMapper.toDomain(entity);
+        boolean isStale =
+                transitionValidator.isStale(
+                        snapshot.getStatus(),
+                        snapshot.getExecutionStartedAt()
+                );
 
-            /*
-             * stale EXECUTING must first become UNKNOWN and then
-             * immediately RECOVERING within the same transaction.
-             *
-             * This creates a durable ownership barrier before commit.
-             */
-            if (isExecuting && isStale) {
-                ExecutionContext context =
-                        ExecutionContext.of(order);
+        /*
+         * Активный execution владеет ордером.
+         * Reconciliation не имеет права его перехватить.
+         */
+        if (isExecuting && !isStale) {
+            return Optional.empty();
+        }
 
-                order.markAsUnknown(context);
-                order.markRecovering(context);
+        /*
+         * RECOVERING означает, что reconciliation уже получил
+         * ownership этого lifecycle.
+         */
+        if (snapshot.getStatus() == OrderStatus.RECOVERING) {
+            return Optional.empty();
+        }
 
-                orderMapper.updateEntity(order, entity);
-                entity.setUpdatedAt(Instant.now());
+        /*
+         * EXECUTING + stale:
+         *
+         * EXECUTING -> UNKNOWN -> RECOVERING
+         *
+         * UNKNOWN:
+         *
+         * UNKNOWN -> RECOVERING
+         *
+         * Эти переходы являются частью state machine и должны
+         * выполняться под PESSIMISTIC_WRITE.
+         */
+        if ((isExecuting && isStale)
+                || snapshot.getStatus() == OrderStatus.UNKNOWN) {
 
-                orderRepository.saveAndFlush(entity);
+            return orderRepository.findByIdForUpdate(orderId)
+                    .flatMap(entity -> {
 
-                return Optional.of(order);
-            }
+                        if (transitionValidator.isTerminal(entity.getStatus())) {
+                            return Optional.empty();
+                        }
 
-            /*
-             * UNKNOWN is an interrupted execution.
-             *
-             * Claiming it transfers the lifecycle into RECOVERING.
-             * The transition is persisted before this REQUIRES_NEW
-             * transaction commits.
-             */
-            if (order.getStatus() == OrderStatus.UNKNOWN) {
-                ExecutionContext context =
-                        ExecutionContext.of(order);
+                        boolean currentlyExecuting =
+                                entity.getStatus() == OrderStatus.EXECUTING;
 
-                order.markRecovering(context);
+                        boolean currentlyStale =
+                                transitionValidator.isStale(
+                                        entity.getStatus(),
+                                        entity.getExecutionStartedAt()
+                                );
 
-                orderMapper.updateEntity(order, entity);
-                entity.setUpdatedAt(Instant.now());
+                        /*
+                         * Между первым SELECT и SELECT FOR UPDATE
+                         * другой worker уже мог изменить lifecycle.
+                         */
+                        if (currentlyExecuting) {
 
-                orderRepository.saveAndFlush(entity);
+                            if (!currentlyStale) {
+                                return Optional.empty();
+                            }
 
-                return Optional.of(order);
-            }
+                            Order order =
+                                    orderMapper.toDomain(entity);
 
-            /*
-             * Other reconcilable states are handled by the existing
-             * reconciliation flow.
-             */
-            return Optional.of(order);
-        });
+                            ExecutionContext context =
+                                    ExecutionContext.of(order);
+
+                            order.markAsUnknown(context);
+                            order.markRecovering(context);
+
+                            orderMapper.updateEntity(order, entity);
+                            entity.setUpdatedAt(Instant.now());
+
+                            orderRepository.saveAndFlush(entity);
+
+                            return Optional.of(order);
+                        }
+
+                        if (entity.getStatus() == OrderStatus.UNKNOWN) {
+
+                            Order order =
+                                    orderMapper.toDomain(entity);
+
+                            ExecutionContext context =
+                                    ExecutionContext.of(order);
+
+                            order.markRecovering(context);
+
+                            orderMapper.updateEntity(order, entity);
+                            entity.setUpdatedAt(Instant.now());
+
+                            orderRepository.saveAndFlush(entity);
+
+                            return Optional.of(order);
+                        }
+
+                        return Optional.empty();
+                    });
+        }
+
+        /*
+         * Обычные состояния:
+         *
+         * PENDING_EXECUTION
+         * SENT_TO_EXCHANGE
+         * PARTIALLY_FILLED
+         *
+         * здесь не должны искусственно переходить в RECOVERING.
+         *
+         * Для них ownership фиксируется через атомарный CAS:
+         *
+         *     version N -> N + 1
+         *
+         * Первый worker получает updated == 1.
+         * Все конкурирующие workers увидят version != expectedVersion
+         * и получат updated == 0.
+         */
+        Long expectedVersion = snapshot.getVersion();
+
+        Set<OrderStatus> claimableStatuses =
+                transitionValidator.getReconcilableStatuses()
+                        .stream()
+                        .filter(status ->
+                                status != OrderStatus.EXECUTING
+                                        && status != OrderStatus.UNKNOWN
+                                        && status != OrderStatus.RECOVERING
+                        )
+                        .collect(Collectors.toSet());
+
+        int updated =
+                orderRepository.tryClaimForReconciliation(
+                        orderId,
+                        expectedVersion,
+                        claimableStatuses,
+                        Instant.now()
+                );
+
+        /*
+         * CAS проигран:
+         * другой reconciliation worker уже изменил version.
+         */
+        if (updated != 1) {
+            return Optional.empty();
+        }
+
+        /*
+         * clearAutomatically=true в @Modifying гарантирует,
+         * что здесь не останется устаревшая managed-сущность.
+         */
+        return orderRepository.findById(orderId)
+                .map(orderMapper::toDomain);
     }
 
     /**

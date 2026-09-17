@@ -17,8 +17,10 @@ public class TestOrderFactory {
     private final OrderRepository orderRepository;
     private final OrderMapper orderMapper;
 
-    public TestOrderFactory(OrderRepository orderRepository,
-                            OrderMapper orderMapper) {
+    public TestOrderFactory(
+            OrderRepository orderRepository,
+            OrderMapper orderMapper
+    ) {
         this.orderRepository = orderRepository;
         this.orderMapper = orderMapper;
     }
@@ -41,13 +43,26 @@ public class TestOrderFactory {
 
         entity.setStatus(status);
         entity.setExecutionAttempts(0);
-        entity.setVersion(0L);
-        entity.setExecutionId(null);
         entity.setExecutionStartedAt(null);
         entity.setUpdatedAt(Instant.now());
         entity.setCreatedAt(Instant.now());
 
-        OrderEntity persisted = orderRepository.saveAndFlush(entity);
+        /*
+         * executionId НЕЛЬЗЯ очищать.
+         *
+         * Order.createPendingExecution() уже создал
+         * immutable executionId.
+         *
+         * Persistence обязан сохранить именно этот ID.
+         */
+        if (entity.getExecutionId() == null) {
+            throw new IllegalStateException(
+                    "Test fixture invariant violation: executionId must not be null"
+            );
+        }
+
+        OrderEntity persisted =
+                orderRepository.saveAndFlush(entity);
 
         return orderMapper.toDomain(persisted);
     }
