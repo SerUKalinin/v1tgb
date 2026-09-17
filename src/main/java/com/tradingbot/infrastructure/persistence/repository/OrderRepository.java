@@ -2,18 +2,16 @@ package com.tradingbot.infrastructure.persistence.repository;
 
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
+import jakarta.persistence.LockModeType;
+import jakarta.persistence.QueryHint;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.stereotype.Repository;
-
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.QueryHints;
-import jakarta.persistence.LockModeType;
-import jakarta.persistence.QueryHint;
 import org.springframework.data.repository.query.Param;
-import org.springframework.transaction.annotation.Transactional;
-import java.math.BigDecimal;
+import org.springframework.stereotype.Repository;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -34,6 +32,41 @@ public interface OrderRepository extends JpaRepository<OrderEntity, UUID> {
     })
     @Query("SELECT o FROM OrderEntity o WHERE o.id = :id")
     Optional<OrderEntity> findByIdForUpdate(@Param("id") UUID id);
+
+    /**
+     * Пессимистически блокирует ордер только если он всё ещё
+     * находится в указанном статусе.
+     *
+     * Это важно для конкурентного reconciliation:
+     *
+     * worker A:
+     *     UNKNOWN -> RECOVERING
+     *
+     * worker B:
+     *     ждёт lock
+     *     после commit A повторно проверяет WHERE status = UNKNOWN
+     *     и получает пустой результат.
+     *
+     * Таким образом второй worker не пытается обновить уже изменённую
+     * сущность и не получает StaleObjectStateException.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @QueryHints({
+            @QueryHint(
+                    name = "jakarta.persistence.lock.timeout",
+                    value = "-2"
+            )
+    })
+    @Query("""
+            SELECT o
+            FROM OrderEntity o
+            WHERE o.id = :id
+              AND o.status = :status
+            """)
+    Optional<OrderEntity> findByIdForUpdateAndStatus(
+            @Param("id") UUID id,
+            @Param("status") OrderStatus status
+    );
 
     @Query("""
             SELECT o

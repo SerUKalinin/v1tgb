@@ -24,9 +24,11 @@ import java.util.stream.Collectors;
 /**
  * Адаптер для работы с репозиторием Order через JPA.
  *
- * <p>Реализует {@link OrderRepositoryPort}, обеспечивая работу с сущностями {@link OrderEntity} и
- * доменной моделью {@link Order}. Поддерживает claim ордеров для исполнения и reconciliation,
- * а также сохранение и поиск ордеров в БД с учетом правил переходов состояний {@link TransitionValidator}.</p>
+ * <p>Реализует {@link OrderRepositoryPort}, обеспечивая работу с сущностями
+ * {@link OrderEntity} и доменной моделью {@link Order}. Поддерживает claim
+ * ордеров для исполнения и reconciliation, а также сохранение и поиск
+ * ордеров в БД с учетом правил переходов состояний
+ * {@link TransitionValidator}.</p>
  */
 @Component
 @RequiredArgsConstructor
@@ -106,7 +108,7 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
     }
 
     /**
-     * Захватывает ордер для исполнения в новой транзакции.
+     * Захватывает ордер для исполнения в транзакции.
      *
      * @param orderId идентификатор ордера
      * @param context контекст исполнения
@@ -114,29 +116,34 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
      */
     @Override
     @Transactional(propagation = Propagation.REQUIRED)
-    public Optional<Order> claimForExecution(UUID orderId, ExecutionContext context) {
+    public Optional<Order> claimForExecution(
+            UUID orderId,
+            ExecutionContext context
+    ) {
         return claimForExecutionInCurrentTransaction(orderId, context);
     }
 
     /**
      * Захватывает ордер для reconciliation в новой транзакции.
      *
-     * <p>Reconciliation разрешена только если ордер не выполняется или stale.</p>
+     * <p>Для stale EXECUTING и UNKNOWN используются реальные
+     * state-machine transitions под PESSIMISTIC_WRITE.</p>
+     *
+     * <p>Для остальных reconcilable states используется optimistic CAS
+     * через @Version.</p>
      *
      * @param orderId идентификатор ордера
      * @return Optional с ордером для reconciliation
      */
-
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Optional<Order> claimForReconciliation(UUID orderId) {
 
         /*
-         * Для stale EXECUTING / UNKNOWN нам необходим настоящий
-         * state-machine transition, поэтому используем PESSIMISTIC_WRITE.
+         * Первый snapshot нужен только для определения текущего lifecycle.
          *
-         * Для обычных reconcilable states используется атомарный
-         * optimistic CAS через @Version.
+         * Для UNKNOWN и stale EXECUTING ниже выполняется второй запрос
+         * под PESSIMISTIC_WRITE.
          */
         Optional<OrderEntity> snapshotOpt =
                 orderRepository.findById(orderId);
@@ -162,7 +169,7 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
 
         /*
          * Активный execution владеет ордером.
-         * Reconciliation не имеет права его перехватить.
+         * Reconciliation не имеет права его перехватывать.
          */
         if (isExecuting && !isStale) {
             return Optional.empty();
@@ -177,19 +184,19 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
         }
 
         /*
-         * EXECUTING + stale:
+         * ============================================================
+         * 1. EXECUTING + stale
+         * ============================================================
          *
-         * EXECUTING -> UNKNOWN -> RECOVERING
+         * Для stale EXECUTING используем обычный PESSIMISTIC_WRITE,
+         * потому что здесь необходимо повторно проверить stale condition
+         * уже под lock.
          *
-         * UNKNOWN:
+         * Дальше:
          *
-         * UNKNOWN -> RECOVERING
-         *
-         * Эти переходы являются частью state machine и должны
-         * выполняться под PESSIMISTIC_WRITE.
+         *     EXECUTING -> UNKNOWN -> RECOVERING
          */
-        if ((isExecuting && isStale)
-                || snapshot.getStatus() == OrderStatus.UNKNOWN) {
+        if (isExecuting && isStale) {
 
             return orderRepository.findByIdForUpdate(orderId)
                     .flatMap(entity -> {
@@ -208,70 +215,112 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
                                 );
 
                         /*
-                         * Между первым SELECT и SELECT FOR UPDATE
-                         * другой worker уже мог изменить lifecycle.
+                         * Между snapshot и FOR UPDATE другой worker
+                         * уже мог изменить lifecycle.
                          */
-                        if (currentlyExecuting) {
-
-                            if (!currentlyStale) {
-                                return Optional.empty();
-                            }
-
-                            Order order =
-                                    orderMapper.toDomain(entity);
-
-                            ExecutionContext context =
-                                    ExecutionContext.of(order);
-
-                            order.markAsUnknown(context);
-                            order.markRecovering(context);
-
-                            orderMapper.updateEntity(order, entity);
-                            entity.setUpdatedAt(Instant.now());
-
-                            orderRepository.saveAndFlush(entity);
-
-                            return Optional.of(order);
+                        if (!currentlyExecuting || !currentlyStale) {
+                            return Optional.empty();
                         }
 
-                        if (entity.getStatus() == OrderStatus.UNKNOWN) {
+                        Order order =
+                                orderMapper.toDomain(entity);
 
-                            Order order =
-                                    orderMapper.toDomain(entity);
+                        ExecutionContext context =
+                                ExecutionContext.of(order);
 
-                            ExecutionContext context =
-                                    ExecutionContext.of(order);
+                        /*
+                         * State machine transitions остаются
+                         * исключительно через domain model.
+                         */
+                        order.markAsUnknown(context);
+                        order.markRecovering(context);
 
-                            order.markRecovering(context);
+                        orderMapper.updateEntity(order, entity);
+                        entity.setUpdatedAt(Instant.now());
 
-                            orderMapper.updateEntity(order, entity);
-                            entity.setUpdatedAt(Instant.now());
+                        orderRepository.saveAndFlush(entity);
 
-                            orderRepository.saveAndFlush(entity);
-
-                            return Optional.of(order);
-                        }
-
-                        return Optional.empty();
+                        return Optional.of(order);
                     });
         }
 
         /*
-         * Обычные состояния:
+         * ============================================================
+         * 2. UNKNOWN
+         * ============================================================
          *
-         * PENDING_EXECUTION
-         * SENT_TO_EXCHANGE
-         * PARTIALLY_FILLED
+         * Здесь ключевой fix.
          *
-         * здесь не должны искусственно переходить в RECOVERING.
+         * Вместо обычного findByIdForUpdate(orderId) используется:
          *
-         * Для них ownership фиксируется через атомарный CAS:
+         *     findByIdForUpdateAndStatus(orderId, UNKNOWN)
+         *
+         * Поэтому конкурентный worker после получения lock уже не
+         * увидит UNKNOWN, если первый worker успел выполнить:
+         *
+         *     UNKNOWN -> RECOVERING
+         *
+         * В результате второй worker получает Optional.empty(),
+         * а не пытается обновить устаревшую entity.
+         */
+        if (snapshot.getStatus() == OrderStatus.UNKNOWN) {
+
+            return orderRepository.findByIdForUpdateAndStatus(
+                            orderId,
+                            OrderStatus.UNKNOWN
+                    )
+                    .flatMap(entity -> {
+
+                        /*
+                         * На всякий случай повторно проверяем terminal
+                         * condition после получения lock.
+                         */
+                        if (transitionValidator.isTerminal(entity.getStatus())) {
+                            return Optional.empty();
+                        }
+
+                        /*
+                         * Дополнительная защита:
+                         * запрос уже фильтровал UNKNOWN, но state machine
+                         * не должен полагаться только на SQL predicate.
+                         */
+                        if (entity.getStatus() != OrderStatus.UNKNOWN) {
+                            return Optional.empty();
+                        }
+
+                        Order order =
+                                orderMapper.toDomain(entity);
+
+                        ExecutionContext context =
+                                ExecutionContext.of(order);
+
+                        /*
+                         * Единственный допустимый transition:
+                         *
+                         *     UNKNOWN -> RECOVERING
+                         */
+                        order.markRecovering(context);
+
+                        orderMapper.updateEntity(order, entity);
+                        entity.setUpdatedAt(Instant.now());
+
+                        orderRepository.saveAndFlush(entity);
+
+                        return Optional.of(order);
+                    });
+        }
+
+        /*
+         * ============================================================
+         * 3. Обычные reconcilable states
+         * ============================================================
+         *
+         * Здесь ownership фиксируется через атомарный CAS:
          *
          *     version N -> N + 1
          *
          * Первый worker получает updated == 1.
-         * Все конкурирующие workers увидят version != expectedVersion
-         * и получат updated == 0.
+         * Конкурирующие workers получают updated == 0.
          */
         Long expectedVersion = snapshot.getVersion();
 
@@ -295,7 +344,7 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
 
         /*
          * CAS проигран:
-         * другой reconciliation worker уже изменил version.
+         * другой worker уже изменил version.
          */
         if (updated != 1) {
             return Optional.empty();
@@ -310,18 +359,24 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
     }
 
     /**
-     * Сохраняет изменения ордера в новой транзакции.
+     * Сохраняет изменения ордера в транзакции.
      *
      * @param order доменный объект ордера
      */
     @Override
     @Transactional(propagation = Propagation.REQUIRED)
     public void save(Order order) {
+
         OrderEntity entity = orderRepository.findByIdForUpdate(order.getId())
-                .orElseThrow(() -> new IllegalStateException("Order lost: " + order.getId()));
+                .orElseThrow(
+                        () -> new IllegalStateException(
+                                "Order lost: " + order.getId()
+                        )
+                );
 
         orderMapper.updateEntity(order, entity);
         entity.setUpdatedAt(Instant.now());
+
         orderRepository.saveAndFlush(entity);
     }
 
@@ -333,26 +388,37 @@ public class OrderRepositoryAdapter implements OrderRepositoryPort {
      */
     @Override
     public Optional<Order> findById(UUID orderId) {
-        return orderRepository.findById(orderId).map(orderMapper::toDomain);
+        return orderRepository.findById(orderId)
+                .map(orderMapper::toDomain);
     }
 
     @Override
     @Transactional(readOnly = true)
-    public Set<UUID> findOrderIdsByStatusIn(Set<OrderStatus> statuses) {
+    public Set<UUID> findOrderIdsByStatusIn(
+            Set<OrderStatus> statuses
+    ) {
         return orderRepository.findOrderIdsByStatusIn(statuses);
     }
 
     /**
-     * Находит "зависшие" ордера в указанных статусах, старше указанного порога времени.
+     * Находит зависшие ордера в указанных статусах,
+     * старше указанного порога времени.
      *
      * @param statuses набор статусов для поиска
-     * @param threshold порог времени для старых ордеров
+     * @param threshold порог времени
      * @return список доменных ордеров
      */
     @Override
     @Transactional(readOnly = true)
-    public List<Order> findStuckOrdersInStatuses(Set<OrderStatus> statuses, Instant threshold) {
-        return orderRepository.findStuckOrdersInStatuses(statuses, threshold).stream()
+    public List<Order> findStuckOrdersInStatuses(
+            Set<OrderStatus> statuses,
+            Instant threshold
+    ) {
+        return orderRepository.findStuckOrdersInStatuses(
+                        statuses,
+                        threshold
+                )
+                .stream()
                 .map(orderMapper::toDomain)
                 .collect(Collectors.toList());
     }
