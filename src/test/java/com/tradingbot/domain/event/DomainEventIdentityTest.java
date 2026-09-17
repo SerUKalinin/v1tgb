@@ -17,12 +17,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class DomainEventIdentityTest {
 
     @Test
-    void shouldDeriveSignalEventIdFromExecutionIdAndEventType() {
+    void shouldDeriveSignalEventIdFromCanonicalExecutionIdentity() {
         UUID signalId =
                 UUID.fromString("11111111-1111-1111-1111-111111111111");
 
+        UUID orderId =
+                IdentityFactory.deriveOrder(signalId);
+
         UUID executionId =
-                IdentityFactory.deriveExecution(signalId, 0);
+                IdentityFactory.deriveExecution(orderId, 1);
 
         SignalEvent event = new SignalEvent(
                 signalId,
@@ -43,7 +46,8 @@ class DomainEventIdentityTest {
                 );
 
         System.out.println("========== SIGNAL EVENT IDENTITY ==========");
-        System.out.println("signalId           = " + signalId);
+        System.out.println("signalId             = " + signalId);
+        System.out.println("orderId              = " + orderId);
         System.out.println("EXPECTED executionId = " + executionId);
         System.out.println(
                 "ACTUAL executionId   = " +
@@ -57,7 +61,7 @@ class DomainEventIdentityTest {
         assertEquals(
                 executionId,
                 event.getAttempt().executionId(),
-                "SignalEvent must contain the executionId used to derive its eventId"
+                "SignalEvent must contain canonical executionId derived from orderId"
         );
 
         assertEquals(
