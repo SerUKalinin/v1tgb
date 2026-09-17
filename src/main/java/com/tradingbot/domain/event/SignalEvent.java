@@ -43,6 +43,16 @@ public class SignalEvent extends DomainEvent {
     /**
      * Создаёт доменное событие сигнала.
      *
+     * <p>Execution identity строится по канонической цепочке SSOT:</p>
+     *
+     * <pre>
+     * signalId
+     *     ↓
+     * orderId = deriveOrder(signalId)
+     *     ↓
+     * executionId = deriveExecution(orderId, 1)
+     * </pre>
+     *
      * @param signalId идентификатор сигнала
      * @param symbol торговый символ
      * @param type тип сигнала
@@ -67,7 +77,10 @@ public class SignalEvent extends DomainEvent {
         super(
                 IdentityContext.of(signalId),
                 ExecutionAttemptContext.firstAttempt(
-                        IdentityFactory.deriveExecution(signalId, 0),
+                        IdentityFactory.deriveExecution(
+                                IdentityFactory.deriveOrder(signalId),
+                                1
+                        ),
                         signalId
                 ),
                 BusinessContext.empty(),
@@ -90,10 +103,15 @@ public class SignalEvent extends DomainEvent {
         this.candleTime = candleTime;
         this.strategyId = strategyId;
 
-        // Strict invariant check (SSOT integrity guard)
-        if (getIdentity().signalId().equals(getAttempt().executionId())) {
+        UUID expectedExecutionId =
+                IdentityFactory.deriveExecution(
+                        IdentityFactory.deriveOrder(signalId),
+                        1
+                );
+
+        if (!expectedExecutionId.equals(getAttempt().executionId())) {
             throw new IllegalStateException(
-                    "Identity corruption: executionId must not equal signalId"
+                    "Identity corruption: SignalEvent executionId does not match canonical order execution identity"
             );
         }
     }
