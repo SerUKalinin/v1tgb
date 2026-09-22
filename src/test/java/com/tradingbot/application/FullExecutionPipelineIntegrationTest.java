@@ -216,10 +216,39 @@ class FullExecutionPipelineIntegrationTest
                 "ExecutionId must be assigned"
         );
 
+        UUID expectedOrderId =
+                com.tradingbot.tracing.IdentityFactory
+                        .deriveOrder(signalId);
+
+        UUID expectedExecutionId =
+                com.tradingbot.tracing.IdentityFactory
+                        .deriveExecution(
+                                expectedOrderId,
+                                1
+                        );
+
+        assertEquals(
+                expectedOrderId,
+                order1.getId(),
+                "OrderId must be canonically derived from signalId"
+        );
+
+        assertEquals(
+                expectedExecutionId,
+                executionId1,
+                "Order executionId must be canonically derived from orderId and first attempt"
+        );
+
         assertEquals(
                 1,
                 order1.getExecutionAttempts(),
                 "Exactly one execution attempt expected"
+        );
+
+        assertEquals(
+                expectedExecutionId,
+                order1.getExecutionId(),
+                "First execution must use canonical executionId"
         );
 
         assertTrue(
