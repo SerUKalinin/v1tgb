@@ -8,7 +8,7 @@ import com.tradingbot.application.service.risk.ReconciliationService;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.SignalEvent;
-import com.tradingbot.domain.exchange.ExecutionPort;
+import com.tradingbot.domain.exchange.*;
 import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
@@ -71,8 +71,10 @@ class PartialFillThenCancelRiskStateIntegrationTest
     private ReconciliationService reconciliationService;
 
     @MockBean
-    private TradingSystemBootstrapper tradingSystemBootstrapper;
+    private ExchangeFeasibilityPort feasibilityPort;
 
+    @MockBean
+    private OrderNormalizationService normalizationService;
     @MockBean
     private SystemStateManager systemStateManager;
 
@@ -94,9 +96,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
         /*
          * BaseIntegrationTest уже создаёт singleton GLOBAL.
          *
-         * Не удаляем RiskState и не создаём второй entity.
-         * Просто приводим существующее состояние к fixture
-         * этого конкретного сценария.
+         * Не удаляем RiskState и не создаём вторую запись.
          */
         RiskStateEntity riskState =
                 riskStateRepository
@@ -123,6 +123,10 @@ class PartialFillThenCancelRiskStateIntegrationTest
 
         riskState.setHalted(false);
 
+        riskState.setActiveReservations(
+                new java.util.HashMap<>()
+        );
+
         riskState.setUpdatedAt(
                 Instant.now()
         );
@@ -132,16 +136,46 @@ class PartialFillThenCancelRiskStateIntegrationTest
         );
 
         /*
-         * Mock должен быть установлен ДО запуска execution flow.
+         * Этот тест проверяет execution/risk lifecycle,
+         * а не реальные Binance symbol constraints.
          *
-         * Биржа сообщает:
-         *
-         * original quantity = 1.0
-         * executed quantity = 0.3
-         * remaining         = 0.7
+         * Поэтому exchange feasibility изолируем.
          */
         when(
-                executionPort.placeOrder(any(Order.class))
+                normalizationService.normalize(
+                        any(FeasibilityRequest.class)
+                )
+        ).thenAnswer(invocation -> {
+
+            FeasibilityRequest request =
+                    invocation.getArgument(
+                            0,
+                            FeasibilityRequest.class
+                    );
+
+            return new NormalizedOrder(
+                    request.getSymbol(),
+                    request.getQuantity(),
+                    request.getPrice()
+            );
+        });
+
+        when(
+                feasibilityPort.check(
+                        any(FeasibilityRequest.class)
+                )
+        ).thenReturn(
+                FeasibilityResult.success()
+        );
+
+        /*
+         * Execution mock должен быть установлен
+         * ДО запуска SignalExecutionFacade.
+         */
+        when(
+                executionPort.placeOrder(
+                        any(Order.class)
+                )
         ).thenAnswer(invocation -> {
 
             Order order =
