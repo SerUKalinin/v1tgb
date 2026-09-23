@@ -41,91 +41,115 @@ class ReconciliationClaimRaceTest {
 
     @BeforeEach
     void setUp() {
-        orderRepository = mock(OrderRepositoryPort.class);
-        exchangeQueryService = mock(ExchangeOrderQueryService.class);
 
-        reconciliationService = new ReconciliationService(
-                orderRepository,
-                mock(OutboxRecoveryPort.class),
-                exchangeQueryService,
-                mock(OrderCompensationService.class),
-                mock(RiskEngine.class),
-                mock(AdminNotificationService.class),
-                mock(PositionRebuildService.class),
-                mock(SystemStateManager.class),
-                mock(TransitionValidator.class),
-                mock(ExecutionLogger.class)
-        );
+        orderRepository =
+                mock(OrderRepositoryPort.class);
+
+        exchangeQueryService =
+                mock(ExchangeOrderQueryService.class);
+
+        reconciliationService =
+                new ReconciliationService(
+                        orderRepository,
+                        mock(OutboxRecoveryPort.class),
+                        exchangeQueryService,
+                        mock(OrderCompensationService.class),
+                        mock(RiskEngine.class),
+                        mock(AdminNotificationService.class),
+                        mock(PositionRebuildService.class),
+                        mock(SystemStateManager.class),
+                        mock(TransitionValidator.class),
+                        mock(ExecutionLogger.class)
+                );
     }
 
     @Test
     void shouldAllowOnlyOneWorkerToReconcileSameSentOrder()
             throws Exception {
 
-        UUID orderId = UUID.randomUUID();
-        UUID signalId = UUID.randomUUID();
+        UUID orderId =
+                UUID.randomUUID();
 
-        Order order = Order.createPendingExecution(
-                orderId,
-                "client-race-1",
-                "BTCUSDT",
-                OrderSide.BUY,
-                OrderType.MARKET,
-                BigDecimal.ONE,
-                BigDecimal.valueOf(50000),
-                "strategy-race",
-                signalId
-        );
+        UUID signalId =
+                UUID.randomUUID();
 
-        /*
-         * PENDING_EXECUTION
-         *        ↓
-         *    EXECUTING
-         *        ↓
-         * SENT_TO_EXCHANGE
-         */
-        ExecutionContext context = ExecutionContext.of(order);
+        Order order =
+                Order.createPendingExecution(
+                        orderId,
+                        "client-race-1",
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        OrderType.MARKET,
+                        BigDecimal.ONE,
+                        BigDecimal.valueOf(50000),
+                        "strategy-race",
+                        signalId
+                );
+
+        ExecutionContext context =
+                ExecutionContext.of(order);
 
         order.markExecuting(context);
-        order.markAccepted(context, "ex-race-initial");
+
+        order.markAccepted(
+                context,
+                "ex-race-initial"
+        );
 
         assertEquals(
                 OrderStatus.SENT_TO_EXCHANGE,
                 order.getStatus()
         );
 
-        AtomicBoolean claimed = new AtomicBoolean(false);
-        AtomicInteger claimCount = new AtomicInteger(0);
-        AtomicInteger exchangeQueryCount = new AtomicInteger(0);
+        AtomicBoolean claimed =
+                new AtomicBoolean(false);
 
-        when(orderRepository.claimForReconciliation(orderId))
-                .thenAnswer(invocation -> {
-                    claimCount.incrementAndGet();
+        AtomicInteger claimCount =
+                new AtomicInteger(0);
 
-                    if (claimed.compareAndSet(false, true)) {
-                        return Optional.of(order);
-                    }
+        AtomicInteger exchangeQueryCount =
+                new AtomicInteger(0);
 
-                    return Optional.empty();
-                });
+        when(
+                orderRepository.claimForReconciliation(
+                        orderId
+                )
+        ).thenAnswer(invocation -> {
 
-        when(exchangeQueryService.getOrderStatus("client-race-1"))
-                .thenAnswer(invocation -> {
-                    exchangeQueryCount.incrementAndGet();
+            claimCount.incrementAndGet();
 
-                    return ExecutionResult.filled(
-                            orderId,
-                            "ex-race-filled",
-                            "trade-race-1",
-                            "BTCUSDT",
-                            OrderSide.BUY,
-                            BigDecimal.ONE,
-                            BigDecimal.valueOf(50000),
-                            BigDecimal.ZERO,
-                            "USDT",
-                            "client-race-1"
-                    );
-                });
+            if (claimed.compareAndSet(
+                    false,
+                    true
+            )) {
+                return Optional.of(order);
+            }
+
+            return Optional.empty();
+        });
+
+        when(
+                exchangeQueryService.getOrderStatus(
+                        "BTCUSDT",
+                        "client-race-1"
+                )
+        ).thenAnswer(invocation -> {
+
+            exchangeQueryCount.incrementAndGet();
+
+            return ExecutionResult.filled(
+                    orderId,
+                    "ex-race-filled",
+                    "trade-race-1",
+                    "BTCUSDT",
+                    OrderSide.BUY,
+                    BigDecimal.ONE,
+                    BigDecimal.valueOf(50000),
+                    BigDecimal.ZERO,
+                    "USDT",
+                    "client-race-1"
+            );
+        });
 
         ExecutorService executor =
                 Executors.newFixedThreadPool(2);
@@ -137,7 +161,9 @@ class ReconciliationClaimRaceTest {
                 new CountDownLatch(2);
 
         executor.submit(() -> {
+
             try {
+
                 start.await();
 
                 reconciliationService.syncOrderWithExchange(
@@ -146,14 +172,19 @@ class ReconciliationClaimRaceTest {
                 );
 
             } catch (Exception e) {
+
                 throw new RuntimeException(e);
+
             } finally {
+
                 finished.countDown();
             }
         });
 
         executor.submit(() -> {
+
             try {
+
                 start.await();
 
                 reconciliationService.syncOrderWithExchange(
@@ -162,8 +193,11 @@ class ReconciliationClaimRaceTest {
                 );
 
             } catch (Exception e) {
+
                 throw new RuntimeException(e);
+
             } finally {
+
                 finished.countDown();
             }
         });
@@ -171,7 +205,10 @@ class ReconciliationClaimRaceTest {
         start.countDown();
 
         assertTrue(
-                finished.await(10, TimeUnit.SECONDS),
+                finished.await(
+                        10,
+                        TimeUnit.SECONDS
+                ),
                 "Reconciliation workers did not finish in time"
         );
 
@@ -179,8 +216,7 @@ class ReconciliationClaimRaceTest {
 
         assertEquals(
                 2,
-                claimCount.get(),
-                "Both reconciliation workers must attempt to claim the order"
+                claimCount.get()
         );
 
         assertEquals(
@@ -213,5 +249,13 @@ class ReconciliationClaimRaceTest {
                 orderRepository,
                 times(1)
         ).save(order);
+
+        verify(
+                exchangeQueryService,
+                times(1)
+        ).getOrderStatus(
+                "BTCUSDT",
+                "client-race-1"
+        );
     }
 }

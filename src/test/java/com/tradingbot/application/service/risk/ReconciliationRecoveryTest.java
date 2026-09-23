@@ -31,63 +31,128 @@ class ReconciliationRecoveryTest {
 
     @BeforeEach
     void setUp() {
-        orderRepository = mock(OrderRepositoryPort.class);
-        exchangeQueryService = mock(ExchangeOrderQueryService.class);
 
-        reconciliationService = new ReconciliationService(
-                orderRepository,
-                null,                          // outboxRepository (не нужен)
-                exchangeQueryService,
-                mock(OrderCompensationService.class),
-                mock(RiskEngine.class),
-                null,                          // notifications
-                null,                          // positionRebuildService
-                null,                          // stateManager
-                mock(TransitionValidator.class),
-                mock(ExecutionLogger.class)
-        );
+        orderRepository =
+                mock(OrderRepositoryPort.class);
+
+        exchangeQueryService =
+                mock(ExchangeOrderQueryService.class);
+
+        reconciliationService =
+                new ReconciliationService(
+                        orderRepository,
+                        null,
+                        exchangeQueryService,
+                        mock(OrderCompensationService.class),
+                        mock(RiskEngine.class),
+                        null,
+                        null,
+                        null,
+                        mock(TransitionValidator.class),
+                        mock(ExecutionLogger.class)
+                );
     }
 
     @Test
     void shouldRecoverStuckUnknownOrderToFilled() {
-        UUID orderId = UUID.randomUUID();
-        UUID signalId = UUID.randomUUID();
 
-        Order order = Order.createPendingExecution(
-                orderId, "client-1", "BTCUSDT",
-                OrderSide.BUY,
-                OrderType.MARKET,
-                BigDecimal.ONE, BigDecimal.valueOf(50000),
-                "strat-1", signalId
-        );
+        UUID orderId =
+                UUID.randomUUID();
 
-        UUID executionId = order.getExecutionId();
+        UUID signalId =
+                UUID.randomUUID();
 
-// Manually move to UNKNOWN to simulate timeout
-        ExecutionContext context = ExecutionContext.of(order);
+        Order order =
+                Order.createPendingExecution(
+                        orderId,
+                        "client-1",
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        OrderType.MARKET,
+                        BigDecimal.ONE,
+                        BigDecimal.valueOf(50000),
+                        "strat-1",
+                        signalId
+                );
+
+        /*
+         * PENDING_EXECUTION -> EXECUTING -> UNKNOWN
+         */
+        ExecutionContext context =
+                ExecutionContext.of(order);
+
         order.markExecuting(context);
         order.markAsUnknown(context);
 
-        // Mock: claimForReconciliation returns the order
-        when(orderRepository.claimForReconciliation(orderId))
-                .thenReturn(Optional.of(order));
+        assertEquals(
+                OrderStatus.UNKNOWN,
+                order.getStatus()
+        );
 
-        // Mock exchange response: Order actually FILLED on exchange
-        when(exchangeQueryService.getOrderStatus("client-1"))
-                .thenReturn(ExecutionResult.filled(
-                        orderId, "ex-123", "trade-123",
-                        "BTCUSDT", OrderSide.BUY,
-                        BigDecimal.ONE, BigDecimal.valueOf(50000),
-                        BigDecimal.ZERO, "USDT", "client-1"));
+        when(
+                orderRepository.claimForReconciliation(
+                        orderId
+                )
+        ).thenReturn(
+                Optional.of(order)
+        );
 
-        // 2. Act: Run reconciliation
-        reconciliationService.syncOrderWithExchange(order, context);
+        when(
+                exchangeQueryService.getOrderStatus(
+                        "BTCUSDT",
+                        "client-1"
+                )
+        ).thenReturn(
+                ExecutionResult.filled(
+                        orderId,
+                        "ex-123",
+                        "trade-123",
+                        "BTCUSDT",
+                        OrderSide.BUY,
+                        BigDecimal.ONE,
+                        BigDecimal.valueOf(50000),
+                        BigDecimal.ZERO,
+                        "USDT",
+                        "client-1"
+                )
+        );
 
-        // 3. Assert: Order should be FILLED
-        assertEquals(OrderStatus.FILLED, order.getStatus());
-        assertEquals("ex-123", order.getExchangeOrderId());
-        assertEquals(BigDecimal.ONE, order.getExecutedQuantity());
-        assertEquals(BigDecimal.valueOf(50000), order.getAveragePrice());
-        verify(orderRepository, atLeastOnce()).save(any());
+        reconciliationService.syncOrderWithExchange(
+                order,
+                context
+        );
+
+        assertEquals(
+                OrderStatus.FILLED,
+                order.getStatus()
+        );
+
+        assertEquals(
+                "ex-123",
+                order.getExchangeOrderId()
+        );
+
+        assertEquals(
+                BigDecimal.ONE,
+                order.getExecutedQuantity()
+        );
+
+        assertEquals(
+                BigDecimal.valueOf(50000),
+                order.getAveragePrice()
+        );
+
+        verify(
+                exchangeQueryService,
+                times(1)
+        ).getOrderStatus(
+                "BTCUSDT",
+                "client-1"
+        );
+
+        verify(
+                orderRepository,
+                atLeastOnce()
+        ).save(any());
     }
 }

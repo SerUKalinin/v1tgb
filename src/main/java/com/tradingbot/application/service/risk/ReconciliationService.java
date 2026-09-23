@@ -443,6 +443,7 @@ public class ReconciliationService {
              */
             ExecutionResult exchangeState =
                     exchangeQueryService.getOrderStatus(
+                            order.getSymbol(),
                             order.getClientOrderId()
                     );
 
