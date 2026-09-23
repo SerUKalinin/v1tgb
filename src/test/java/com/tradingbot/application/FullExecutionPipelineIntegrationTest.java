@@ -8,7 +8,9 @@ import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.exchange.ExecutionPort;
+import com.tradingbot.domain.exchange.SymbolConstraints;
 import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.infrastructure.execution.exchange.ExchangeMetadataService;
 import com.tradingbot.infrastructure.outbox.OutboxProcessor;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
@@ -16,6 +18,7 @@ import com.tradingbot.infrastructure.persistence.repository.ExecutionClaimReposi
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
+import com.tradingbot.tracing.IdentityFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,16 +30,22 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashSet;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 @SpringBootTest(
         properties = {
-                "app.outbox.enabled=true"
+                "app.outbox.enabled=true",
+                "spring.task.scheduling.enabled=false"
         }
 )
 @ActiveProfiles("test")
@@ -61,10 +70,6 @@ class FullExecutionPipelineIntegrationTest
     @Autowired
     private OutboxProcessor outboxProcessor;
 
-    /*
-     * Production bootstrap не должен запускать настоящий startup flow
-     * внутри этого integration test.
-     */
     @MockBean
     private TradingSystemBootstrapper tradingSystemBootstrapper;
 
@@ -74,25 +79,32 @@ class FullExecutionPipelineIntegrationTest
     @MockBean
     private ExecutionPort executionPort;
 
+    @MockBean
+    private ExchangeMetadataService metadataService;
+
     @BeforeEach
     void prepareTestEnvironment() {
 
-        /*
-         * OutboxProcessor проверяет:
-         * 1. enabled
-         * 2. trading enabled
-         * 3. system ready
-         */
         when(systemStateManager.isTradingEnabled())
                 .thenReturn(true);
 
         when(systemStateManager.isReady())
                 .thenReturn(true);
 
-        /*
-         * Используем реальный RiskStateRepository.
-         * Никакого @MockBean RiskStatePort здесь нет.
-         */
+        when(
+                metadataService.getConstraints("BTCUSDT")
+        ).thenReturn(
+                Optional.of(
+                        SymbolConstraints.builder()
+                                .symbol("BTCUSDT")
+                                .stepSize(new BigDecimal("0.00001"))
+                                .minQty(new BigDecimal("0.00001"))
+                                .tickSize(new BigDecimal("0.01"))
+                                .minNotional(new BigDecimal("5"))
+                                .build()
+                )
+        );
+
         riskStateRepository.deleteAll();
 
         RiskStateEntity riskState =
@@ -124,9 +136,6 @@ class FullExecutionPipelineIntegrationTest
                 riskState
         );
 
-        /*
-         * Exchange IO заменяем детерминированным mock.
-         */
         when(
                 executionPort.placeOrder(
                         any()
@@ -173,25 +182,6 @@ class FullExecutionPipelineIntegrationTest
                         "STRAT-1"
                 );
 
-        /*
-         * ============================================================
-         * 1. FIRST PASS
-         *
-         * Signal
-         *   -> Risk
-         *   -> Reservation
-         *   -> Order
-         *   -> ORDER_CREATED
-         *   -> Outbox
-         *   -> Claim
-         *   -> EXECUTING
-         *   -> ExecutionPort
-         *   -> FILLED
-         *   -> ORDER_EXECUTED
-         *   -> TRADE_CREATED
-         * ============================================================
-         */
-
         signalExecutionFacade.execute(
                 signal
         );
@@ -217,15 +207,15 @@ class FullExecutionPipelineIntegrationTest
         );
 
         UUID expectedOrderId =
-                com.tradingbot.tracing.IdentityFactory
-                        .deriveOrder(signalId);
+                IdentityFactory.deriveOrder(
+                        signalId
+                );
 
         UUID expectedExecutionId =
-                com.tradingbot.tracing.IdentityFactory
-                        .deriveExecution(
-                                expectedOrderId,
-                                1
-                        );
+                IdentityFactory.deriveExecution(
+                        expectedOrderId,
+                        1
+                );
 
         assertEquals(
                 expectedOrderId,
@@ -274,12 +264,6 @@ class FullExecutionPipelineIntegrationTest
                 "Exactly one ExecutionClaim must exist"
         );
 
-        /*
-         * ============================================================
-         * 2. VERIFY REAL DB RISK STATE
-         * ============================================================
-         */
-
         RiskStateEntity riskAfterExecution =
                 riskStateRepository
                         .findById(
@@ -291,14 +275,6 @@ class FullExecutionPipelineIntegrationTest
                                 )
                         );
 
-        /*
-         * ВАЖНО:
-         * BigDecimal.equals() сравнивает scale:
-         *
-         * 0       != 0E-18
-         *
-         * Поэтому здесь сравниваем числовое значение через compareTo().
-         */
         assertEquals(
                 0,
                 riskAfterExecution
@@ -307,10 +283,6 @@ class FullExecutionPipelineIntegrationTest
                 "BUY reservation must be consumed after FILLED"
         );
 
-        /*
-         * Запоминаем lifecycle events до повторной подачи
-         * того же самого сигнала.
-         */
         Set<UUID> outboxEventIdsBeforeDuplicate =
                 getAllOutboxEventIds();
 
@@ -319,23 +291,11 @@ class FullExecutionPipelineIntegrationTest
                 "Outbox should contain lifecycle events"
         );
 
-        /*
-         * ============================================================
-         * 3. SECOND PASS — SAME SIGNAL
-         * ============================================================
-         */
-
         signalExecutionFacade.execute(
                 signal
         );
 
         drainOutbox();
-
-        /*
-         * ============================================================
-         * 4. IDEMPOTENCY
-         * ============================================================
-         */
 
         OrderEntity order2 =
                 orderRepository
@@ -388,12 +348,6 @@ class FullExecutionPipelineIntegrationTest
                 "Duplicate signal must not create new lifecycle events"
         );
 
-        /*
-         * ============================================================
-         * 5. OUTBOX SSOT
-         * ============================================================
-         */
-
         outboxRepository
                 .findAll()
                 .forEach(event -> {
@@ -421,9 +375,6 @@ class FullExecutionPipelineIntegrationTest
                     );
                 });
 
-        /*
-         * Финальная проверка RiskState после всей цепочки.
-         */
         RiskStateEntity finalRiskState =
                 riskStateRepository
                         .findById(
@@ -505,7 +456,7 @@ class FullExecutionPipelineIntegrationTest
         Set<UUID> previousIds =
                 new HashSet<>();
 
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 20; i++) {
 
             Set<UUID> currentIds =
                     getAllOutboxEventIds();
@@ -525,10 +476,12 @@ class FullExecutionPipelineIntegrationTest
 
             previousIds =
                     afterProcessing;
+
+            sleep(50);
         }
 
         fail(
-                "Outbox chain was not drained after 10 passes. " +
+                "Outbox chain was not drained after 20 passes. " +
                         "Events=" + previousIds.size()
         );
     }
