@@ -38,24 +38,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @RequiredArgsConstructor
 public class MarketDataService {
 
-    /**
-     * Количество закрытых свечей, необходимое для warm-up.
-     */
     private static final int WARMUP_CANDLE_COUNT = 100;
 
-    /**
-     * Binance может вернуть текущую формирующуюся свечу.
-     *
-     * Поэтому запрашиваем одну свечу сверх необходимого количества,
-     * после чего оставляем только реально закрытые.
-     */
     private static final int WARMUP_REQUEST_LIMIT =
             WARMUP_CANDLE_COUNT + 1;
 
-    /**
-     * Порог изменения цены для публикации PriceUpdated.
-     * 0.1%.
-     */
     private static final BigDecimal PRICE_FILTER_THRESHOLD =
             new BigDecimal("0.001");
 
@@ -65,37 +52,27 @@ public class MarketDataService {
     private final ApplicationEventPublisher eventPublisher;
     private final RiskEngine riskEngine;
 
-    /**
-     * Признак готовности market data по символу.
-     */
     private final Map<String, AtomicBoolean> readyStatus =
             new ConcurrentHashMap<>();
 
-    /**
-     * Последняя цена, отправленная в RiskEngine.
-     */
     private final Map<String, BigDecimal> lastRiskPrices =
             new ConcurrentHashMap<>();
 
     /**
-     * Прогревает данные для всех основных торговых инструментов.
+     * Прогревает market-data для основных торговых инструментов.
      */
     public void warmUpAll() {
-        warmUp("BTCUSDT", "1m");
+        warmUp(
+                "BTCUSDT",
+                "1m"
+        );
     }
 
     /**
      * Загружает исторические свечи и инициализирует кэш.
      *
-     * <p>На Binance последняя возвращённая свеча
-     * может быть ещё формирующейся.
-     *
-     * Поэтому для получения 100 закрытых свечей
-     * запрашивается 101 candle, после чего все незакрытые
-     * свечи отбрасываются.
-     *
      * @param symbol   торговый символ
-     * @param interval таймфрейм свечей
+     * @param interval таймфрейм
      */
     public void warmUp(
             String symbol,
@@ -108,10 +85,11 @@ public class MarketDataService {
                 WARMUP_REQUEST_LIMIT
         );
 
-        AtomicBoolean readiness = readyStatus.computeIfAbsent(
-                symbol,
-                key -> new AtomicBoolean(false)
-        );
+        AtomicBoolean readiness =
+                readyStatus.computeIfAbsent(
+                        symbol,
+                        key -> new AtomicBoolean(false)
+                );
 
         readiness.set(false);
 
@@ -129,9 +107,10 @@ public class MarketDataService {
                 );
             }
 
-            long closedCount = fetched.stream()
-                    .filter(Candle::isClosed)
-                    .count();
+            long closedCount =
+                    fetched.stream()
+                            .filter(Candle::isClosed)
+                            .count();
 
             if (closedCount < WARMUP_CANDLE_COUNT) {
                 throw new IllegalStateException(
@@ -142,9 +121,10 @@ public class MarketDataService {
                 );
             }
 
-            List<Candle> closedCandles = fetched.stream()
-                    .filter(Candle::isClosed)
-                    .toList();
+            List<Candle> closedCandles =
+                    fetched.stream()
+                            .filter(Candle::isClosed)
+                            .toList();
 
             List<Candle> warmupCandles =
                     closedCandles.subList(
@@ -153,12 +133,15 @@ public class MarketDataService {
                             closedCandles.size()
                     );
 
-            /*
-             * Дополнительная защита от некорректного порядка.
-             */
-            for (int i = 1; i < warmupCandles.size(); i++) {
-                Candle previous = warmupCandles.get(i - 1);
-                Candle current = warmupCandles.get(i);
+            for (int i = 1;
+                 i < warmupCandles.size();
+                 i++) {
+
+                Candle previous =
+                        warmupCandles.get(i - 1);
+
+                Candle current =
+                        warmupCandles.get(i);
 
                 if (!current.getOpenTime()
                         .isAfter(previous.getOpenTime())) {
@@ -166,8 +149,10 @@ public class MarketDataService {
                     throw new IllegalStateException(
                             "Свечи warm-up расположены "
                                     + "не в хронологическом порядке: "
-                                    + "previous=" + previous.getOpenTime()
-                                    + ", current=" + current.getOpenTime()
+                                    + "previous="
+                                    + previous.getOpenTime()
+                                    + ", current="
+                                    + current.getOpenTime()
                     );
                 }
             }
@@ -206,6 +191,7 @@ public class MarketDataService {
             );
 
         } catch (Exception e) {
+
             readiness.set(false);
 
             log.error(
@@ -215,12 +201,6 @@ public class MarketDataService {
                     e
             );
 
-            /*
-             * Warm-up является обязательной стадией bootstrap.
-             *
-             * Не проглатываем ошибку, иначе bootstrap может
-             * ошибочно перевести систему в READY/TRADING_ENABLED.
-             */
             throw new IllegalStateException(
                     "Не удалось выполнить warm-up market data для "
                             + symbol,
@@ -230,11 +210,7 @@ public class MarketDataService {
     }
 
     /**
-     * Обновляет рыночные данные и при необходимости
-     * публикует события в RiskEngine.
-     *
-     * @param symbol   торговый символ
-     * @param interval таймфрейм
+     * Обновляет market-data и RiskEngine price state.
      */
     public void updateMarketData(
             String symbol,
@@ -259,14 +235,10 @@ public class MarketDataService {
                 );
             }
 
-            /*
-             * Последняя свеча является наиболее актуальной
-             * рыночной ценой, независимо от того,
-             * закрыта она или ещё формируется.
-             */
             BigDecimal currentPrice =
-                    candles.get(candles.size() - 1)
-                            .getClose();
+                    candles.get(
+                            candles.size() - 1
+                    ).getClose();
 
             if (shouldUpdateRisk(
                     symbol,
@@ -294,6 +266,7 @@ public class MarketDataService {
             }
 
         } catch (Exception e) {
+
             log.error(
                     "Ошибка при обновлении данных для {}",
                     symbol,
@@ -303,10 +276,7 @@ public class MarketDataService {
     }
 
     /**
-     * Возвращает текущее окно свечей из кэша.
-     *
-     * @param symbol торговый символ
-     * @return окно свечей
+     * Возвращает текущее окно свечей.
      */
     public CandleWindow getWindow(
             String symbol
@@ -315,10 +285,7 @@ public class MarketDataService {
     }
 
     /**
-     * Проверяет, завершён ли warm-up для символа.
-     *
-     * @param symbol торговый символ
-     * @return true если данные готовы
+     * Проверяет готовность market-data.
      */
     public boolean isReady(
             String symbol
@@ -331,24 +298,30 @@ public class MarketDataService {
     }
 
     /**
-     * Основной цикл обновления рынка.
+     * Основной цикл обновления market-data.
      *
-     * <p>Последовательность:
-     * <ol>
-     *     <li>обновление свечей</li>
-     *     <li>проверка готовности</li>
-     *     <li>получение окна</li>
-     *     <li>детекция последней закрытой свечи</li>
-     *     <li>публикация NewClosedCandleEvent</li>
-     * </ol>
+     * <p>Критическая последовательность:
      *
-     * @param symbol   торговый символ
-     * @param interval таймфрейм
+     * <pre>
+     * update
+     *   ↓
+     * detect
+     *   ↓
+     * publish event
+     *   ↓
+     * успешное завершение event chain
+     *   ↓
+     * markAsProcessed
+     * </pre>
+     *
+     * <p>Если downstream pipeline бросает exception,
+     * markAsProcessed() не выполняется.</p>
      */
     public void refresh(
             String symbol,
             String interval
     ) {
+
         updateMarketData(
                 symbol,
                 interval
@@ -376,8 +349,9 @@ public class MarketDataService {
                 .ifPresent(event -> {
 
                     log.info(
-                            "[VERIFY] NEW_CANDLE: symbol={} closeTime={} O={} H={} L={} C={} V={}",
+                            "[VERIFY] NEW_CANDLE: symbol={} openTime={} closeTime={} O={} H={} L={} C={} V={}",
                             event.symbol(),
+                            event.openTime(),
                             event.closeTime(),
                             event.open(),
                             event.high(),
@@ -386,20 +360,29 @@ public class MarketDataService {
                             event.volume()
                     );
 
+                    /*
+                     * ApplicationEventPublisher в текущей конфигурации
+                     * выполняет обработчики синхронно.
+                     *
+                     * Поэтому если любой downstream listener
+                     * выбросит exception, управление сюда не дойдёт
+                     * и candle ACK не будет выполнен.
+                     */
                     eventPublisher.publishEvent(
                             event
+                    );
+
+                    /*
+                     * ACK только после успешного завершения
+                     * всей синхронной event chain.
+                     */
+                    detector.markAsProcessed(
+                            event.symbol(),
+                            event.openTime()
                     );
                 });
     }
 
-    /**
-     * Проверяет, нужно ли отправлять обновление
-     * в RiskEngine на основе порога изменения цены.
-     *
-     * @param symbol       торговый символ
-     * @param currentPrice текущая цена
-     * @return true если изменение достаточно велико
-     */
     private boolean shouldUpdateRisk(
             String symbol,
             BigDecimal currentPrice

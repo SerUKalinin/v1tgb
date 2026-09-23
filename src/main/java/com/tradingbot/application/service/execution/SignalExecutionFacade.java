@@ -2,6 +2,7 @@ package com.tradingbot.application.service.execution;
 
 import com.tradingbot.application.service.order.OrderApplicationService;
 import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.domain.execution.AlreadyClaimedException;
 import com.tradingbot.domain.execution.SignalClaimPort;
 import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.ExecutionLogContext;
@@ -10,20 +11,29 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.UUID;
+
 /**
  * Фасад обработки торговых сигналов.
  *
- * <p>
- * Является точкой входа в execution pipeline и отвечает за:
- * <ul>
- *     <li>идемпотентность на уровне бизнес-сигналов (SignalClaim)</li>
- *     <li>инициализацию execution context</li>
- *     <li>делегирование создания ордера в application layer</li>
- *     <li>управление жизненным циклом обработки сигнала</li>
- * </ul>
+ * <p>Является точкой входа в execution pipeline.</p>
  *
- * <p>
- * Гарантирует, что один сигнал будет обработан только один раз.
+ * <p>Canonical transaction:</p>
+ *
+ * <pre>
+ * Signal Claim
+ *      ↓
+ * Risk
+ *      ↓
+ * Order
+ *      ↓
+ * Outbox
+ *      ↓
+ * DB COMMIT
+ * </pre>
+ *
+ * <p>Если pipeline завершается exception,
+ * signal claim должен rollback вместе с транзакцией.</p>
  */
 @Slf4j
 @Component
@@ -34,62 +44,132 @@ public class SignalExecutionFacade {
     private final OrderApplicationService orderApplicationService;
 
     /**
-     * Обрабатывает торговый сигнал и инициирует создание ордера.
+     * Обрабатывает торговый сигнал
+     * и инициирует canonical execution pipeline.
      *
-     * @param signal торговый сигнал из доменного слоя
+     * @param signal торговый сигнал
      */
     @Transactional
-    public void execute(SignalEvent signal) {
+    public void execute(
+            SignalEvent signal
+    ) {
 
-        // 1. Проверка идемпотентности сигнала
-        if (signalClaimPort.exists(signal.getSignalId())) {
+        if (signal == null) {
+            throw new IllegalArgumentException(
+                    "signal не должен быть null"
+            );
+        }
+
+        UUID signalId =
+                signal.getSignalId();
+
+        log.info(
+                "[TRACE_FLOW] ENTER SignalExecutionFacade.execute signalId={}",
+                signalId
+        );
+
+        /*
+         * Fast duplicate path.
+         *
+         * Это не заменяет atomic claim.
+         * Atomicity обеспечивается самим claim()
+         * через DB constraint.
+         */
+        if (signalClaimPort.exists(signalId)) {
+
             log.debug(
                     "[DUPLICATE_SIGNAL] signalId={} ignored",
-                    signal.getSignalId()
+                    signalId
             );
+
             return;
         }
 
-        // 2. Инициализация execution контекста
-        ExecutionContext context = signal.getExecutionContext();
+        ExecutionContext context =
+                signal.getExecutionContext();
+
         ExecutionLogContext.load(context);
 
         try {
-            // 3. Фиксация сигнала как обработанного
-            signalClaimPort.claim(signal.getSignalId());
+
+            /*
+             * Claim участвует в ЭТОЙ transaction.
+             *
+             * Если Risk/Order/Outbox ниже упадёт,
+             * claim будет rollback.
+             */
+            signalClaimPort.claim(
+                    signalId
+            );
 
             log.info(
                     "[SIGNAL_CLAIMED] signalId={}",
-                    signal.getSignalId()
+                    signalId
             );
 
-            // 4. Risk evaluation + создание Order
-            boolean created = orderApplicationService.handleSignal(signal);
+            /*
+             * Risk evaluation + Order creation.
+             */
+            boolean created =
+                    orderApplicationService.handleSignal(
+                            signal
+                    );
 
-            // 5. Логируем результат честно:
-            //    ORDER_CREATED только если Order реально существует
             if (created) {
+
                 log.info(
                         "[ORDER_CREATED] signalId={}",
-                        signal.getSignalId()
+                        signalId
                 );
+
             } else {
+
+                /*
+                 * Risk rejection является успешным
+                 * завершением обработки сигнала.
+                 *
+                 * Поэтому claim должен commit.
+                 */
                 log.info(
                         "[ORDER_REJECTED] signalId={}",
-                        signal.getSignalId()
+                        signalId
                 );
             }
 
+        } catch (AlreadyClaimedException e) {
+
+            /*
+             * Оставляем существующую семантику,
+             * но не ACK-аем сигнал как успешно обработанный
+             * через отдельный transaction.
+             */
+            log.warn(
+                    "[SIGNAL_ALREADY_CLAIMED] signalId={}",
+                    signalId
+            );
+
+            throw e;
+
         } catch (Exception e) {
+
             log.error(
                     "[SIGNAL_PROCESSING_FAILED] signalId={} msg={}",
-                    signal.getSignalId(),
+                    signalId,
                     e.getMessage(),
                     e
             );
+
+            /*
+             * Обязательно rethrow.
+             *
+             * Это приводит к rollback SignalClaim
+             * и не позволяет MarketDataService
+             * подтвердить candle как processed.
+             */
             throw e;
 
         } finally {
+
             ExecutionLogContext.clear();
         }
     }

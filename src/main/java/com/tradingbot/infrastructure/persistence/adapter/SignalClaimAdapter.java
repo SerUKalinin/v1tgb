@@ -10,52 +10,91 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.UUID;
 
-import static org.springframework.transaction.annotation.Propagation.REQUIRES_NEW;
-
 /**
- * Адаптер для работы с сигналами исполнения через JPA репозиторий.
+ * Адаптер для работы с claim торгового сигнала.
  *
- * <p>Реализует {@link SignalClaimPort} и обеспечивает:
- * <ul>
- *     <li>Проверку, был ли сигнал уже обработан</li>
- *     <li>Идемпотентное резервирование сигнала для исполнения</li>
- * </ul></p>
+ * <p>Claim должен быть частью той же транзакции,
+ * в которой выполняются:
  *
- * <p>Используется в Execution Pipeline для гарантии одноразового claim сигнала.</p>
+ * <pre>
+ * SignalClaim
+ *      +
+ * Risk
+ *      +
+ * Order
+ *      +
+ * Outbox
+ * </pre>
+ *
+ * <p>Поэтому REQUIRES_NEW здесь запрещён.
  */
 @Component
 @RequiredArgsConstructor
-public class SignalClaimAdapter implements SignalClaimPort {
+public class SignalClaimAdapter
+        implements SignalClaimPort {
 
     private final SignalClaimRepository repository;
 
     /**
-     * Проверяет, существует ли уже claim для указанного сигнала.
+     * Проверяет наличие claim.
      *
-     * @param signalId идентификатор сигнала
-     * @return true, если сигнал уже был зарезервирован (claimed)
+     * @param signalId signal identity
+     * @return true если signal уже claimed
      */
     @Override
+    @Transactional(readOnly = true)
     public boolean exists(UUID signalId) {
         return repository.existsById(signalId);
     }
 
     /**
-     * Пытается зарезервировать сигнал для исполнения.
+     * Создаёт claim внутри текущей transaction.
      *
-     * <p>Если сигнал уже зарезервирован, операция игнорируется (идемпотентно).</p>
+     * <p>Никакого REQUIRES_NEW.
      *
-     * @param signalId идентификатор сигнала
+     * <p>Если другая transaction конкурентно успела создать
+     * тот же signal claim, database unique constraint отклонит
+     * вторую вставку. Эта transaction будет rollback-нута.
+     *
+     * <p>Это безопаснее, чем отдельный committed claim:
+     * если дальнейший Risk/Order/Outbox pipeline падает,
+     * signal claim откатывается вместе с business transaction.
+     *
+     * @param signalId signal identity
      */
     @Override
-    @Transactional(propagation = REQUIRES_NEW)
+    @Transactional
     public void claim(UUID signalId) {
+
+        if (signalId == null) {
+            throw new IllegalArgumentException(
+                    "signalId не должен быть null"
+            );
+        }
+
         try {
-            repository.saveAndFlush(SignalClaimEntity.builder()
-                    .signalId(signalId)
-                    .build());
+
+            repository.saveAndFlush(
+                    SignalClaimEntity.builder()
+                            .signalId(signalId)
+                            .build()
+            );
+
         } catch (DataIntegrityViolationException e) {
-            // Уже зарезервировано — игнорируем
+
+            /*
+             * Важно:
+             *
+             * Здесь НЕ глотаем DataIntegrityViolationException.
+             *
+             * В случае конкурентного claim transaction должна
+             * rollback-нуться, чтобы:
+             *
+             * 1. не сделать ложный success;
+             * 2. не ACK-нуть candle;
+             * 3. не скрыть race condition.
+             */
+            throw e;
         }
     }
 }
