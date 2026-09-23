@@ -89,13 +89,18 @@ class ReconciliationRecoveryTest {
                 order.getStatus()
         );
 
+        /*
+         * Реальный reconciliation claim переводит UNKNOWN -> RECOVERING.
+         * В unit-тесте эмулируем этот контракт внутри mock.
+         */
         when(
                 orderRepository.claimForReconciliation(
                         orderId
                 )
-        ).thenReturn(
-                Optional.of(order)
-        );
+        ).thenAnswer(invocation -> {
+            order.markRecovering(context);
+            return Optional.of(order);
+        });
 
         when(
                 exchangeQueryService.getOrderStatus(
