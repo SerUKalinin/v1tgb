@@ -10,17 +10,27 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Детектор перехода свечи в закрытое состояние.
  *
  * <p>Отвечает за определение появления новой фактически закрытой свечи
- * в потоке рыночных данных.
+ * в потоке рыночных данных.</p>
  *
- * <p>Гарантирует идемпотентную обработку свечи:
- * одна свеча с одним openTime не должна приводить
- * к повторной генерации события.
+ * <p>Критически важно:
+ * detect() только обнаруживает новую свечу.
+ * Факт успешной обработки свечи фиксируется отдельным
+ * markAsProcessed() ПОСЛЕ успешного прохождения downstream pipeline.</p>
+ *
+ * <p>Это предотвращает ситуацию:
+ *
+ * <pre>
+ * candle marked processed
+ *        ↓
+ * signal pipeline failed
+ *        ↓
+ * candle permanently lost
+ * </pre>
  */
 @Slf4j
 @Component
@@ -28,28 +38,27 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class CandleTransitionDetector {
 
     /**
-     * Последняя обработанная закрытая свеча по символу.
+     * Последняя успешно обработанная закрытая свеча по символу.
      *
      * Key:
      *     торговый символ
      *
      * Value:
-     *     openTime последней обработанной свечи
+     *     openTime последней успешно обработанной свечи
      */
     private final ConcurrentHashMap<String, Instant> lastProcessed =
             new ConcurrentHashMap<>();
 
     /**
-     * Репозиторий идемпотентности.
+     * Репозиторий фиксации успешно обработанных свечей.
      */
     private final ProcessedCandleRepository processedCandleRepository;
 
     /**
      * Инициализирует baseline после warm-up.
      *
-     * <p>Последняя уже закрытая историческая свеча
-     * не должна повторно породить NewClosedCandleEvent
-     * только потому, что система впервые начала работать.
+     * <p>Последняя историческая закрытая свеча не должна
+     * немедленно породить новый сигнал при первом refresh.</p>
      *
      * @param symbol   торговый символ
      * @param openTime openTime последней закрытой свечи
@@ -88,10 +97,11 @@ public class CandleTransitionDetector {
 
     /**
      * Ищет последнюю фактически закрытую свечу
-     * и генерирует событие только при её новом появлении.
+     * и сообщает о ней как о новой, если она ещё
+     * не была успешно обработана.
      *
-     * <p>Текущая формирующаяся свеча игнорируется,
-     * даже если она является последней свечой окна.
+     * <p>ВАЖНО:
+     * этот метод НЕ записывает свечу как processed.</p>
      *
      * @param window окно свечей
      * @return событие новой закрытой свечи
@@ -105,13 +115,15 @@ public class CandleTransitionDetector {
 
         String symbol = window.getSymbol();
 
-        Optional<Candle> latestClosed = window.getCandles().stream()
-                .filter(Candle::isClosed)
-                .max(
-                        Comparator.comparing(
-                                Candle::getOpenTime
-                        )
-                );
+        Optional<Candle> latestClosed =
+                window.getCandles()
+                        .stream()
+                        .filter(Candle::isClosed)
+                        .max(
+                                Comparator.comparing(
+                                        Candle::getOpenTime
+                                )
+                        );
 
         if (latestClosed.isEmpty()) {
             log.debug(
@@ -125,48 +137,27 @@ public class CandleTransitionDetector {
         Candle candle = latestClosed.get();
         Instant openTime = candle.getOpenTime();
 
-        AtomicBoolean isNew = new AtomicBoolean(false);
+        Instant current =
+                lastProcessed.get(symbol);
 
-        lastProcessed.compute(
-                symbol,
-                (key, current) -> {
-
-                    /*
-                     * Уже обработанная или более старая свеча.
-                     */
-                    if (current != null
-                            && !openTime.isAfter(current)) {
-                        return current;
-                    }
-
-                    /*
-                     * Persistent idempotency boundary.
-                     */
-                    if (processedCandleRepository.markAsProcessed(
-                            symbol,
-                            openTime
-                    )) {
-                        isNew.set(true);
-                    }
-
-                    return openTime;
-                }
-        );
-
-        if (!isNew.get()) {
+        /*
+         * Свеча уже успешно обработана
+         * или является более старой.
+         */
+        if (current != null
+                && !openTime.isAfter(current)) {
             return Optional.empty();
         }
 
-        log.info(
-                "[DETECTOR] New closed candle detected: symbol={} openTime={} closeTime={}",
-                symbol,
-                candle.getOpenTime(),
-                candle.getCloseTime()
-        );
-
+        /*
+         * Только detection.
+         *
+         * Никакого persistent ACK здесь нет.
+         */
         return Optional.of(
                 new NewClosedCandleEvent(
                         symbol,
+                        candle.getOpenTime(),
                         candle.getOpen(),
                         candle.getHigh(),
                         candle.getLow(),
@@ -178,7 +169,78 @@ public class CandleTransitionDetector {
     }
 
     /**
-     * Сбрасывает in-memory состояние обработки для символа.
+     * Подтверждает успешную обработку закрытой свечи.
+     *
+     * <p>Вызывается только ПОСЛЕ того, как downstream pipeline
+     * успешно обработал NewClosedCandleEvent.</p>
+     *
+     * <p>Если persistent repository не подтверждает запись,
+     * in-memory baseline также не продвигается.</p>
+     *
+     * @param symbol   торговый символ
+     * @param openTime openTime успешно обработанной свечи
+     */
+    public void markAsProcessed(
+            String symbol,
+            Instant openTime
+    ) {
+        if (symbol == null || symbol.isBlank()) {
+            throw new IllegalArgumentException(
+                    "symbol не должен быть пустым"
+            );
+        }
+
+        if (openTime == null) {
+            throw new IllegalArgumentException(
+                    "openTime не должен быть null"
+            );
+        }
+
+        boolean marked =
+                processedCandleRepository.markAsProcessed(
+                        symbol,
+                        openTime
+                );
+
+        if (!marked) {
+            /*
+             * Репозиторий уже знает эту свечу.
+             *
+             * Это нормально при повторной доставке:
+             * состояние всё равно можно считать processed.
+             */
+            lastProcessed.compute(
+                    symbol,
+                    (key, current) ->
+                            current == null
+                                    || openTime.isAfter(current)
+                                    ? openTime
+                                    : current
+            );
+
+            return;
+        }
+
+        lastProcessed.compute(
+                symbol,
+                (key, current) ->
+                        current == null
+                                || openTime.isAfter(current)
+                                ? openTime
+                                : current
+        );
+
+        log.info(
+                "[DETECTOR] Candle ACK: symbol={} openTime={}",
+                symbol,
+                openTime
+        );
+    }
+
+    /**
+     * Сбрасывает in-memory состояние для символа.
+     *
+     * <p>Persistent idempotency state при этом не удаляется.</p>
      *
      * @param symbol торговый символ
      */
@@ -190,7 +252,7 @@ public class CandleTransitionDetector {
         lastProcessed.remove(symbol);
 
         log.info(
-                "Reset processed state for symbol {}",
+                "[DETECTOR] Reset in-memory state: symbol={}",
                 symbol
         );
     }
