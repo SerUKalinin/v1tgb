@@ -38,20 +38,6 @@ import java.util.UUID;
 /**
  * Сервис реконсиляции состояния торговой системы.
  *
- * <p>Отвечает за:
- * <ul>
- *     <li>синхронизацию балансов с биржей</li>
- *     <li>восстановление застрявших ордеров</li>
- *     <li>очистку и восстановление outbox событий</li>
- *     <li>reconciliation ордеров с состоянием биржи</li>
- * </ul>
- *
- * <p>Является критическим компонентом обеспечения консистентности между:
- * доменной моделью, биржей и инфраструктурными событиями.
- *
- * <p>
- * Persistence access выполняется через domain ports.
- *
  * <p>
  * Контракты:
  * SYSTEM_CONTRACT.md
@@ -63,60 +49,15 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ReconciliationService {
 
-    /**
-     * Порт доступа к ордерам в хранилище.
-     */
     private final OrderRepositoryPort orderRepository;
-
-    /**
-     * Порт восстановления застрявших outbox-событий.
-     *
-     * <p>
-     * JPA Entity и Spring Data Repository остаются
-     * внутри infrastructure adapter.
-     */
     private final OutboxRecoveryPort outboxRecoveryPort;
-
-    /**
-     * Сервис запросов состояния ордеров на бирже.
-     */
     private final ExchangeOrderQueryService exchangeQueryService;
-
-    /**
-     * Сервис компенсации состояния ордеров
-     * (освобождение резервов).
-     */
     private final OrderCompensationService orderCompensationService;
-
-    /**
-     * Движок риск-менеджмента, содержащий актуальное состояние системы.
-     */
     private final RiskEngine riskEngine;
-
-    /**
-     * Сервис уведомлений администратора.
-     */
     private final AdminNotificationService notifications;
-
-    /**
-     * Сервис восстановления позиций.
-     */
     private final PositionRebuildService positionRebuildService;
-
-    /**
-     * Менеджер состояния системы
-     * (cold start / ready / recovery).
-     */
     private final SystemStateManager stateManager;
-
-    /**
-     * Валидатор допустимых переходов состояний ордера.
-     */
     private final TransitionValidator transitionValidator;
-
-    /**
-     * Логгер событий исполнения.
-     */
     private final ExecutionLogger executionLogger;
 
     private static final Duration STALE_THRESHOLD =
@@ -131,11 +72,9 @@ public class ReconciliationService {
     private static final Duration RECONCILIATION_GRACE_PERIOD =
             Duration.ofSeconds(30);
 
-    private Instant lastReconcileTimestamp = Instant.now();
+    private Instant lastReconcileTimestamp =
+            Instant.now();
 
-    /**
-     * Обработка события холодного старта системы.
-     */
     @EventListener
     public void onColdStart(
             SystemEvents.ColdStartDetectedEvent event
@@ -148,9 +87,6 @@ public class ReconciliationService {
         reconcileAll(true);
     }
 
-    /**
-     * Обработка запроса стандартной реконсиляции.
-     */
     @EventListener
     public void onStandardRecon(
             SystemEvents.StandardReconciliationRequestedEvent event
@@ -162,36 +98,34 @@ public class ReconciliationService {
         reconcileAll(false);
     }
 
-    /**
-     * Периодическая реконсиляция системы.
-     */
     @Scheduled(fixedDelay = 3600000)
     public void reconcileAll() {
         reconcileAll(false);
     }
 
-    /**
-     * Выполняет полную реконсиляцию системы.
-     *
-     * @param force принудительное выполнение без ограничений по времени
-     */
-    public void reconcileAll(boolean force) {
+    public void reconcileAll(
+            boolean force
+    ) {
         reconcileOutbox();
         reconcilePendingOrders();
         reconcileBalances(force);
     }
 
-    /**
-     * Реконсиляция балансов между биржей
-     * и внутренним состоянием.
-     */
-    public void reconcileBalances(boolean force) {
+    public void reconcileBalances(
+            boolean force
+    ) {
+
         try {
+
             BigDecimal exchangeBalance =
-                    exchangeQueryService.getAvailableBalance("USDT");
+                    exchangeQueryService.getAvailableBalance(
+                            "USDT"
+                    );
 
             BigDecimal internalBalance =
-                    riskEngine.getState().availableBalance();
+                    riskEngine
+                            .getState()
+                            .availableBalance();
 
             boolean isColdStart =
                     stateManager.isColdStart()
@@ -199,6 +133,7 @@ public class ReconciliationService {
                             == SystemStateManager.SystemState.COLD_START_RECONCILIATION;
 
             if (isColdStart) {
+
                 log.info(
                         "[BOOTSTRAP_SYNC] Cold start reconciliation active. " +
                                 "Force syncing internal balance: {} -> {}",
@@ -206,15 +141,21 @@ public class ReconciliationService {
                         exchangeBalance
                 );
 
-                riskEngine.syncBalance(exchangeBalance);
+                riskEngine.syncBalance(
+                        exchangeBalance
+                );
+
                 positionRebuildService.rebuildAllPositions();
 
-                lastReconcileTimestamp = Instant.now();
+                lastReconcileTimestamp =
+                        Instant.now();
+
                 return;
             }
 
             if (internalBalance.signum() == 0
                     && exchangeBalance.signum() == 0) {
+
                 return;
             }
 
@@ -236,29 +177,39 @@ public class ReconciliationService {
                     )
                             : BigDecimal.ONE;
 
-            Instant now = Instant.now();
+            Instant now =
+                    Instant.now();
 
             if (!force
                     && now.isBefore(
                     lastReconcileTimestamp
-                            .plus(DRIFT_DETECTION_WINDOW)
+                            .plus(
+                                    DRIFT_DETECTION_WINDOW
+                            )
             )) {
                 return;
             }
 
-            if (driftPercent.compareTo(DRIFT_THRESHOLD) > 0) {
+            if (driftPercent.compareTo(
+                    DRIFT_THRESHOLD
+            ) > 0) {
+
                 log.error(
                         "[RECON-CRITICAL] CRITICAL balance drift detected: Drift={}%",
-
                         driftPercent.multiply(
                                 new BigDecimal("100")
                         )
                 );
 
-                riskEngine.syncBalance(exchangeBalance);
+                riskEngine.syncBalance(
+                        exchangeBalance
+                );
+
                 positionRebuildService.rebuildAllPositions();
 
-                if (stateManager.isReady() && !isColdStart) {
+                if (stateManager.isReady()
+                        && !isColdStart) {
+
                     notifications.sendCritical(
                             "Trading HALTED: Balance drift exceeds 1%."
                     );
@@ -268,19 +219,26 @@ public class ReconciliationService {
                                     + driftPercent
                     );
                 }
+
             } else {
+
                 log.info(
                         "[RECON] Minor drift detected. " +
                                 "Auto-repairing state."
                 );
 
-                riskEngine.syncBalance(exchangeBalance);
+                riskEngine.syncBalance(
+                        exchangeBalance
+                );
+
                 positionRebuildService.rebuildAllPositions();
             }
 
-            lastReconcileTimestamp = now;
+            lastReconcileTimestamp =
+                    now;
 
         } catch (Exception e) {
+
             log.error(
                     "[RECON] Failed to reconcile balances",
                     e
@@ -288,25 +246,21 @@ public class ReconciliationService {
         }
     }
 
-    /**
-     * Реконсиляция outbox событий
-     * (восстановление застрявших PROCESSING событий).
-     *
-     * <p>
-     * Persistence details скрыты за OutboxRecoveryPort.
-     * DB transaction находится внутри infrastructure adapter.
-     */
     @Scheduled(fixedDelay = 30000)
     public void reconcileOutbox() {
+
         Instant threshold =
-                Instant.now().minusSeconds(30);
+                Instant.now()
+                        .minusSeconds(30);
 
         int recovered =
-                outboxRecoveryPort.resetStaleProcessingEvents(
-                        threshold
-                );
+                outboxRecoveryPort
+                        .resetStaleProcessingEvents(
+                                threshold
+                        );
 
         if (recovered > 0) {
+
             log.warn(
                     "[RECON] Found {} stuck outbox events. " +
                             "Resetting to FAILED.",
@@ -315,24 +269,28 @@ public class ReconciliationService {
         }
     }
 
-    /**
-     * Реконсиляция ордеров в промежуточных состояниях.
-     */
     @Scheduled(fixedDelay = 300000)
     public void reconcilePendingOrders() {
+
         Instant threshold =
-                Instant.now().minus(STALE_THRESHOLD);
+                Instant.now()
+                        .minus(
+                                STALE_THRESHOLD
+                        );
 
         Set<OrderStatus> reconcilableStatuses =
-                transitionValidator.getReconcilableStatuses();
+                transitionValidator
+                        .getReconcilableStatuses();
 
         List<Order> stuckOrders =
-                orderRepository.findStuckOrdersInStatuses(
-                        reconcilableStatuses,
-                        threshold
-                );
+                orderRepository
+                        .findStuckOrdersInStatuses(
+                                reconcilableStatuses,
+                                threshold
+                        );
 
         for (Order order : stuckOrders) {
+
             ExecutionContext context =
                     ExecutionContext.of(order);
 
@@ -343,59 +301,35 @@ public class ReconciliationService {
         }
     }
 
-    /**
-     * Реконсиляция конкретного ордера.
-     *
-     * <p>
-     * Метод НЕ является transactional.
-     * Внешний запрос к бирже поэтому не выполняется
-     * внутри DB transaction.
-     *
-     * @param context контекст исполнения
-     */
     public void reconcile(
             ExecutionContext context
     ) {
+
         orderRepository.findById(
                 UUID.fromString(
                         context.business().orderId()
                 )
-        ).ifPresent(order ->
-                syncOrderWithExchange(
-                        order,
-                        context
-                )
+        ).ifPresent(
+                order ->
+                        syncOrderWithExchange(
+                                order,
+                                context
+                        )
         );
     }
 
     /**
-     * Синхронизация состояния ордера с биржей.
+     * Синхронизация состояния ордера
+     * с authoritative exchange state.
      *
      * <p>
-     * Claim является единственной DB-транзакцией,
-     * устанавливающей ownership reconciliation.
-     *
-     * <p>
-     * После commit claim-транзакции запрос к бирже
-     * выполняется без открытой DB transaction.
-     *
-     * <p>
-     * Финальный save() выполняется отдельной DB transaction.
-     */
-    /**
-     * Синхронизация состояния ордера с authoritative exchange state.
-     *
-     * <p>
-     * Claim является отдельной DB transaction.
-     * Exchange I/O выполняется после её commit.
-     *
-     * <p>
-     * Финальный save() выполняется отдельной DB transaction.
+     * Exchange I/O выполняется вне DB transaction.
      */
     public void syncOrderWithExchange(
             Order targetOrder,
             ExecutionContext context
     ) {
+
         try {
 
             Optional<Order> orderOpt =
@@ -404,6 +338,7 @@ public class ReconciliationService {
                     );
 
             if (orderOpt.isEmpty()) {
+
                 log.debug(
                         "[RECON-SKIP] Order {} is currently owned by " +
                                 "another execution/reconciliation worker " +
@@ -436,9 +371,21 @@ public class ReconciliationService {
             );
 
             /*
-             * IMPORTANT:
-             *
-             * Exchange I/O is deliberately outside DB transaction.
+             * Capture the previous cumulative execution BEFORE
+             * mutating the Order.
+             */
+            BigDecimal previousExecutedQuantity =
+                    valueOrZero(
+                            order.getExecutedQuantity()
+                    );
+
+            BigDecimal previousAveragePrice =
+                    valueOrZero(
+                            order.getAveragePrice()
+                    );
+
+            /*
+             * Exchange I/O intentionally remains outside DB transaction.
              */
             ExecutionResult exchangeState =
                     exchangeQueryService.getOrderStatus(
@@ -454,10 +401,14 @@ public class ReconciliationService {
             boolean stateChanged =
                     switch (action) {
 
-                        /*
-                         * Authoritative full fill.
-                         */
                         case FORCE_FILL, FILL -> {
+
+                            BigDecimal deltaNotional =
+                                    calculateIncrementalNotional(
+                                            previousExecutedQuantity,
+                                            previousAveragePrice,
+                                            exchangeState
+                                    );
 
                             order.forceFill(
                                     context,
@@ -466,13 +417,24 @@ public class ReconciliationService {
                                     exchangeState.getExecutedPrice()
                             );
 
+                            settleIncrementalExecution(
+                                    order,
+                                    exchangeState,
+                                    deltaNotional,
+                                    "Recovery full fill"
+                            );
+
                             yield true;
                         }
 
-                        /*
-                         * Authoritative cumulative partial fill.
-                         */
                         case PARTIALLY_FILL -> {
+
+                            BigDecimal deltaNotional =
+                                    calculateIncrementalNotional(
+                                            previousExecutedQuantity,
+                                            previousAveragePrice,
+                                            exchangeState
+                                    );
 
                             order.applyPartialFill(
                                     context,
@@ -480,16 +442,16 @@ public class ReconciliationService {
                                     exchangeState.getExecutedPrice()
                             );
 
+                            settleIncrementalExecution(
+                                    order,
+                                    exchangeState,
+                                    deltaNotional,
+                                    "Recovery partial fill"
+                            );
+
                             yield true;
                         }
 
-                        /*
-                         * Binance NEW / ACCEPTED:
-                         *
-                         * order still exists remotely and has not completed.
-                         *
-                         * RECOVERING -> SENT_TO_EXCHANGE
-                         */
                         case MARK_ACCEPTED -> {
 
                             order.markAccepted(
@@ -500,9 +462,6 @@ public class ReconciliationService {
                             yield true;
                         }
 
-                        /*
-                         * Authoritative rejection.
-                         */
                         case REJECT -> {
 
                             order.markAsRejected(
@@ -518,9 +477,6 @@ public class ReconciliationService {
                             yield true;
                         }
 
-                        /*
-                         * Authoritative cancellation.
-                         */
                         case CANCEL -> {
 
                             order.markCancelled(
@@ -535,9 +491,6 @@ public class ReconciliationService {
                             yield true;
                         }
 
-                        /*
-                         * Exchange result is still ambiguous.
-                         */
                         case MARK_UNKNOWN -> {
 
                             order.markAsUnknown(
@@ -547,18 +500,12 @@ public class ReconciliationService {
                             yield true;
                         }
 
-                        /*
-                         * Reserved for statuses that do not require
-                         * a lifecycle mutation.
-                         */
-                        case NOOP -> false;
+                        case NOOP ->
+                                false;
                     };
 
             /*
-             * save() starts its own DB transaction.
-             *
-             * Therefore exchange I/O is completely outside
-             * persistence transaction.
+             * Order persistence remains isolated from exchange I/O.
              */
             if (stateChanged) {
 
@@ -582,5 +529,159 @@ public class ReconciliationService {
                     e
             );
         }
+    }
+
+    /**
+     * Calculates the newly executed notional represented by the
+     * exchange cumulative execution state.
+     *
+     * <p>
+     * Example:
+     *
+     * <pre>
+     * previous = 0.3 @ 100  -> 30
+     * current  = 0.6 @ 100  -> 60
+     * delta                  -> 30
+     * </pre>
+     *
+     * <p>
+     * This is intentionally calculated from cumulative notionals,
+     * not simply deltaQty * currentAveragePrice.
+     */
+    private BigDecimal calculateIncrementalNotional(
+            BigDecimal previousQuantity,
+            BigDecimal previousAveragePrice,
+            ExecutionResult exchangeState
+    ) {
+
+        BigDecimal currentQuantity =
+                exchangeState.getExecutedQty();
+
+        BigDecimal currentAveragePrice =
+                exchangeState.getExecutedPrice();
+
+        if (currentQuantity == null
+                || currentQuantity.signum() <= 0) {
+
+            throw new IllegalStateException(
+                    "Recovery execution quantity must be positive. orderId="
+                            + exchangeState.getOrderId()
+            );
+        }
+
+        if (currentAveragePrice == null
+                || currentAveragePrice.signum() <= 0) {
+
+            throw new IllegalStateException(
+                    "Recovery execution price must be positive. orderId="
+                            + exchangeState.getOrderId()
+            );
+        }
+
+        BigDecimal previousNotional =
+                BigDecimal.ZERO;
+
+        if (previousQuantity.signum() > 0
+                && previousAveragePrice.signum() > 0) {
+
+            previousNotional =
+                    previousQuantity.multiply(
+                            previousAveragePrice
+                    );
+        }
+
+        BigDecimal currentNotional =
+                currentQuantity.multiply(
+                        currentAveragePrice
+                );
+
+        BigDecimal deltaNotional =
+                currentNotional.subtract(
+                        previousNotional
+                );
+
+        if (deltaNotional.signum() < 0) {
+
+            throw new IllegalStateException(
+                    "Recovery executed notional cannot decrease. " +
+                            "previous=" + previousNotional +
+                            ", current=" + currentNotional +
+                            ", orderId=" + exchangeState.getOrderId()
+            );
+        }
+
+        return deltaNotional;
+    }
+
+    /**
+     * Applies the newly settled execution amount exactly once.
+     */
+    private void settleIncrementalExecution(
+            Order order,
+            ExecutionResult exchangeState,
+            BigDecimal deltaNotional,
+            String reason
+    ) {
+
+        if (deltaNotional.signum() == 0) {
+
+            log.info(
+                    "[RECON-RISK-SKIP] No incremental settlement for order {}. " +
+                            "exchangeQty={}, exchangePrice={}",
+                    order.getId(),
+                    exchangeState.getExecutedQty(),
+                    exchangeState.getExecutedPrice()
+            );
+
+            return;
+        }
+
+        String settlementKey =
+                buildSettlementKey(
+                        exchangeState
+                );
+
+        orderCompensationService.settleIncrementalExecution(
+                order,
+                deltaNotional,
+                settlementKey,
+                reason
+        );
+    }
+
+    /**
+     * Stable identity for a cumulative exchange checkpoint.
+     */
+    private String buildSettlementKey(
+            ExecutionResult exchangeState
+    ) {
+
+        return exchangeState.getStatus().name()
+                + ":"
+                + normalizeDecimal(
+                exchangeState.getExecutedQty()
+        )
+                + "@"
+                + normalizeDecimal(
+                exchangeState.getExecutedPrice()
+        );
+    }
+
+    private String normalizeDecimal(
+            BigDecimal value
+    ) {
+
+        return value
+                .stripTrailingZeros()
+                .toPlainString();
+    }
+
+    private BigDecimal valueOrZero(
+            BigDecimal value
+    ) {
+
+        return value == null
+                ? BigDecimal.ZERO
+                : value;
     }
 }
