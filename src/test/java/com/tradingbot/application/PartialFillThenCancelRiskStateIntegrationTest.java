@@ -2,7 +2,6 @@ package com.tradingbot.application;
 
 import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.application.bootstrap.SystemStateManager;
-import com.tradingbot.application.bootstrap.TradingSystemBootstrapper;
 import com.tradingbot.application.service.execution.SignalExecutionFacade;
 import com.tradingbot.application.service.risk.ReconciliationService;
 import com.tradingbot.common.enums.OrderStatus;
@@ -29,7 +28,6 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -75,6 +73,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
 
     @MockBean
     private OrderNormalizationService normalizationService;
+
     @MockBean
     private SystemStateManager systemStateManager;
 
@@ -93,11 +92,6 @@ class PartialFillThenCancelRiskStateIntegrationTest
         when(systemStateManager.isReady())
                 .thenReturn(true);
 
-        /*
-         * BaseIntegrationTest уже создаёт singleton GLOBAL.
-         *
-         * Не удаляем RiskState и не создаём вторую запись.
-         */
         RiskStateEntity riskState =
                 riskStateRepository
                         .findById(
@@ -135,12 +129,6 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 riskState
         );
 
-        /*
-         * Этот тест проверяет execution/risk lifecycle,
-         * а не реальные Binance symbol constraints.
-         *
-         * Поэтому exchange feasibility изолируем.
-         */
         when(
                 normalizationService.normalize(
                         any(FeasibilityRequest.class)
@@ -168,10 +156,6 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 FeasibilityResult.success()
         );
 
-        /*
-         * Execution mock должен быть установлен
-         * ДО запуска SignalExecutionFacade.
-         */
         when(
                 executionPort.placeOrder(
                         any(Order.class)
@@ -216,18 +200,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
                         "PARTIAL-FILL-CANCEL-TEST"
                 );
 
-        /*
-         * SIGNAL
-         *   ->
-         * RISK
-         *   ->
-         * RESERVATION
-         *   ->
-         * ORDER
-         */
-        signalExecutionFacade.execute(
-                signal
-        );
+        signalExecutionFacade.execute(signal);
 
         OrderEntity createdOrder =
                 waitForOrder(signalId);
@@ -240,9 +213,6 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 "Order должен быть создан"
         );
 
-        /*
-         * Reservation = 100.
-         */
         RiskStateEntity afterReservation =
                 getRiskState();
 
@@ -264,15 +234,8 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 "reservedMargin после reservation"
         );
 
-        /*
-         * ORDER_CREATED уже должен существовать.
-         * Теперь вручную дренируем outbox.
-         */
         drainOutbox();
 
-        /*
-         * Биржа вернула partial fill.
-         */
         OrderEntity partialOrder =
                 waitForStatus(
                         signalId,
@@ -281,14 +244,12 @@ class PartialFillThenCancelRiskStateIntegrationTest
 
         assertEquals(
                 orderId,
-                partialOrder.getId(),
-                "Order ID не должен измениться"
+                partialOrder.getId()
         );
 
         assertEquals(
                 OrderStatus.PARTIALLY_FILLED,
-                partialOrder.getStatus(),
-                "Order должен перейти в PARTIALLY_FILLED"
+                partialOrder.getStatus()
         );
 
         assertBigDecimal(
@@ -310,12 +271,6 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 "remainingQuantity после partial fill"
         );
 
-        /*
-         * Reservation должен остаться только
-         * на неисполненную часть:
-         *
-         * 0.7 * 100 = 70
-         */
         RiskStateEntity afterPartialFill =
                 getRiskState();
 
@@ -337,9 +292,6 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 "reservedMargin после partial fill"
         );
 
-        /*
-         * Получаем canonical domain Order.
-         */
         Order partialDomainOrder =
                 orderRepositoryPort
                         .findById(orderId)
@@ -357,24 +309,14 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 "executionId должен существовать"
         );
 
-        /*
-         * ExecutionContext строится из того же Order.
-         *
-         * Это одновременно проверяет identity SSOT,
-         * введённый PR #29.
-         */
         ExecutionContext context =
                 ExecutionContext.of(
                         partialDomainOrder
                 );
 
-        /*
-         * Теперь биржа сообщает:
-         *
-         * PARTIALLY_FILLED -> CANCELED
-         */
         when(
                 exchangeQueryService.getOrderStatus(
+                        partialDomainOrder.getSymbol(),
                         partialDomainOrder.getClientOrderId()
                 )
         ).thenReturn(
@@ -383,16 +325,10 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 )
         );
 
-        /*
-         * Запускаем реальную reconciliation ветку.
-         */
         reconciliationService.reconcile(
                 context
         );
 
-        /*
-         * Проверяем состояние Order.
-         */
         Order canceledOrder =
                 orderRepositoryPort
                         .findById(orderId)
@@ -414,26 +350,12 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 "executedQuantity не должен измениться после CANCEL"
         );
 
-        /*
-         * Критический identity invariant:
-         *
-         * CANCEL не создаёт новую execution identity.
-         */
         assertEquals(
                 executionId,
                 canceledOrder.getExecutionId(),
                 "executionId не должен измениться после CANCEL"
         );
 
-        /*
-         * После CANCEL освобождается только
-         * оставшийся резерв:
-         *
-         * remaining = 0.7
-         * reservation = 70
-         *
-         * 9900 + 70 = 9970
-         */
         RiskStateEntity afterCancel =
                 getRiskState();
 
@@ -474,8 +396,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
     ) {
 
         Instant deadline =
-                Instant.now()
-                        .plusSeconds(15);
+                Instant.now().plusSeconds(15);
 
         while (Instant.now().isBefore(deadline)) {
 
@@ -505,8 +426,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
     ) {
 
         Instant deadline =
-                Instant.now()
-                        .plusSeconds(15);
+                Instant.now().plusSeconds(15);
 
         OrderEntity current = null;
 
@@ -535,14 +455,14 @@ class PartialFillThenCancelRiskStateIntegrationTest
         }
 
         fail(
-                "Order не перешёл в " +
-                        expectedStatus +
-                        ". actual=" +
-                        current.getStatus() +
-                        ", orderId=" +
-                        current.getId() +
-                        ", executionId=" +
-                        current.getExecutionId()
+                "Order не перешёл в "
+                        + expectedStatus
+                        + ". actual="
+                        + current.getStatus()
+                        + ", orderId="
+                        + current.getId()
+                        + ", executionId="
+                        + current.getExecutionId()
         );
 
         return null;
@@ -594,11 +514,11 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 actual.compareTo(
                         new BigDecimal(expected)
                 ),
-                message +
-                        ": expected=" +
-                        expected +
-                        ", actual=" +
-                        actual
+                message
+                        + ": expected="
+                        + expected
+                        + ", actual="
+                        + actual
         );
     }
 

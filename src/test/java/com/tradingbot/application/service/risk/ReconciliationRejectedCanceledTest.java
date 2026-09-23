@@ -69,8 +69,11 @@ class ReconciliationRejectedCanceledTest {
     void shouldRecoverUnknownOrderToRejectedAndReleaseReservation()
             throws Exception {
 
-        UUID orderId = UUID.randomUUID();
-        UUID signalId = UUID.randomUUID();
+        UUID orderId =
+                UUID.randomUUID();
+
+        UUID signalId =
+                UUID.randomUUID();
 
         Order order =
                 Order.createPendingExecution(
@@ -101,7 +104,6 @@ class ReconciliationRejectedCanceledTest {
                 ExecutionContext.of(order);
 
         order.markExecuting(context);
-
         order.markAsUnknown(context);
 
         assertEquals(
@@ -114,12 +116,15 @@ class ReconciliationRejectedCanceledTest {
                         eq(orderId)
                 )
         ).thenAnswer(invocation -> {
+
             order.markRecovering(context);
+
             return Optional.of(order);
         });
 
         when(
                 exchangeQueryService.getOrderStatus(
+                        eq("BTCUSDT"),
                         eq("client-rejected")
                 )
         ).thenReturn(
@@ -136,19 +141,16 @@ class ReconciliationRejectedCanceledTest {
 
         assertEquals(
                 OrderStatus.REJECTED,
-                order.getStatus(),
-                "Rejected exchange result must produce REJECTED order"
+                order.getStatus()
         );
 
         assertEquals(
                 executionId,
-                order.getExecutionId(),
-                "ExecutionId must remain unchanged"
+                order.getExecutionId()
         );
 
         assertNotNull(
-                order.getExecutionStartedAt(),
-                "Execution start timestamp must remain present"
+                order.getExecutionStartedAt()
         );
 
         verify(
@@ -162,14 +164,13 @@ class ReconciliationRejectedCanceledTest {
         verify(
                 orderRepository,
                 times(1)
-        ).save(
-                eq(order)
-        );
+        ).save(eq(order));
 
         verify(
                 exchangeQueryService,
                 times(1)
         ).getOrderStatus(
+                eq("BTCUSDT"),
                 eq("client-rejected")
         );
     }
@@ -178,8 +179,11 @@ class ReconciliationRejectedCanceledTest {
     void shouldRecoverUnknownOrderToCanceledAndReleaseReservation()
             throws Exception {
 
-        UUID orderId = UUID.randomUUID();
-        UUID signalId = UUID.randomUUID();
+        UUID orderId =
+                UUID.randomUUID();
+
+        UUID signalId =
+                UUID.randomUUID();
 
         Order order =
                 Order.createPendingExecution(
@@ -210,7 +214,6 @@ class ReconciliationRejectedCanceledTest {
                 ExecutionContext.of(order);
 
         order.markExecuting(context);
-
         order.markAsUnknown(context);
 
         assertEquals(
@@ -223,12 +226,15 @@ class ReconciliationRejectedCanceledTest {
                         eq(orderId)
                 )
         ).thenAnswer(invocation -> {
+
             order.markRecovering(context);
+
             return Optional.of(order);
         });
 
         when(
                 exchangeQueryService.getOrderStatus(
+                        eq("BTCUSDT"),
                         eq("client-canceled")
                 )
         ).thenReturn(
@@ -244,14 +250,12 @@ class ReconciliationRejectedCanceledTest {
 
         assertEquals(
                 OrderStatus.CANCELED,
-                order.getStatus(),
-                "Canceled exchange result must produce CANCELED order"
+                order.getStatus()
         );
 
         assertEquals(
                 executionId,
-                order.getExecutionId(),
-                "ExecutionId must remain unchanged"
+                order.getExecutionId()
         );
 
         verify(
@@ -265,14 +269,13 @@ class ReconciliationRejectedCanceledTest {
         verify(
                 orderRepository,
                 times(1)
-        ).save(
-                eq(order)
-        );
+        ).save(eq(order));
 
         verify(
                 exchangeQueryService,
                 times(1)
         ).getOrderStatus(
+                eq("BTCUSDT"),
                 eq("client-canceled")
         );
     }

@@ -108,9 +108,7 @@ class ReconciliationPartialFillCancelTest {
         ExecutionContext context =
                 ExecutionContext.of(order);
 
-        order.markExecuting(
-                context
-        );
+        order.markExecuting(context);
 
         order.applyPartialFill(
                 context,
@@ -141,6 +139,7 @@ class ReconciliationPartialFillCancelTest {
 
         when(
                 exchangeQueryService.getOrderStatus(
+                        eq("BTCUSDT"),
                         eq("client-partial-cancel")
                 )
         ).thenReturn(
@@ -209,14 +208,13 @@ class ReconciliationPartialFillCancelTest {
         verify(
                 orderRepository,
                 times(1)
-        ).save(
-                eq(order)
-        );
+        ).save(eq(order));
 
         verify(
                 exchangeQueryService,
                 times(1)
         ).getOrderStatus(
+                eq("BTCUSDT"),
                 eq("client-partial-cancel")
         );
     }
