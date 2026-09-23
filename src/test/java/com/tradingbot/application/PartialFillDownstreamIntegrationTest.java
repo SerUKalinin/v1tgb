@@ -3,14 +3,14 @@ package com.tradingbot.application;
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.application.bootstrap.TradingSystemBootstrapper;
 import com.tradingbot.application.service.execution.SignalExecutionFacade;
-import com.tradingbot.application.service.risk.ReconciliationService;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.exchange.ExecutionPort;
+import com.tradingbot.domain.exchange.SymbolConstraints;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
-import com.tradingbot.domain.position.PositionStatus;
+import com.tradingbot.infrastructure.execution.exchange.ExchangeMetadataService;
 import com.tradingbot.infrastructure.outbox.OutboxProcessor;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
@@ -32,6 +32,7 @@ import org.springframework.test.context.ActiveProfiles;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -42,7 +43,8 @@ import static org.mockito.Mockito.when;
 
 @SpringBootTest(
         properties = {
-                "app.outbox.enabled=true"
+                "app.outbox.enabled=true",
+                "spring.task.scheduling.enabled=false"
         }
 )
 @ActiveProfiles("test")
@@ -78,6 +80,9 @@ class PartialFillDownstreamIntegrationTest {
     @MockBean
     private ExecutionPort executionPort;
 
+    @MockBean
+    private ExchangeMetadataService metadataService;
+
     @BeforeEach
     void prepareTestEnvironment() {
 
@@ -87,13 +92,20 @@ class PartialFillDownstreamIntegrationTest {
         when(systemStateManager.isReady())
                 .thenReturn(true);
 
-        /*
-         * Сначала удаляем зависимые сущности:
-         *
-         * TradeEntity -> OrderEntity
-         *
-         * Поэтому Trade нужно удалить до Order.
-         */
+        when(
+                metadataService.getConstraints("BTCUSDT")
+        ).thenReturn(
+                Optional.of(
+                        SymbolConstraints.builder()
+                                .symbol("BTCUSDT")
+                                .stepSize(new BigDecimal("0.00001"))
+                                .minQty(new BigDecimal("0.00001"))
+                                .tickSize(new BigDecimal("0.01"))
+                                .minNotional(new BigDecimal("5"))
+                                .build()
+                )
+        );
+
         tradeRepository.deleteAll();
         positionRepository.deleteAll();
         outboxEventRepository.deleteAll();
@@ -155,35 +167,15 @@ class PartialFillDownstreamIntegrationTest {
                 );
 
         /*
-         * Реальный application flow:
-         *
-         * Signal
-         * -> Risk
-         * -> Reservation
-         * -> Order
-         * -> ORDER_CREATED
-         */
-        signalExecutionFacade.execute(
-                signal
-        );
-
-        OrderEntity createdOrder =
-                waitForOrder(signalId);
-
-        UUID orderId =
-                createdOrder.getId();
-
-        assertNotNull(orderId);
-
-        /*
-         * Биржа отвечает частичным исполнением.
-         *
-         * Важно:
-         * exchangeTradeId должен быть заполнен,
-         * иначе OrderExecutedEventHandler не создаст Trade.
+         * ВАЖНО:
+         * ExecutionPort настраиваем ДО signalExecutionFacade.execute().
+         * Scheduler отключён, поэтому фактическое исполнение всё равно
+         * произойдёт только через явный drainOutbox().
          */
         when(
-                executionPort.placeOrder(any(Order.class))
+                executionPort.placeOrder(
+                        any(Order.class)
+                )
         ).thenAnswer(invocation -> {
 
             Order order =
@@ -205,8 +197,25 @@ class PartialFillDownstreamIntegrationTest {
         });
 
         /*
-         * Процессим:
-         *
+         * Signal
+         * -> Risk
+         * -> Reservation
+         * -> Order
+         * -> ORDER_CREATED
+         */
+        signalExecutionFacade.execute(
+                signal
+        );
+
+        OrderEntity createdOrder =
+                waitForOrder(signalId);
+
+        UUID orderId =
+                createdOrder.getId();
+
+        assertNotNull(orderId);
+
+        /*
          * ORDER_CREATED
          * -> claim
          * -> EXECUTING
@@ -243,8 +252,6 @@ class PartialFillDownstreamIntegrationTest {
         );
 
         /*
-         * Теперь downstream:
-         *
          * ORDER_EXECUTED
          * -> OrderExecutedEventHandler
          * -> TradeService
@@ -294,9 +301,6 @@ class PartialFillDownstreamIntegrationTest {
                 trade.getStrategyId()
         );
 
-        /*
-         * PositionProjectionHandler должен обработать TRADE_CREATED.
-         */
         PositionEntity position =
                 waitForPosition(
                         "BTCUSDT",
@@ -354,7 +358,8 @@ class PartialFillDownstreamIntegrationTest {
                                 Duration.ofSeconds(15)
                         );
 
-        OrderEntity current = null;
+        OrderEntity current =
+                null;
 
         while (
                 Instant.now().isBefore(deadline)

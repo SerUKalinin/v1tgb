@@ -7,18 +7,19 @@ import com.tradingbot.application.service.execution.SignalExecutionFacade;
 import com.tradingbot.application.service.risk.ReconciliationService;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.SignalType;
+import com.tradingbot.domain.event.SignalEvent;
+import com.tradingbot.domain.exchange.*;
 import com.tradingbot.domain.execution.ExchangeOrderQueryService;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
-import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.infrastructure.outbox.OutboxProcessor;
+import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
 import com.tradingbot.infrastructure.persistence.entity.RiskStateEntity;
 import com.tradingbot.infrastructure.persistence.repository.OrderRepository;
 import com.tradingbot.infrastructure.persistence.repository.OutboxEventRepository;
 import com.tradingbot.infrastructure.persistence.repository.RiskStateRepository;
-import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.tracing.ExecutionContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -70,8 +71,10 @@ class PartialFillThenCancelRiskStateIntegrationTest
     private ReconciliationService reconciliationService;
 
     @MockBean
-    private TradingSystemBootstrapper tradingSystemBootstrapper;
+    private ExchangeFeasibilityPort feasibilityPort;
 
+    @MockBean
+    private OrderNormalizationService normalizationService;
     @MockBean
     private SystemStateManager systemStateManager;
 
@@ -90,14 +93,21 @@ class PartialFillThenCancelRiskStateIntegrationTest
         when(systemStateManager.isReady())
                 .thenReturn(true);
 
-        riskStateRepository.deleteAll();
-
+        /*
+         * BaseIntegrationTest уже создаёт singleton GLOBAL.
+         *
+         * Не удаляем RiskState и не создаём вторую запись.
+         */
         RiskStateEntity riskState =
-                new RiskStateEntity();
-
-        riskState.setId(
-                RiskStateEntity.SINGLETON_ID
-        );
+                riskStateRepository
+                        .findById(
+                                RiskStateEntity.SINGLETON_ID
+                        )
+                        .orElseThrow(
+                                () -> new AssertionError(
+                                        "GLOBAL RiskState должен быть создан BaseIntegrationTest"
+                                )
+                        );
 
         riskState.setTotalEquity(
                 new BigDecimal("10000")
@@ -113,6 +123,10 @@ class PartialFillThenCancelRiskStateIntegrationTest
 
         riskState.setHalted(false);
 
+        riskState.setActiveReservations(
+                new java.util.HashMap<>()
+        );
+
         riskState.setUpdatedAt(
                 Instant.now()
         );
@@ -120,6 +134,67 @@ class PartialFillThenCancelRiskStateIntegrationTest
         riskStateRepository.saveAndFlush(
                 riskState
         );
+
+        /*
+         * Этот тест проверяет execution/risk lifecycle,
+         * а не реальные Binance symbol constraints.
+         *
+         * Поэтому exchange feasibility изолируем.
+         */
+        when(
+                normalizationService.normalize(
+                        any(FeasibilityRequest.class)
+                )
+        ).thenAnswer(invocation -> {
+
+            FeasibilityRequest request =
+                    invocation.getArgument(
+                            0,
+                            FeasibilityRequest.class
+                    );
+
+            return new NormalizedOrder(
+                    request.getSymbol(),
+                    request.getQuantity(),
+                    request.getPrice()
+            );
+        });
+
+        when(
+                feasibilityPort.check(
+                        any(FeasibilityRequest.class)
+                )
+        ).thenReturn(
+                FeasibilityResult.success()
+        );
+
+        /*
+         * Execution mock должен быть установлен
+         * ДО запуска SignalExecutionFacade.
+         */
+        when(
+                executionPort.placeOrder(
+                        any(Order.class)
+                )
+        ).thenAnswer(invocation -> {
+
+            Order order =
+                    invocation.getArgument(
+                            0,
+                            Order.class
+                    );
+
+            return ExecutionResult.partiallyFilled(
+                    order.getId(),
+                    "TEST-EXCHANGE-ORDER-" + order.getId(),
+                    "TEST-EXCHANGE-TRADE-" + order.getId(),
+                    order.getSymbol(),
+                    order.getSide(),
+                    new BigDecimal("0.3"),
+                    new BigDecimal("100"),
+                    order.getClientOrderId()
+            );
+        });
     }
 
     @Test
@@ -142,8 +217,13 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 );
 
         /*
-         * 1. Production path:
-         * SIGNAL -> RISK -> RESERVATION -> ORDER_CREATED
+         * SIGNAL
+         *   ->
+         * RISK
+         *   ->
+         * RESERVATION
+         *   ->
+         * ORDER
          */
         signalExecutionFacade.execute(
                 signal
@@ -155,14 +235,13 @@ class PartialFillThenCancelRiskStateIntegrationTest
         UUID orderId =
                 createdOrder.getId();
 
-        assertNotNull(orderId);
+        assertNotNull(
+                orderId,
+                "Order должен быть создан"
+        );
 
         /*
-         * После reservation:
-         *
-         * totalEquity      = 10000
-         * availableBalance = 9900
-         * reservedMargin   = 100
+         * Reservation = 100.
          */
         RiskStateEntity afterReservation =
                 getRiskState();
@@ -186,36 +265,14 @@ class PartialFillThenCancelRiskStateIntegrationTest
         );
 
         /*
-         * 2. Биржа возвращает PARTIALLY_FILLED:
-         *
-         * original quantity = 1.0
-         * executed quantity = 0.3
-         * remaining         = 0.7
+         * ORDER_CREATED уже должен существовать.
+         * Теперь вручную дренируем outbox.
          */
-        when(
-                executionPort.placeOrder(any())
-        ).thenAnswer(invocation -> {
-
-            var order =
-                    invocation.getArgument(
-                            0,
-                            com.tradingbot.domain.model.Order.class
-                    );
-
-            return ExecutionResult.partiallyFilled(
-                    order.getId(),
-                    "TEST-EXCHANGE-ORDER-" + order.getId(),
-                    "TEST-EXCHANGE-TRADE-" + order.getId(),
-                    order.getSymbol(),
-                    order.getSide(),
-                    new BigDecimal("0.3"),
-                    new BigDecimal("100"),
-                    order.getClientOrderId()
-            );
-        });
-
         drainOutbox();
 
+        /*
+         * Биржа вернула partial fill.
+         */
         OrderEntity partialOrder =
                 waitForStatus(
                         signalId,
@@ -224,12 +281,14 @@ class PartialFillThenCancelRiskStateIntegrationTest
 
         assertEquals(
                 orderId,
-                partialOrder.getId()
+                partialOrder.getId(),
+                "Order ID не должен измениться"
         );
 
         assertEquals(
                 OrderStatus.PARTIALLY_FILLED,
-                partialOrder.getStatus()
+                partialOrder.getStatus(),
+                "Order должен перейти в PARTIALLY_FILLED"
         );
 
         assertBigDecimal(
@@ -239,7 +298,8 @@ class PartialFillThenCancelRiskStateIntegrationTest
         );
 
         BigDecimal remainingQuantity =
-                partialOrder.getQuantity()
+                partialOrder
+                        .getQuantity()
                         .subtract(
                                 partialOrder.getExecutedQuantity()
                         );
@@ -251,10 +311,10 @@ class PartialFillThenCancelRiskStateIntegrationTest
         );
 
         /*
-         * После partial fill reservation:
+         * Reservation должен остаться только
+         * на неисполненную часть:
          *
-         * availableBalance = 9900
-         * reservedMargin   = 70
+         * 0.7 * 100 = 70
          */
         RiskStateEntity afterPartialFill =
                 getRiskState();
@@ -278,8 +338,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
         );
 
         /*
-         * executionId должен остаться тем же самым
-         * при переходе через reconciliation.
+         * Получаем canonical domain Order.
          */
         Order partialDomainOrder =
                 orderRepositoryPort
@@ -295,18 +354,24 @@ class PartialFillThenCancelRiskStateIntegrationTest
 
         assertNotNull(
                 executionId,
-                "executionId должен существовать после partial fill"
+                "executionId должен существовать"
         );
 
+        /*
+         * ExecutionContext строится из того же Order.
+         *
+         * Это одновременно проверяет identity SSOT,
+         * введённый PR #29.
+         */
         ExecutionContext context =
                 ExecutionContext.of(
                         partialDomainOrder
                 );
 
         /*
-         * 3. Симулируем реальное состояние биржи:
+         * Теперь биржа сообщает:
          *
-         * ордер был частично исполнен и затем отменён.
+         * PARTIALLY_FILLED -> CANCELED
          */
         when(
                 exchangeQueryService.getOrderStatus(
@@ -319,27 +384,21 @@ class PartialFillThenCancelRiskStateIntegrationTest
         );
 
         /*
-         * 4. Запускаем настоящую reconciliation-ветку:
-         *
-         * PARTIALLY_FILLED
-         *      ->
-         * CANCELED
-         *      +
-         * releasePartial()
+         * Запускаем реальную reconciliation ветку.
          */
         reconciliationService.reconcile(
                 context
         );
 
         /*
-         * 5. Проверяем состояние Order.
+         * Проверяем состояние Order.
          */
         Order canceledOrder =
                 orderRepositoryPort
                         .findById(orderId)
                         .orElseThrow(
                                 () -> new AssertionError(
-                                        "Domain Order не найден после CANCEL reconciliation"
+                                        "Domain Order не найден после CANCEL"
                                 )
                         );
 
@@ -355,6 +414,11 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 "executedQuantity не должен измениться после CANCEL"
         );
 
+        /*
+         * Критический identity invariant:
+         *
+         * CANCEL не создаёт новую execution identity.
+         */
         assertEquals(
                 executionId,
                 canceledOrder.getExecutionId(),
@@ -362,17 +426,13 @@ class PartialFillThenCancelRiskStateIntegrationTest
         );
 
         /*
-         * 6. Главное финансовое утверждение.
+         * После CANCEL освобождается только
+         * оставшийся резерв:
          *
-         * Было:
-         * balance = 9900
-         * reserve = 70
+         * remaining = 0.7
+         * reservation = 70
          *
-         * Освобождаем только remaining = 0.7 * 100 = 70.
-         *
-         * Должно стать:
-         * balance = 9970
-         * reserve = 0
+         * 9900 + 70 = 9970
          */
         RiskStateEntity afterCancel =
                 getRiskState();
@@ -404,7 +464,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 )
                 .orElseThrow(
                         () -> new AssertionError(
-                                "RiskState должен существовать"
+                                "GLOBAL RiskState не найден"
                         )
                 );
     }
@@ -413,10 +473,30 @@ class PartialFillThenCancelRiskStateIntegrationTest
             UUID signalId
     ) {
 
-        return waitForStatus(
-                signalId,
-                null
+        Instant deadline =
+                Instant.now()
+                        .plusSeconds(15);
+
+        while (Instant.now().isBefore(deadline)) {
+
+            OrderEntity order =
+                    orderRepository
+                            .findBySignalId(signalId)
+                            .orElse(null);
+
+            if (order != null) {
+                return order;
+            }
+
+            sleep(100);
+        }
+
+        fail(
+                "Order не создан за 15 секунд. signalId="
+                        + signalId
         );
+
+        return null;
     }
 
     private OrderEntity waitForStatus(
@@ -426,32 +506,21 @@ class PartialFillThenCancelRiskStateIntegrationTest
 
         Instant deadline =
                 Instant.now()
-                        .plus(
-                                Duration.ofSeconds(15)
-                        );
+                        .plusSeconds(15);
 
         OrderEntity current = null;
 
-        while (
-                Instant.now().isBefore(deadline)
-        ) {
+        while (Instant.now().isBefore(deadline)) {
 
             current =
                     orderRepository
-                            .findBySignalId(
-                                    signalId
-                            )
+                            .findBySignalId(signalId)
                             .orElse(null);
 
-            if (current != null) {
+            if (current != null
+                    && current.getStatus() == expectedStatus) {
 
-                if (expectedStatus == null) {
-                    return current;
-                }
-
-                if (current.getStatus() == expectedStatus) {
-                    return current;
-                }
+                return current;
             }
 
             sleep(100);
@@ -460,47 +529,52 @@ class PartialFillThenCancelRiskStateIntegrationTest
         if (current == null) {
 
             fail(
-                    "Order не создан за 15 секунд. " +
-                            "signalId=" + signalId
+                    "Order не найден. signalId="
+                            + signalId
             );
         }
 
         fail(
-                "Order не перешёл в ожидаемый статус за 15 секунд. " +
-                        "expected=" + expectedStatus +
-                        ", actual=" + current.getStatus() +
-                        ", orderId=" + current.getId() +
-                        ", executionId=" + current.getExecutionId()
+                "Order не перешёл в " +
+                        expectedStatus +
+                        ". actual=" +
+                        current.getStatus() +
+                        ", orderId=" +
+                        current.getId() +
+                        ", executionId=" +
+                        current.getExecutionId()
         );
 
-        return current;
+        return null;
     }
 
     private void drainOutbox() {
 
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 20; i++) {
 
             outboxProcessor.processOutbox();
 
-            boolean hasPendingEvents =
+            boolean pending =
                     outboxRepository
                             .findAll()
                             .stream()
                             .anyMatch(
                                     event ->
                                             event.getStatus()
-                                                    != com.tradingbot.infrastructure.outbox.OutboxStatus.PROCESSED
+                                                    != OutboxStatus.PROCESSED
                                                     && event.getStatus()
-                                                    != com.tradingbot.infrastructure.outbox.OutboxStatus.DEAD
+                                                    != OutboxStatus.DEAD
                             );
 
-            if (!hasPendingEvents) {
+            if (!pending) {
                 return;
             }
+
+            sleep(100);
         }
 
         fail(
-                "Outbox chain не удалось полностью обработать за 10 проходов"
+                "Не удалось полностью обработать outbox"
         );
     }
 
@@ -512,7 +586,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
 
         assertNotNull(
                 actual,
-                message + ": значение null"
+                message + ": actual == null"
         );
 
         assertEquals(
@@ -521,14 +595,14 @@ class PartialFillThenCancelRiskStateIntegrationTest
                         new BigDecimal(expected)
                 ),
                 message +
-                        ": expected=" + expected +
-                        ", actual=" + actual
+                        ": expected=" +
+                        expected +
+                        ", actual=" +
+                        actual
         );
     }
 
-    private void sleep(
-            long millis
-    ) {
+    private void sleep(long millis) {
 
         try {
 
@@ -540,7 +614,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
                     .interrupt();
 
             fail(
-                    "Test thread был прерван"
+                    "Test thread interrupted"
             );
         }
     }

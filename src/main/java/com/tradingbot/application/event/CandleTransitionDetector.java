@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -14,15 +15,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Детектор перехода свечи в закрытое состояние.
  *
- * Отвечает за определение факта появления новой закрытой свечи
+ * <p>Отвечает за определение появления новой фактически закрытой свечи
  * в потоке рыночных данных.
  *
- * Гарантирует, что каждая свеча будет обработана строго один раз,
- * даже при конкурентной обработке потоков.
- *
- * Использует комбинацию:
- * - in-memory cache (ConcurrentHashMap)
- * - внешнего репозитория идемпотентности (ProcessedCandleRepository)
+ * <p>Гарантирует идемпотентную обработку свечи:
+ * одна свеча с одним openTime не должна приводить
+ * к повторной генерации события.
  */
 @Slf4j
 @Component
@@ -30,81 +28,170 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class CandleTransitionDetector {
 
     /**
-     * Кэш последних обработанных свечей по символу.
+     * Последняя обработанная закрытая свеча по символу.
      *
-     * Key: торговый символ (например BTCUSDT)
-     * Value: openTime последней обработанной свечи
+     * Key:
+     *     торговый символ
+     *
+     * Value:
+     *     openTime последней обработанной свечи
      */
-    private final ConcurrentHashMap<String, Instant> lastProcessed = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Instant> lastProcessed =
+            new ConcurrentHashMap<>();
 
     /**
-     * Репозиторий идемпотентности для гарантии,
-     * что свеча не будет обработана повторно даже после рестарта.
+     * Репозиторий идемпотентности.
      */
     private final ProcessedCandleRepository processedCandleRepository;
 
     /**
-     * Проверяет, является ли последняя свеча в окне новой закрытой свечой.
+     * Инициализирует baseline после warm-up.
      *
-     * Алгоритм:
-     * 1. Проверка готовности окна
-     * 2. Получение последней свечи
-     * 3. Сверка с in-memory состоянием
-     * 4. Фиксация через persistent repository (идемпотентность)
-     * 5. Генерация события при первом обнаружении
+     * <p>Последняя уже закрытая историческая свеча
+     * не должна повторно породить NewClosedCandleEvent
+     * только потому, что система впервые начала работать.
      *
-     * @param window окно свечей
-     * @return Optional события новой закрытой свечи
+     * @param symbol   торговый символ
+     * @param openTime openTime последней закрытой свечи
      */
-    public Optional<NewClosedCandleEvent> detect(CandleWindow window) {
-        if (!window.isReady()) {
-            return Optional.empty();
+    public void prime(
+            String symbol,
+            Instant openTime
+    ) {
+        if (symbol == null || symbol.isBlank()) {
+            throw new IllegalArgumentException(
+                    "symbol не должен быть пустым"
+            );
         }
 
-        Candle lastCandle = window.getLast();
-        String symbol = window.getSymbol();
-        Instant openTime = lastCandle.getOpenTime();
-
-        AtomicBoolean isNew = new AtomicBoolean(false);
-
-        lastProcessed.compute(symbol, (key, current) -> {
-            if (current == null || !current.equals(openTime)) {
-                if (processedCandleRepository.markAsProcessed(symbol, openTime)) {
-                    isNew.set(true);
-                    return openTime;
-                }
-            }
-            return current;
-        });
-
-        if (isNew.get()) {
-            log.info("[DETECTOR] New closed candle detected: symbol={} openTime={}", symbol, openTime);
-            return Optional.of(new NewClosedCandleEvent(
-                    symbol,
-                    lastCandle.getOpen(),
-                    lastCandle.getHigh(),
-                    lastCandle.getLow(),
-                    lastCandle.getClose(),
-                    lastCandle.getVolume(),
-                    lastCandle.getCloseTime()
-            ));
+        if (openTime == null) {
+            throw new IllegalArgumentException(
+                    "openTime не должен быть null"
+            );
         }
 
-        return Optional.empty();
+        lastProcessed.merge(
+                symbol,
+                openTime,
+                (current, candidate) ->
+                        candidate.isAfter(current)
+                                ? candidate
+                                : current
+        );
+
+        log.info(
+                "[DETECTOR] Primed baseline: symbol={} openTime={}",
+                symbol,
+                openTime
+        );
     }
 
     /**
-     * Сбрасывает in-memory состояние обработки для указанного символа.
+     * Ищет последнюю фактически закрытую свечу
+     * и генерирует событие только при её новом появлении.
      *
-     * Используется при:
-     * - пересинхронизации рынка
-     * - холодном старте
-     * - сбросе состояния стратегии
+     * <p>Текущая формирующаяся свеча игнорируется,
+     * даже если она является последней свечой окна.
+     *
+     * @param window окно свечей
+     * @return событие новой закрытой свечи
+     */
+    public Optional<NewClosedCandleEvent> detect(
+            CandleWindow window
+    ) {
+        if (window == null || !window.isReady()) {
+            return Optional.empty();
+        }
+
+        String symbol = window.getSymbol();
+
+        Optional<Candle> latestClosed = window.getCandles().stream()
+                .filter(Candle::isClosed)
+                .max(
+                        Comparator.comparing(
+                                Candle::getOpenTime
+                        )
+                );
+
+        if (latestClosed.isEmpty()) {
+            log.debug(
+                    "[DETECTOR] No closed candle available: symbol={}",
+                    symbol
+            );
+
+            return Optional.empty();
+        }
+
+        Candle candle = latestClosed.get();
+        Instant openTime = candle.getOpenTime();
+
+        AtomicBoolean isNew = new AtomicBoolean(false);
+
+        lastProcessed.compute(
+                symbol,
+                (key, current) -> {
+
+                    /*
+                     * Уже обработанная или более старая свеча.
+                     */
+                    if (current != null
+                            && !openTime.isAfter(current)) {
+                        return current;
+                    }
+
+                    /*
+                     * Persistent idempotency boundary.
+                     */
+                    if (processedCandleRepository.markAsProcessed(
+                            symbol,
+                            openTime
+                    )) {
+                        isNew.set(true);
+                    }
+
+                    return openTime;
+                }
+        );
+
+        if (!isNew.get()) {
+            return Optional.empty();
+        }
+
+        log.info(
+                "[DETECTOR] New closed candle detected: symbol={} openTime={} closeTime={}",
+                symbol,
+                candle.getOpenTime(),
+                candle.getCloseTime()
+        );
+
+        return Optional.of(
+                new NewClosedCandleEvent(
+                        symbol,
+                        candle.getOpen(),
+                        candle.getHigh(),
+                        candle.getLow(),
+                        candle.getClose(),
+                        candle.getVolume(),
+                        candle.getCloseTime()
+                )
+        );
+    }
+
+    /**
+     * Сбрасывает in-memory состояние обработки для символа.
      *
      * @param symbol торговый символ
      */
     public void reset(String symbol) {
+        if (symbol == null || symbol.isBlank()) {
+            return;
+        }
+
         lastProcessed.remove(symbol);
-        log.info("Reset processed state for symbol {}", symbol);
+
+        log.info(
+                "Reset processed state for symbol {}",
+                symbol
+        );
     }
 }
