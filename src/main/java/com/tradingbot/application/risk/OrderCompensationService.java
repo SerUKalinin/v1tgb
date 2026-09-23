@@ -16,12 +16,11 @@ import java.util.UUID;
  * Сервис компенсации risk-резерва по ордерам.
  *
  * <p>
- * BUY и SELL имеют разную финансовую семантику:
- * <ul>
- *     <li>BUY резервирует quote capital и после FILLED потребляет reservation;</li>
- *     <li>SELL не резервирует quote capital и после FILLED
- *     зачисляет фактическую выручку в available balance.</li>
- * </ul>
+ * BUY резервирует quote capital.
+ *
+ * <p>
+ * SELL не резервирует quote capital и после исполнения
+ * зачисляет фактическую выручку.
  */
 @Slf4j
 @Service
@@ -64,8 +63,8 @@ public class OrderCompensationService {
     /**
      * Полное освобождение зарезервированного капитала.
      *
-     * @param order ордер
-     * @param reason причина компенсации
+     * @param order исходный ордер
+     * @param reason причина
      */
     public void releaseFull(
             Order order,
@@ -73,7 +72,9 @@ public class OrderCompensationService {
     ) {
         BigDecimal releaseAmount =
                 order.getQuantity()
-                        .multiply(order.getPrice());
+                        .multiply(
+                                order.getPrice()
+                        );
 
         ExecutionContext context =
                 ExecutionContext.of(order);
@@ -86,27 +87,16 @@ public class OrderCompensationService {
     }
 
     /**
-     * Фиксирует финансовый результат полного исполнения ордера.
+     * Полное/обычное settlement исполнения.
      *
      * <p>
-     * BUY:
-     * <pre>
-     * reservation -> consume
-     * </pre>
-     *
-     * <p>
-     * SELL:
-     * <pre>
-     * executedQuantity * averagePrice -> available balance
-     * </pre>
-     *
-     * @param order полностью исполненный ордер
-     * @param reason причина обработки
+     * Используется существующим execution path.
      */
     public void consumeReservation(
             Order order,
             String reason
     ) {
+
         ExecutionContext context =
                 ExecutionContext.of(order);
 
@@ -120,6 +110,7 @@ public class OrderCompensationService {
 
             if (executedQuantity == null
                     || executedQuantity.signum() <= 0) {
+
                 throw new IllegalStateException(
                         "BUY settlement requires positive executed quantity. orderId="
                                 + order.getId()
@@ -128,6 +119,7 @@ public class OrderCompensationService {
 
             if (executedPrice == null
                     || executedPrice.signum() <= 0) {
+
                 throw new IllegalStateException(
                         "BUY settlement requires positive executed price. orderId="
                                 + order.getId()
@@ -164,6 +156,7 @@ public class OrderCompensationService {
 
             if (executedQuantity == null
                     || executedQuantity.signum() <= 0) {
+
                 throw new IllegalStateException(
                         "SELL settlement requires positive executed quantity. orderId="
                                 + order.getId()
@@ -172,6 +165,7 @@ public class OrderCompensationService {
 
             if (executedPrice == null
                     || executedPrice.signum() <= 0) {
+
                 throw new IllegalStateException(
                         "SELL settlement requires positive executed price. orderId="
                                 + order.getId()
@@ -197,7 +191,9 @@ public class OrderCompensationService {
                             "SELL order fully filled"
                     );
 
-            riskEngine.publish(event);
+            riskEngine.publish(
+                    event
+            );
 
             log.info(
                     "[RISK] Credited SELL proceeds {} for order {}",
@@ -210,6 +206,133 @@ public class OrderCompensationService {
 
         throw new IllegalStateException(
                 "Unsupported order side for risk settlement: "
+                        + order.getSide()
+                        + ", orderId="
+                        + order.getId()
+        );
+    }
+
+    /**
+     * Settlement только новой incremental части исполнения.
+     *
+     * <p>
+     * Ключевая семантика recovery:
+     *
+     * <pre>
+     * cumulative 0.3 -> settle 0.3
+     * cumulative 0.6 -> settle next 0.3
+     * cumulative 1.0 -> settle next 0.4
+     * </pre>
+     *
+     * <p>
+     * settlementKey идентифицирует cumulative checkpoint биржи
+     * и является частью deterministic event identity.
+     *
+     * @param order ордер
+     * @param incrementalNotional новое неsettled notional
+     * @param settlementKey cumulative checkpoint
+     * @param reason причина settlement
+     */
+    public void settleIncrementalExecution(
+            Order order,
+            BigDecimal incrementalNotional,
+            String settlementKey,
+            String reason
+    ) {
+
+        if (incrementalNotional == null
+                || incrementalNotional.signum() < 0) {
+
+            throw new IllegalArgumentException(
+                    "Incremental execution notional cannot be negative. orderId="
+                            + order.getId()
+            );
+        }
+
+        /*
+         * Нулевой delta — idempotent no-op.
+         *
+         * В частности:
+         *
+         * exchange 0.6
+         * internal 0.6
+         *
+         * повторный recovery не должен трогать RiskState.
+         */
+        if (incrementalNotional.signum() == 0) {
+            log.info(
+                    "[RISK] No incremental settlement required for order {}. key={}",
+                    order.getId(),
+                    settlementKey
+            );
+            return;
+        }
+
+        if (settlementKey == null
+                || settlementKey.isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Settlement key is required. orderId="
+                            + order.getId()
+            );
+        }
+
+        ExecutionContext context =
+                ExecutionContext.of(order);
+
+        if (order.getSide() == OrderSide.BUY) {
+
+            riskEngine.consumeReservation(
+                    context,
+                    incrementalNotional,
+                    reason,
+                    settlementKey
+            );
+
+            log.info(
+                    "[RISK] Incremental BUY settlement: " +
+                            "orderId={}, deltaNotional={}, key={}",
+                    order.getId(),
+                    incrementalNotional,
+                    settlementKey
+            );
+
+            return;
+        }
+
+        if (order.getSide() == OrderSide.SELL) {
+
+            UUID eventId =
+                    IdentityFactory.deriveEventId(
+                            context.attempt().executionId(),
+                            "capital-credited:" + settlementKey
+                    );
+
+            RiskEvent.CapitalCredited event =
+                    new RiskEvent.CapitalCredited(
+                            eventId.toString(),
+                            order.getId(),
+                            incrementalNotional,
+                            reason
+                    );
+
+            riskEngine.publish(
+                    event
+            );
+
+            log.info(
+                    "[RISK] Incremental SELL settlement: " +
+                            "orderId={}, proceeds={}, key={}",
+                    order.getId(),
+                    incrementalNotional,
+                    settlementKey
+            );
+
+            return;
+        }
+
+        throw new IllegalStateException(
+                "Unsupported order side for incremental settlement: "
                         + order.getSide()
                         + ", orderId="
                         + order.getId()

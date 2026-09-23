@@ -4,10 +4,12 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * Лог записи событий резервирования капитала в риск-системе.
+ * Лог записи событий резервирования капитала.
+ *
  * <p>
- * Фиксирует факт изменения состояния резерва: создание или освобождение средств
- * под конкретный торговый ордер.
+ * Каждая запись должна иметь собственный deterministic eventId,
+ * чтобы несколько CONSUME / RELEASE операций одного ордера
+ * не конфликтовали в persistence.
  */
 public record RiskReservationLog(
 
@@ -28,8 +30,16 @@ public record RiskReservationLog(
         RiskReservationEventType eventType,
 
         /**
-         * Сумма резерва.
+         * Сумма операции.
          */
-        BigDecimal amount
+        BigDecimal amount,
+
+        /**
+         * Deterministic identity конкретной risk-операции.
+         *
+         * <p>
+         * Используется как primary key в risk_reservation_log.
+         */
+        UUID eventId
 ) {
 }

@@ -16,9 +16,6 @@ import java.util.Optional;
 
 /**
  * Фасадный application-слой поверх RiskService.
- *
- * <p>Именно application-слой владеет транзакционной границей.
- * Доменный RiskService не зависит от Spring.</p>
  */
 @Component
 @RequiredArgsConstructor
@@ -28,19 +25,15 @@ public class RiskEngine {
 
     /**
      * Публикует событие риска.
-     *
-     * @param event событие риска
      */
-    public void publish(RiskEvent event) {
+    public void publish(
+            RiskEvent event
+    ) {
         riskService.publish(event);
     }
 
     /**
      * Пытается зарезервировать указанную сумму.
-     *
-     * @param context execution context
-     * @param amount сумма
-     * @return решение по риску
      */
     public RiskDecision reserve(
             ExecutionContext context,
@@ -54,10 +47,6 @@ public class RiskEngine {
 
     /**
      * Освобождает ранее зарезервированные средства.
-     *
-     * @param context execution context
-     * @param amount сумма
-     * @param reason причина
      */
     public void release(
             ExecutionContext context,
@@ -74,9 +63,10 @@ public class RiskEngine {
     /**
      * Помечает reservation как использованную фактическим исполнением.
      *
-     * @param context execution context
-     * @param executedNotional фактический notional
-     * @param reason причина
+     * <p>
+     * Legacy/current execution path.
+     * Один execution lifecycle использует один deterministic
+     * settlement identity.
      */
     public void consumeReservation(
             ExecutionContext context,
@@ -91,14 +81,33 @@ public class RiskEngine {
     }
 
     /**
-     * Оценивает сигнал и создаёт Order.
+     * Потребляет incremental execution settlement.
      *
-     * <p>Транзакционная граница находится в application-слое,
-     * а не в domain.</p>
+     * <p>
+     * Используется recovery-path, где exchange executedQty
+     * является cumulative quantity.
      *
      * @param context execution context
-     * @param signal торговый сигнал
-     * @return созданный Order
+     * @param executedNotional delta notional
+     * @param reason причина settlement
+     * @param settlementKey deterministic cumulative checkpoint
+     */
+    public void consumeReservation(
+            ExecutionContext context,
+            BigDecimal executedNotional,
+            String reason,
+            String settlementKey
+    ) {
+        riskService.consumeReservation(
+                context,
+                executedNotional,
+                reason,
+                settlementKey
+        );
+    }
+
+    /**
+     * Оценивает сигнал и создаёт Order.
      */
     @Transactional
     public Optional<Order> evaluateSignal(
@@ -113,10 +122,10 @@ public class RiskEngine {
 
     /**
      * Освобождает средства с фиктивной суммой COMPENSATION.
-     *
-     * @param context execution context
      */
-    public void release(ExecutionContext context) {
+    public void release(
+            ExecutionContext context
+    ) {
         riskService.release(
                 context,
                 BigDecimal.ZERO,
@@ -126,8 +135,6 @@ public class RiskEngine {
 
     /**
      * Синхронизирует текущий баланс.
-     *
-     * @param actualBalance фактический баланс
      */
     public void syncBalance(
             BigDecimal actualBalance
@@ -139,11 +146,13 @@ public class RiskEngine {
 
     /**
      * Включает аварийную остановку.
-     *
-     * @param reason причина
      */
-    public void emergencyStop(String reason) {
-        riskService.emergencyStop(reason);
+    public void emergencyStop(
+            String reason
+    ) {
+        riskService.emergencyStop(
+                reason
+        );
     }
 
     /**
@@ -155,17 +164,17 @@ public class RiskEngine {
 
     /**
      * Инициализирует состояние рисков.
-     *
-     * @param state начальное состояние
      */
-    public void initialize(RiskState state) {
-        riskService.initialize(state);
+    public void initialize(
+            RiskState state
+    ) {
+        riskService.initialize(
+                state
+        );
     }
 
     /**
      * Возвращает текущее состояние рисков.
-     *
-     * @return RiskState
      */
     public RiskState getState() {
         return riskService.getState();
