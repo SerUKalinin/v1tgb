@@ -406,7 +406,22 @@ public class Order {
     }
 
     /**
-     * Применяет partial fill.
+     * Применяет authoritative cumulative partial fill.
+     *
+     * <p>
+     * Значение qty от биржи является cumulative executed quantity,
+     * а не размером очередного fill.
+     *
+     * <p>
+     * Поэтому:
+     * <ul>
+     *     <li>меньшее cumulative quantity запрещено;</li>
+     *     <li>одинаковое quantity + price является idempotent no-op;</li>
+     *     <li>большее quantity обновляет состояние;</li>
+     *     <li>RECOVERING -> PARTIALLY_FILLED разрешается policy;</li>
+     *     <li>PARTIALLY_FILLED -> PARTIALLY_FILLED разрешается для
+     *         повторной reconciliation.</li>
+     * </ul>
      */
     public void applyPartialFill(
             ExecutionContext context,
@@ -415,22 +430,64 @@ public class Order {
     ) {
         validateExecutionIdentity(context);
 
-        if (this.status == OrderStatus.PARTIALLY_FILLED) {
-            return;
+        if (qty == null || qty.signum() <= 0) {
+            throw new IllegalArgumentException(
+                    "Partial fill executed quantity must be positive"
+            );
         }
 
-        if (this.lastAppliedExecutionId != null
-                && this.lastAppliedExecutionId.equals(
-                context.attempt().executionId()
+        if (price == null || price.signum() <= 0) {
+            throw new IllegalArgumentException(
+                    "Partial fill execution price must be positive"
+            );
+        }
+
+        BigDecimal currentExecutedQuantity =
+                this.executedQuantity == null
+                        ? BigDecimal.ZERO
+                        : this.executedQuantity;
+
+        /*
+         * Exchange result is cumulative.
+         * It must never move execution backwards.
+         */
+        if (qty.compareTo(currentExecutedQuantity) < 0) {
+            throw new IllegalStateException(
+                    String.format(
+                            "Cumulative executed quantity cannot decrease " +
+                                    "for order %s: current=%s incoming=%s",
+                            this.id,
+                            currentExecutedQuantity,
+                            qty
+                    )
+            );
+        }
+
+        /*
+         * Exact duplicate recovery result.
+         */
+        if (qty.compareTo(currentExecutedQuantity) == 0
+                && Objects.equals(
+                this.averagePrice,
+                price
         )) {
             return;
         }
 
-        OrderStateTransitionPolicy.validateAndPassThrough(
-                context,
-                this.status,
-                OrderStatus.PARTIALLY_FILLED
-        );
+        /*
+         * First transition into PARTIALLY_FILLED.
+         *
+         * For a repeated PARTIALLY_FILLED result,
+         * current == target is allowed by the policy.
+         */
+        if (this.status != OrderStatus.PARTIALLY_FILLED) {
+
+            OrderStateTransitionPolicy.validateAndPassThrough(
+                    context,
+                    this.status,
+                    OrderStatus.PARTIALLY_FILLED
+            );
+        }
 
         this.lastAppliedExecutionId =
                 context.attempt().executionId();
@@ -438,6 +495,7 @@ public class Order {
         this.executedQuantity = qty;
         this.averagePrice = price;
         this.status = OrderStatus.PARTIALLY_FILLED;
+        this.updatedAt = Instant.now();
     }
 
     /**

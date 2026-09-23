@@ -135,13 +135,18 @@ class ReconciliationServiceIsolationTest {
         order.markExecuting(context);
         order.markAsUnknown(context);
 
+        /*
+         * Реальный claim переводит UNKNOWN -> RECOVERING.
+         * Здесь эмулируем тот же lifecycle.
+         */
         when(
                 orderRepository.claimForReconciliation(
                         orderId
                 )
-        ).thenReturn(
-                Optional.of(order)
-        );
+        ).thenAnswer(invocation -> {
+            order.markRecovering(context);
+            return Optional.of(order);
+        });
 
         when(
                 exchangeQueryService.getOrderStatus(

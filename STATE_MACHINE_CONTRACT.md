@@ -138,6 +138,8 @@ UNKNOWN
 
 ```text
 RECOVERING
+ ├──> SENT_TO_EXCHANGE
+ ├──> PARTIALLY_FILLED
  ├──> FILLED
  ├──> REJECTED
  ├──> CANCELED
@@ -250,6 +252,8 @@ Blind resubmission from `UNKNOWN` is forbidden.
 The recovery process may resolve the order to:
 
 ```text
+SENT_TO_EXCHANGE
+PARTIALLY_FILLED
 FILLED
 REJECTED
 CANCELED

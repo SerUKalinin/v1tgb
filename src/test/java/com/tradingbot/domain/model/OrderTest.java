@@ -168,13 +168,14 @@ class OrderTest {
     }
 
     @Test
-    @DisplayName("UNKNOWN state recovery разрешает fill")
-    void unknownAllowsFill() {
+    @DisplayName("UNKNOWN -> RECOVERING -> FILLED")
+    void recoveryAllowsFill() {
         Order order = createOrder();
         ExecutionContext context = testContext(order);
 
         order.markExecuting(context);
         order.markAsUnknown(context);
+        order.markRecovering(context);
 
         assertDoesNotThrow(
                 () -> order.fill(
@@ -184,22 +185,44 @@ class OrderTest {
                         new BigDecimal("102.0")
                 )
         );
+
+        assertEquals(
+                OrderStatus.FILLED,
+                order.getStatus()
+        );
+
+        assertEquals(
+                new BigDecimal("1.0"),
+                order.getExecutedQuantity()
+        );
+
+        assertEquals(
+                0,
+                new BigDecimal("102.0")
+                        .compareTo(order.getAveragePrice())
+        );
     }
 
     @Test
-    @DisplayName("UNKNOWN разрешает reject")
-    void unknownAllowsReject() {
+    @DisplayName("UNKNOWN -> RECOVERING -> REJECTED")
+    void recoveryAllowsReject() {
         Order order = createOrder();
         ExecutionContext context = testContext(order);
 
         order.markExecuting(context);
         order.markAsUnknown(context);
+        order.markRecovering(context);
 
         assertDoesNotThrow(
                 () -> order.markAsRejected(
                         context,
                         "ambiguous"
                 )
+        );
+
+        assertEquals(
+                OrderStatus.REJECTED,
+                order.getStatus()
         );
     }
 

@@ -1,9 +1,7 @@
 package com.tradingbot.application.service.execution;
 
 import com.tradingbot.BaseIntegrationTest;
-import com.tradingbot.common.enums.OrderSide;
 import com.tradingbot.common.enums.OrderStatus;
-import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.infrastructure.persistence.adapter.OrderRepositoryAdapter;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
@@ -33,7 +31,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @SpringBootTest
@@ -74,10 +71,11 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
             String message
     ) {
         try {
-            boolean completed = latch.await(
-                    timeout.toMillis(),
-                    TimeUnit.MILLISECONDS
-            );
+            boolean completed =
+                    latch.await(
+                            timeout.toMillis(),
+                            TimeUnit.MILLISECONDS
+                    );
 
             Assertions.assertThat(completed)
                     .as(message)
@@ -85,6 +83,7 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+
             throw new AssertionError(
                     "Interrupted while waiting for concurrency barrier",
                     e
@@ -101,8 +100,10 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
                         "Executor did not terminate within timeout"
                 );
             }
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+
             throw new AssertionError(
                     "Interrupted while shutting down executor",
                     e
@@ -113,14 +114,19 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
     private void rethrowFutureFailure(Future<?> future) {
         try {
             future.get();
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+
             throw new AssertionError(
                     "Interrupted while waiting for concurrent worker",
                     e
             );
+
         } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
+
+            Throwable cause =
+                    e.getCause();
 
             if (cause instanceof AssertionError assertionError) {
                 throw assertionError;
@@ -145,9 +151,12 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
     void executionAlwaysWinsReconciliationRace() {
 
         Order persistedOrder =
-                persistOrder(OrderStatus.PENDING_EXECUTION);
+                persistOrder(
+                        OrderStatus.PENDING_EXECUTION
+                );
 
-        UUID orderId = persistedOrder.getId();
+        UUID orderId =
+                persistedOrder.getId();
 
         ExecutionContext executionContext =
                 contextOf(persistedOrder);
@@ -155,65 +164,65 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
         CountDownLatch executionClaimed =
                 new CountDownLatch(1);
 
-        AtomicBoolean reconciliationClaimed =
-                new AtomicBoolean(false);
+        AtomicInteger reconciliationClaims =
+                new AtomicInteger(0);
 
         ExecutorService executor =
                 Executors.newFixedThreadPool(2);
 
-        Future<?> executionFuture = executor.submit(() -> {
+        Future<?> executionFuture =
+                executor.submit(() -> {
 
-            Optional<Order> executionOrder =
-                    orderRepositoryAdapter.claimForExecution(
-                            orderId,
-                            executionContext
+                    Optional<Order> executionOrder =
+                            orderRepositoryAdapter.claimForExecution(
+                                    orderId,
+                                    executionContext
+                            );
+
+                    Assertions.assertThat(executionOrder)
+                            .as(
+                                    "execution worker must acquire PENDING_EXECUTION order"
+                            )
+                            .isPresent();
+
+                    executionClaimed.countDown();
+
+                    Order order =
+                            executionOrder.orElseThrow();
+
+                    order.fill(
+                            executionContext,
+                            "exchange-order-execution",
+                            BigDecimal.ONE,
+                            new BigDecimal("10001")
                     );
 
-            Assertions.assertThat(executionOrder)
-                    .as("execution worker must acquire PENDING_EXECUTION order")
-                    .isPresent();
+                    orderRepositoryAdapter.save(order);
+                });
 
-            /*
-             * Важно:
-             * claimForExecution() уже завершил REQUIRED transaction
-             * к моменту возврата из метода.
-             *
-             * Следовательно после countDown row уже находится
-             * в EXECUTING и ownership принадлежит execution worker.
-             */
-            executionClaimed.countDown();
+        Future<?> reconciliationFuture =
+                executor.submit(() -> {
 
-            Order order = executionOrder.orElseThrow();
+                    await(
+                            executionClaimed,
+                            Duration.ofSeconds(10),
+                            "execution worker did not claim order in time"
+                    );
 
-            order.fill(
-                    executionContext,
-                    "exchange-order-execution",
-                    BigDecimal.ONE,
-                    new BigDecimal("10001")
-            );
+                    Optional<Order> reconciliationOrder =
+                            orderRepositoryAdapter.claimForReconciliation(
+                                    orderId
+                            );
 
-            orderRepositoryAdapter.save(order);
-        });
-
-        Future<?> reconciliationFuture = executor.submit(() -> {
-
-            await(
-                    executionClaimed,
-                    Duration.ofSeconds(10),
-                    "execution worker did not claim order in time"
-            );
-
-            Optional<Order> reconciliationOrder =
-                    orderRepositoryAdapter.claimForReconciliation(orderId);
-
-            reconciliationClaimed.set(
-                    reconciliationOrder.isPresent()
-            );
-        });
+                    if (reconciliationOrder.isPresent()) {
+                        reconciliationClaims.incrementAndGet();
+                    }
+                });
 
         try {
             rethrowFutureFailure(executionFuture);
             rethrowFutureFailure(reconciliationFuture);
+
         } finally {
             shutdown(executor);
         }
@@ -225,14 +234,18 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
         Assertions.assertThat(
                         finalState.getStatus()
                 )
-                .as("execution worker must finish the order")
+                .as(
+                        "execution worker must finish the order"
+                )
                 .isEqualTo(OrderStatus.FILLED);
 
         Assertions.assertThat(
-                        reconciliationClaimed.get()
+                        reconciliationClaims.get()
                 )
-                .as("reconciliation must not steal an active execution")
-                .isFalse();
+                .as(
+                        "reconciliation must not steal an active execution"
+                )
+                .isZero();
 
         Assertions.assertThat(
                         finalState.getExecutionId()
@@ -250,17 +263,16 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
     void staleVersionReconciliationIsRejected() {
 
         Order persistedOrder =
-                persistOrder(OrderStatus.PENDING_EXECUTION);
+                persistOrder(
+                        OrderStatus.PENDING_EXECUTION
+                );
 
-        UUID orderId = persistedOrder.getId();
+        UUID orderId =
+                persistedOrder.getId();
 
         ExecutionContext executionContext =
                 contextOf(persistedOrder);
 
-        /*
-         * Получаем detached persistence snapshot
-         * с исходной @Version.
-         */
         OrderEntity staleEntity =
                 orderRepository.findById(orderId)
                         .orElseThrow();
@@ -268,11 +280,6 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
         Long staleVersion =
                 staleEntity.getVersion();
 
-        /*
-         * Execution worker меняет Order.
-         *
-         * Hibernate увеличивает @Version при flush.
-         */
         Order executionOrder =
                 orderRepositoryAdapter.claimForExecution(
                                 orderId,
@@ -283,14 +290,10 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
         Assertions.assertThat(
                         executionOrder.getStatus()
                 )
-                .isEqualTo(OrderStatus.EXECUTING);
+                .isEqualTo(
+                        OrderStatus.EXECUTING
+                );
 
-        /*
-         * Не используем executionOrder.getVersion():
-         * это domain snapshot, созданный до Hibernate version increment.
-         *
-         * Читаем authoritative persistence state из БД.
-         */
         OrderEntity currentEntity =
                 orderRepository.findById(orderId)
                         .orElseThrow();
@@ -299,18 +302,24 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
                 currentEntity.getVersion();
 
         Assertions.assertThat(currentVersion)
-                .as("Hibernate @Version must increase after execution claim")
+                .as(
+                        "Hibernate @Version must increase after execution claim"
+                )
                 .isGreaterThan(staleVersion);
 
-        /*
-         * Теперь stale detached entity пытается записаться
-         * с устаревшей @Version.
-         */
-        staleEntity.setStatus(OrderStatus.REJECTED);
-        staleEntity.setUpdatedAt(Instant.now());
+        staleEntity.setStatus(
+                OrderStatus.REJECTED
+        );
+
+        staleEntity.setUpdatedAt(
+                Instant.now()
+        );
 
         Assertions.assertThatThrownBy(
-                        () -> orderRepository.saveAndFlush(staleEntity)
+                        () ->
+                                orderRepository.saveAndFlush(
+                                        staleEntity
+                                )
                 )
                 .as(
                         "stale persistence snapshot must be rejected by @Version"
@@ -328,7 +337,9 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
     void terminalStatesAreImmutableUnderRace() {
 
         Order persistedOrder =
-                persistOrder(OrderStatus.FILLED);
+                persistOrder(
+                        OrderStatus.FILLED
+                );
 
         ExecutionContext context =
                 contextOf(persistedOrder);
@@ -340,13 +351,18 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
                         .orElseThrow();
 
         Assertions.assertThatThrownBy(
-                        () -> terminalOrder.markAsRejected(
-                                context,
-                                "illegal"
-                        )
+                        () ->
+                                terminalOrder.markAsRejected(
+                                        context,
+                                        "illegal"
+                                )
                 )
-                .as("FILLED must remain terminal")
-                .isInstanceOf(IllegalStateException.class);
+                .as(
+                        "FILLED must remain terminal"
+                )
+                .isInstanceOf(
+                        IllegalStateException.class
+                );
 
         Order finalState =
                 orderRepositoryAdapter.findById(
@@ -357,7 +373,9 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
         Assertions.assertThat(
                         finalState.getStatus()
                 )
-                .isEqualTo(OrderStatus.FILLED);
+                .isEqualTo(
+                        OrderStatus.FILLED
+                );
     }
 
     // ============================================================
@@ -368,7 +386,9 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
     void unknownLifecycleWithConcurrentFinalizers() {
 
         Order persistedOrder =
-                persistOrder(OrderStatus.UNKNOWN);
+                persistOrder(
+                        OrderStatus.UNKNOWN
+                );
 
         UUID orderId =
                 persistedOrder.getId();
@@ -386,7 +406,9 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
                 new ArrayList<>();
 
         /*
-         * Worker #1: exchange reconciliation result = FILLED
+         * Worker #1:
+         * пытается получить ownership reconciliation,
+         * затем завершает UNKNOWN -> FILLED.
          */
         futures.add(
                 executor.submit(() -> {
@@ -397,9 +419,32 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
                             "FILLED worker start barrier timed out"
                     );
 
+                    Optional<Order> claimed =
+                            orderRepositoryAdapter
+                                    .claimForReconciliation(
+                                            orderId
+                                    );
+
+                    /*
+                     * Второй worker может не получить claim.
+                     * Это нормальный результат гонки.
+                     */
+                    if (claimed.isEmpty()) {
+                        return;
+                    }
+
                     Order order =
-                            orderRepositoryAdapter.findById(orderId)
-                                    .orElseThrow();
+                            claimed.get();
+
+                    Assertions.assertThat(
+                                    order.getStatus()
+                            )
+                            .as(
+                                    "claimed UNKNOWN order must enter RECOVERING"
+                            )
+                            .isEqualTo(
+                                    OrderStatus.RECOVERING
+                            );
 
                     ExecutionContext context =
                             contextOf(order);
@@ -418,7 +463,9 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
         );
 
         /*
-         * Worker #2: exchange reconciliation result = REJECTED
+         * Worker #2:
+         * пытается получить тот же reconciliation ownership,
+         * затем завершает UNKNOWN -> REJECTED.
          */
         futures.add(
                 executor.submit(() -> {
@@ -429,9 +476,32 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
                             "REJECTED worker start barrier timed out"
                     );
 
+                    Optional<Order> claimed =
+                            orderRepositoryAdapter
+                                    .claimForReconciliation(
+                                            orderId
+                                    );
+
+                    /*
+                     * Проигравший worker должен просто получить
+                     * Optional.empty().
+                     */
+                    if (claimed.isEmpty()) {
+                        return;
+                    }
+
                     Order order =
-                            orderRepositoryAdapter.findById(orderId)
-                                    .orElseThrow();
+                            claimed.get();
+
+                    Assertions.assertThat(
+                                    order.getStatus()
+                            )
+                            .as(
+                                    "claimed UNKNOWN order must enter RECOVERING"
+                            )
+                            .isEqualTo(
+                                    OrderStatus.RECOVERING
+                            );
 
                     ExecutionContext context =
                             contextOf(order);
@@ -464,27 +534,26 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
                         .orElseThrow();
 
         /*
-         * Оба перехода UNKNOWN -> FILLED и
-         * UNKNOWN -> REJECTED разрешены state machine.
-         *
-         * Конкретный победитель зависит от serialisation
-         * двух finalizer transactions.
+         * Должен победить ровно один finalizer.
          */
+        Assertions.assertThat(
+                        successfulFinalizations.get()
+                )
+                .as(
+                        "exactly one reconciliation worker may finalize UNKNOWN order"
+                )
+                .isEqualTo(1);
+
         Assertions.assertThat(
                         finalState.getStatus()
                 )
                 .as(
-                        "UNKNOWN must not remain unresolved after concurrent finalizers"
+                        "UNKNOWN must not remain unresolved after reconciliation race"
                 )
                 .isIn(
                         OrderStatus.FILLED,
                         OrderStatus.REJECTED
                 );
-
-        Assertions.assertThat(
-                        successfulFinalizations.get()
-                )
-                .isGreaterThanOrEqualTo(1);
     }
 
     // ============================================================
@@ -495,7 +564,9 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
     void doubleExecutionAttemptOnlyOneClaimSucceeds() {
 
         Order persistedOrder =
-                persistOrder(OrderStatus.PENDING_EXECUTION);
+                persistOrder(
+                        OrderStatus.PENDING_EXECUTION
+                );
 
         UUID orderId =
                 persistedOrder.getId();
@@ -568,7 +639,9 @@ class ExecutionConcurrencySafetyTest extends BaseIntegrationTest {
         Assertions.assertThat(
                         finalState.getStatus()
                 )
-                .isEqualTo(OrderStatus.EXECUTING);
+                .isEqualTo(
+                        OrderStatus.EXECUTING
+                );
 
         Assertions.assertThat(
                         finalState.getExecutionId()

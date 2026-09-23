@@ -382,23 +382,22 @@ public class ReconciliationService {
      * <p>
      * Финальный save() выполняется отдельной DB transaction.
      */
+    /**
+     * Синхронизация состояния ордера с authoritative exchange state.
+     *
+     * <p>
+     * Claim является отдельной DB transaction.
+     * Exchange I/O выполняется после её commit.
+     *
+     * <p>
+     * Финальный save() выполняется отдельной DB transaction.
+     */
     public void syncOrderWithExchange(
             Order targetOrder,
             ExecutionContext context
     ) {
         try {
-            /*
-             * Claim is the only database transaction that establishes
-             * reconciliation ownership.
-             *
-             * claimForReconciliation() commits:
-             *
-             *   EXECUTING(stale) -> UNKNOWN -> RECOVERING
-             *   UNKNOWN           -> RECOVERING
-             *
-             * Therefore no database transaction is kept open
-             * while communicating with the exchange.
-             */
+
             Optional<Order> orderOpt =
                     orderRepository.claimForReconciliation(
                             targetOrder.getId()
@@ -439,7 +438,7 @@ public class ReconciliationService {
             /*
              * IMPORTANT:
              *
-             * Exchange I/O happens outside any database transaction.
+             * Exchange I/O is deliberately outside DB transaction.
              */
             ExecutionResult exchangeState =
                     exchangeQueryService.getOrderStatus(
@@ -455,7 +454,11 @@ public class ReconciliationService {
             boolean stateChanged =
                     switch (action) {
 
-                        case FORCE_FILL -> {
+                        /*
+                         * Authoritative full fill.
+                         */
+                        case FORCE_FILL, FILL -> {
+
                             order.forceFill(
                                     context,
                                     exchangeState.getExchangeOrderId(),
@@ -466,7 +469,11 @@ public class ReconciliationService {
                             yield true;
                         }
 
+                        /*
+                         * Authoritative cumulative partial fill.
+                         */
                         case PARTIALLY_FILL -> {
+
                             order.applyPartialFill(
                                     context,
                                     exchangeState.getExecutedQty(),
@@ -476,7 +483,28 @@ public class ReconciliationService {
                             yield true;
                         }
 
+                        /*
+                         * Binance NEW / ACCEPTED:
+                         *
+                         * order still exists remotely and has not completed.
+                         *
+                         * RECOVERING -> SENT_TO_EXCHANGE
+                         */
+                        case MARK_ACCEPTED -> {
+
+                            order.markAccepted(
+                                    context,
+                                    exchangeState.getExchangeOrderId()
+                            );
+
+                            yield true;
+                        }
+
+                        /*
+                         * Authoritative rejection.
+                         */
                         case REJECT -> {
+
                             order.markAsRejected(
                                     context,
                                     exchangeState.getErrorMessage()
@@ -490,8 +518,14 @@ public class ReconciliationService {
                             yield true;
                         }
 
+                        /*
+                         * Authoritative cancellation.
+                         */
                         case CANCEL -> {
-                            order.markCancelled(context);
+
+                            order.markCancelled(
+                                    context
+                            );
 
                             orderCompensationService.releasePartial(
                                     order,
@@ -501,37 +535,47 @@ public class ReconciliationService {
                             yield true;
                         }
 
+                        /*
+                         * Exchange result is still ambiguous.
+                         */
                         case MARK_UNKNOWN -> {
-                            order.markAsUnknown(context);
+
+                            order.markAsUnknown(
+                                    context
+                            );
+
                             yield true;
                         }
 
+                        /*
+                         * Reserved for statuses that do not require
+                         * a lifecycle mutation.
+                         */
                         case NOOP -> false;
-
-                        case FILL, MARK_ACCEPTED -> {
-                            order.markAsUnknown(context);
-                            yield true;
-                        }
                     };
 
             /*
-             * save() opens its own transaction.
+             * save() starts its own DB transaction.
              *
-             * Exchange I/O is therefore completely outside
-             * the database transaction.
+             * Therefore exchange I/O is completely outside
+             * persistence transaction.
              */
             if (stateChanged) {
-                orderRepository.save(order);
+
+                orderRepository.save(
+                        order
+                );
             }
 
         } catch (OptimisticLockException e) {
+
             log.warn(
-                    "[RECON-CONFLICT] Stale version for order {}. " +
-                            "Skipping.",
+                    "[RECON-CONFLICT] Stale version for order {}. Skipping.",
                     targetOrder.getId()
             );
 
         } catch (Exception e) {
+
             log.error(
                     "[RECON-ERROR] Failed to sync order {}",
                     targetOrder.getId(),
