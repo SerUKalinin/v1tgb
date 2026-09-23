@@ -324,7 +324,15 @@ RECOVERING
     ↓
 AUTHORITATIVE EXCHANGE QUERY
     ↓
-FILLED / REJECTED / CANCELED
+SENT_TO_EXCHANGE
+/
+PARTIALLY_FILLED
+/
+FILLED
+/
+REJECTED
+/
+CANCELED
 ```
 
 If the exchange still cannot provide an authoritative result:

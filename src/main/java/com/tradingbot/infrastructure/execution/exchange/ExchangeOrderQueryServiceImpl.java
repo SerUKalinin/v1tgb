@@ -1,6 +1,7 @@
 package com.tradingbot.infrastructure.execution.exchange;
 
 import com.tradingbot.domain.execution.ExchangeOrderQueryService;
+import com.tradingbot.domain.exchange.ExecutionPort;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.infrastructure.execution.binance.BinanceClient;
 import lombok.RequiredArgsConstructor;
@@ -12,31 +13,30 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Реализация сервиса проверки состояния ордера и баланса на бирже.
+ * Реализация сервиса запросов состояния ордеров и балансов.
  *
- * <p>Использует BinanceClient для получения фактического состояния аккаунта.
- * Для testnet base-url задаётся через application-testnet.yaml.</p>
+ * <p>Запрос статуса ордера делегируется в ExecutionPort,
+ * который инкапсулирует конкретный Binance API flow.</p>
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class ExchangeOrderQueryServiceImpl implements ExchangeOrderQueryService {
+public class ExchangeOrderQueryServiceImpl
+        implements ExchangeOrderQueryService {
 
+    private final ExecutionPort executionPort;
     private final BinanceClient binanceClient;
 
     /**
-     * Проверяет, был ли ордер уже исполнен или существует ли он на бирже.
+     * Проверяет, был ли ордер уже исполнен.
      *
-     * <p>Текущая реализация пока не выполняет отдельный поиск ордера
-     * и сохраняет прежнее поведение.</p>
-     *
-     * @param clientOrderId уникальный идентификатор ордера в системе
-     * @return false, пока отдельный reconciliation order-status flow не реализован
+     * <p>Отдельный lightweight lookup пока не используется
+     * в production execution path.</p>
      */
     @Override
     public boolean isOrderAlreadyExecuted(String clientOrderId) {
         log.debug(
-                "[EXCHANGE-QUERY] Checking status for clientOrderId: {}",
+                "[EXCHANGE-QUERY] Checking execution status: clientOrderId={}",
                 clientOrderId
         );
 
@@ -44,16 +44,13 @@ public class ExchangeOrderQueryServiceImpl implements ExchangeOrderQueryService 
     }
 
     /**
-     * Возвращает фактический доступный баланс указанного актива
-     * непосредственно из Binance account information.
-     *
-     * @param asset код актива, например BTC или USDT
-     * @return фактический free balance актива
+     * Возвращает фактический доступный баланс актива.
      */
     @Override
     public BigDecimal getAvailableBalance(String asset) {
+
         log.debug(
-                "[EXCHANGE-QUERY] Getting available balance for asset: {}",
+                "[EXCHANGE-QUERY] Getting available balance: asset={}",
                 asset
         );
 
@@ -65,7 +62,8 @@ public class ExchangeOrderQueryServiceImpl implements ExchangeOrderQueryService 
             );
         }
 
-        Object balancesObject = accountInfo.get("balances");
+        Object balancesObject =
+                accountInfo.get("balances");
 
         if (!(balancesObject instanceof List<?> balances)) {
             throw new IllegalStateException(
@@ -74,28 +72,35 @@ public class ExchangeOrderQueryServiceImpl implements ExchangeOrderQueryService 
         }
 
         for (Object item : balances) {
+
             if (!(item instanceof Map<?, ?> balance)) {
                 continue;
             }
 
-            Object assetValue = balance.get("asset");
+            Object assetValue =
+                    balance.get("asset");
 
             if (assetValue == null
-                    || !asset.equalsIgnoreCase(assetValue.toString())) {
+                    || !asset.equalsIgnoreCase(
+                    assetValue.toString())) {
                 continue;
             }
 
-            Object freeValue = balance.get("free");
+            Object freeValue =
+                    balance.get("free");
 
             if (freeValue == null) {
                 throw new IllegalStateException(
-                        "Binance balance for asset " + asset + " has no free value"
+                        "Binance balance for asset "
+                                + asset
+                                + " has no free value"
                 );
             }
 
-            BigDecimal freeBalance = new BigDecimal(
-                    freeValue.toString()
-            );
+            BigDecimal freeBalance =
+                    new BigDecimal(
+                            freeValue.toString()
+                    );
 
             log.info(
                     "[EXCHANGE-QUERY] Actual exchange balance: asset={}, free={}",
@@ -107,23 +112,32 @@ public class ExchangeOrderQueryServiceImpl implements ExchangeOrderQueryService 
         }
 
         throw new IllegalStateException(
-                "Asset " + asset + " not found in Binance account balances"
+                "Asset " + asset
+                        + " not found in Binance account balances"
         );
     }
 
     /**
-     * Получает статус ордера на бирже по exchangeOrderId.
+     * Получает актуальное состояние ордера на бирже.
      *
-     * <p>Отдельный reconciliation flow пока не реализован.</p>
-     *
-     * @param exchangeOrderId идентификатор ордера на бирже
-     * @return статус исполнения ордера
-     * @throws UnsupportedOperationException пока метод не реализован
+     * <p>Запрос передаётся в ExecutionPort,
+     * где выполняется реальный Binance API request.</p>
      */
     @Override
-    public ExecutionResult getOrderStatus(String exchangeOrderId) {
-        throw new UnsupportedOperationException(
-                "Not implemented yet"
+    public ExecutionResult getOrderStatus(
+            String symbol,
+            String clientOrderId
+    ) {
+
+        log.info(
+                "[EXCHANGE-QUERY] Querying order status: symbol={}, clientOrderId={}",
+                symbol,
+                clientOrderId
+        );
+
+        return executionPort.getOrderStatus(
+                symbol,
+                clientOrderId
         );
     }
 }

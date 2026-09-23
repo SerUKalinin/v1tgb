@@ -1,48 +1,56 @@
 package com.tradingbot.domain.exchange;
 
-import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.domain.model.Order;
+
 import java.math.BigDecimal;
 import java.util.Map;
 
 /**
  * Порт взаимодействия с биржей для исполнения торговых операций.
- * <p>
- * Определяет контракт выполнения ордеров, управления ими и получения
- * актуального состояния аккаунта на стороне биржи.
- * Реализации данного интерфейса инкапсулируют работу с конкретными
- * биржевыми API.
+ *
+ * <p>Определяет контракт выполнения торговых операций,
+ * получения состояния ордера и актуальных балансов.</p>
+ *
+ * <p>Конкретная реализация биржи находится в infrastructure layer.</p>
  */
 public interface ExecutionPort {
 
     /**
      * Размещает ордер на бирже.
      *
-     * @param order доменная модель ордера, содержащая параметры сделки
-     * @return результат исполнения ордера (статус, идентификаторы, ошибки при наличии)
+     * @param order доменная модель ордера
+     * @return результат исполнения
      */
     ExecutionResult placeOrder(Order order);
 
     /**
      * Отменяет ранее размещённый ордер.
      *
-     * @param clientOrderId идентификатор ордера в нашей системе
-     * @return результат операции отмены
+     * @param clientOrderId идентификатор ордера в системе
+     * @return результат отмены
      */
     ExecutionResult cancelOrder(String clientOrderId);
 
     /**
-     * Получает текущий статус ордера напрямую с биржи.
+     * Получает актуальное состояние ордера непосредственно с биржи.
      *
-     * @param clientOrderId идентификатор ордера в нашей системе
-     * @return актуальный статус исполнения ордера
+     * <p>Для Binance необходимы оба значения:
+     * symbol + clientOrderId.</p>
+     *
+     * @param symbol торговый символ
+     * @param clientOrderId клиентский идентификатор ордера
+     * @return актуальное состояние ордера
      */
-    ExecutionResult getOrderStatus(String clientOrderId);
+    ExecutionResult getOrderStatus(
+            String symbol,
+            String clientOrderId
+    );
 
     /**
      * Возвращает текущие балансы аккаунта на бирже.
      *
-     * @return карта балансов: ключ — код актива, значение — доступный баланс
+     * @return карта балансов
      */
     Map<String, BigDecimal> getBalances();
 }

@@ -126,10 +126,6 @@ class ReconciliationUnknownStateTest {
                         signalId
                 );
 
-        /*
-         * Воспроизводим persisted EXECUTING state
-         * после успешного claim перед exchange I/O.
-         */
         ReflectionTestUtils.setField(
                 order,
                 "executionId",
@@ -167,6 +163,7 @@ class ReconciliationUnknownStateTest {
 
         when(
                 exchangeQueryService.getOrderStatus(
+                        eq("BTCUSDT"),
                         eq(clientOrderId)
                 )
         ).thenReturn(
@@ -182,26 +179,29 @@ class ReconciliationUnknownStateTest {
 
         assertEquals(
                 OrderStatus.UNKNOWN,
-                order.getStatus(),
-                "Exchange state unknown must move EXECUTING order to UNKNOWN"
+                order.getStatus()
         );
 
         assertEquals(
                 executionId,
-                order.getExecutionId(),
-                "ExecutionId must remain preserved during UNKNOWN recovery"
+                order.getExecutionId()
         );
 
         assertNotNull(
-                order.getExecutionStartedAt(),
-                "Execution start timestamp must remain present"
+                order.getExecutionStartedAt()
         );
 
         verify(
                 orderRepository,
                 times(1)
-        ).save(
-                eq(order)
+        ).save(eq(order));
+
+        verify(
+                exchangeQueryService,
+                times(1)
+        ).getOrderStatus(
+                eq("BTCUSDT"),
+                eq(clientOrderId)
         );
 
         verifyNoInteractions(

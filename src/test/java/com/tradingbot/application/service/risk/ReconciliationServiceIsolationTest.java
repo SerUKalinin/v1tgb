@@ -25,6 +25,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 class ReconciliationServiceIsolationTest {
@@ -35,6 +36,7 @@ class ReconciliationServiceIsolationTest {
 
     @BeforeEach
     void setUp() {
+
         orderRepository =
                 mock(OrderRepositoryPort.class);
 
@@ -91,7 +93,10 @@ class ReconciliationServiceIsolationTest {
         verify(
                 exchangeQueryService,
                 never()
-        ).getOrderStatus(any());
+        ).getOrderStatus(
+                anyString(),
+                anyString()
+        );
 
         verify(
                 orderRepository,
@@ -130,16 +135,22 @@ class ReconciliationServiceIsolationTest {
         order.markExecuting(context);
         order.markAsUnknown(context);
 
+        /*
+         * Реальный claim переводит UNKNOWN -> RECOVERING.
+         * Здесь эмулируем тот же lifecycle.
+         */
         when(
                 orderRepository.claimForReconciliation(
                         orderId
                 )
-        ).thenReturn(
-                Optional.of(order)
-        );
+        ).thenAnswer(invocation -> {
+            order.markRecovering(context);
+            return Optional.of(order);
+        });
 
         when(
                 exchangeQueryService.getOrderStatus(
+                        "BTCUSDT",
                         "client-123"
                 )
         ).thenReturn(
@@ -166,6 +177,14 @@ class ReconciliationServiceIsolationTest {
                 orderRepository,
                 times(1)
         ).save(order);
+
+        verify(
+                exchangeQueryService,
+                times(1)
+        ).getOrderStatus(
+                "BTCUSDT",
+                "client-123"
+        );
 
         assertEquals(
                 OrderStatus.FILLED,
@@ -228,7 +247,10 @@ class ReconciliationServiceIsolationTest {
         verify(
                 exchangeQueryService,
                 never()
-        ).getOrderStatus(any());
+        ).getOrderStatus(
+                anyString(),
+                anyString()
+        );
 
         verify(
                 orderRepository,
