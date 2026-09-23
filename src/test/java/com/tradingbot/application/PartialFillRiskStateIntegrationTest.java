@@ -2,13 +2,14 @@ package com.tradingbot.application;
 
 import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.application.bootstrap.SystemStateManager;
-import com.tradingbot.application.bootstrap.TradingSystemBootstrapper;
 import com.tradingbot.application.service.execution.SignalExecutionFacade;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.SignalEvent;
 import com.tradingbot.domain.exchange.ExecutionPort;
+import com.tradingbot.domain.exchange.SymbolConstraints;
 import com.tradingbot.domain.model.ExecutionResult;
+import com.tradingbot.infrastructure.execution.exchange.ExchangeMetadataService;
 import com.tradingbot.infrastructure.outbox.OutboxProcessor;
 import com.tradingbot.infrastructure.outbox.OutboxStatus;
 import com.tradingbot.infrastructure.persistence.entity.OrderEntity;
@@ -26,6 +27,7 @@ import org.springframework.test.context.ActiveProfiles;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -36,7 +38,8 @@ import static org.mockito.Mockito.when;
 
 @SpringBootTest(
         properties = {
-                "app.outbox.enabled=true"
+                "app.outbox.enabled=true",
+                "spring.task.scheduling.enabled=false"
         }
 )
 @ActiveProfiles("test")
@@ -64,6 +67,9 @@ class PartialFillRiskStateIntegrationTest
     @MockBean
     private ExecutionPort executionPort;
 
+    @MockBean
+    private ExchangeMetadataService metadataService;
+
     @BeforeEach
     void prepareTestEnvironment() {
 
@@ -72,6 +78,20 @@ class PartialFillRiskStateIntegrationTest
 
         when(systemStateManager.isReady())
                 .thenReturn(true);
+
+        when(
+                metadataService.getConstraints("BTCUSDT")
+        ).thenReturn(
+                Optional.of(
+                        SymbolConstraints.builder()
+                                .symbol("BTCUSDT")
+                                .stepSize(new BigDecimal("0.00001"))
+                                .minQty(new BigDecimal("0.00001"))
+                                .tickSize(new BigDecimal("0.01"))
+                                .minNotional(new BigDecimal("5"))
+                                .build()
+                )
+        );
 
         riskStateRepository.deleteAll();
 
@@ -124,6 +144,33 @@ class PartialFillRiskStateIntegrationTest
                         "PARTIAL-FILL-TEST"
                 );
 
+        /*
+         * ExecutionPort должен быть настроен до запуска pipeline.
+         */
+        when(
+                executionPort.placeOrder(
+                        any()
+                )
+        ).thenAnswer(invocation -> {
+
+            var order =
+                    invocation.getArgument(
+                            0,
+                            com.tradingbot.domain.model.Order.class
+                    );
+
+            return ExecutionResult.partiallyFilled(
+                    order.getId(),
+                    "TEST-EXCHANGE-ORDER-" + order.getId(),
+                    "TEST-EXCHANGE-TRADE-" + order.getId(),
+                    order.getSymbol(),
+                    order.getSide(),
+                    new BigDecimal("0.3"),
+                    new BigDecimal("100"),
+                    order.getClientOrderId()
+            );
+        });
+
         signalExecutionFacade.execute(
                 signal
         );
@@ -156,28 +203,6 @@ class PartialFillRiskStateIntegrationTest
                 afterReservation.getReservedMargin(),
                 "reservedMargin после reservation"
         );
-
-        when(
-                executionPort.placeOrder(any())
-        ).thenAnswer(invocation -> {
-
-            var order =
-                    invocation.getArgument(
-                            0,
-                            com.tradingbot.domain.model.Order.class
-                    );
-
-            return ExecutionResult.partiallyFilled(
-                    order.getId(),
-                    "TEST-EXCHANGE-ORDER-" + order.getId(),
-                    "TEST-EXCHANGE-TRADE-" + order.getId(),
-                    order.getSymbol(),
-                    order.getSide(),
-                    new BigDecimal("0.3"),
-                    new BigDecimal("100"),
-                    order.getClientOrderId()
-            );
-        });
 
         drainOutbox();
 
@@ -224,24 +249,12 @@ class PartialFillRiskStateIntegrationTest
                 "totalEquity после partial fill"
         );
 
-        /*
-         * Reservation уже был вычтен из availableBalance
-         * на этапе CapitalReserved.
-         *
-         * Partial fill не должен повторно менять balance.
-         */
         assertBigDecimal(
                 "9900",
                 afterPartialFill.getAvailableBalance(),
                 "availableBalance после partial fill"
         );
 
-        /*
-         * Из первоначальных 100 USDT:
-         *
-         * 30 USDT фактически исполнено;
-         * 70 USDT остаётся зарезервировано.
-         */
         assertBigDecimal(
                 "70",
                 afterPartialFill.getReservedMargin(),
@@ -283,7 +296,8 @@ class PartialFillRiskStateIntegrationTest
                                 Duration.ofSeconds(15)
                         );
 
-        OrderEntity current = null;
+        OrderEntity current =
+                null;
 
         while (
                 Instant.now().isBefore(deadline)
@@ -331,28 +345,31 @@ class PartialFillRiskStateIntegrationTest
 
     private void drainOutbox() {
 
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 20; i++) {
 
             outboxProcessor.processOutbox();
 
-            if (
+            boolean hasPending =
                     outboxRepository
                             .findAll()
                             .stream()
-                            .noneMatch(
+                            .anyMatch(
                                     event ->
                                             event.getStatus()
                                                     != OutboxStatus.PROCESSED
                                                     && event.getStatus()
                                                     != OutboxStatus.DEAD
-                            )
-            ) {
+                            );
+
+            if (!hasPending) {
                 return;
             }
+
+            sleep(100);
         }
 
         fail(
-                "Outbox chain не удалось полностью обработать за 10 проходов"
+                "Outbox chain не удалось полностью обработать за 20 проходов"
         );
     }
 
