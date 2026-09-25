@@ -3,6 +3,7 @@ package com.tradingbot.application.service.execution;
 import com.tradingbot.application.risk.OrderCompensationService;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.domain.event.OrderExecutedEvent;
+import com.tradingbot.domain.execution.ExecutionOwnershipException;
 import com.tradingbot.domain.execution.ExecutionOwnershipValidator;
 import com.tradingbot.domain.model.ExecutionResult;
 import com.tradingbot.domain.model.Order;
@@ -18,12 +19,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Objects;
 import java.util.UUID;
 
 /**
  * Транзакционный boundary для фиксации результата execution.
  *
  * В одной транзакции выполняются:
+ * - проверка полного execution identity;
  * - проверка ownership executionId;
  * - изменение Order;
  * - сохранение Order;
@@ -31,6 +34,17 @@ import java.util.UUID;
  * - фиксация execution lock.
  *
  * Внешний exchange I/O сюда не входит.
+ *
+ * Identity SSOT:
+ *
+ * signalId
+ *     ↓
+ * orderId
+ *     ↓
+ * executionId
+ *
+ * ExecutionContext должен относиться именно к тому
+ * persisted Order, который передан в commit().
  */
 @Slf4j
 @Service
@@ -58,11 +72,45 @@ public class OrderExecutionCommitService {
             String lockKey
     ) {
 
+        /*
+         * ============================================================
+         * CANONICAL IDENTITY GUARD
+         * ============================================================
+         *
+         * Проверяем полный identity ДО:
+         *
+         * - state-machine transition;
+         * - изменения Order;
+         * - persistence;
+         * - outbox publication;
+         * - execution lock.
+         *
+         * Это исключает ситуацию, когда одинаковый executionId
+         * используется вместе с чужим signalId/orderId.
+         */
+        validateContextIdentity(
+                order,
+                context
+        );
+
+        /*
+         * Проверка execution ownership остаётся отдельным
+         * domain/application invariant:
+         *
+         * Order.executionId == Context.executionId
+         */
         ExecutionOwnershipValidator.validateExecutionOwnership(
                 order,
                 context.attempt().executionId()
         );
 
+        /*
+         * Terminal/idempotent result.
+         *
+         * Identity уже проверен выше.
+         * Поэтому корректный повтор того же lifecycle
+         * остаётся безопасным no-op.
+         */
         if (order.getStatus() == OrderStatus.FILLED
                 || order.getStatus() == OrderStatus.PARTIALLY_FILLED
                 || order.getStatus() == OrderStatus.REJECTED
@@ -141,7 +189,9 @@ public class OrderExecutionCommitService {
 
             case CANCELED -> {
 
-                order.markCancelled(context);
+                order.markCancelled(
+                        context
+                );
 
                 orderCompensationService.releasePartial(
                         order,
@@ -151,7 +201,9 @@ public class OrderExecutionCommitService {
 
             case EXCHANGE_STATE_UNKNOWN -> {
 
-                order.markAsUnknown(context);
+                order.markAsUnknown(
+                        context
+                );
             }
         }
 
@@ -160,7 +212,9 @@ public class OrderExecutionCommitService {
          * OrderRepositoryAdapter.save() участвует
          * в этой transaction.
          */
-        orderRepository.save(order);
+        orderRepository.save(
+                order
+        );
 
         publishCompletionEvent(
                 completionContext,
@@ -168,12 +222,130 @@ public class OrderExecutionCommitService {
                 result
         );
 
-        lockService.markExecuted(lockKey);
+        lockService.markExecuted(
+                lockKey
+        );
 
         log.info(
                 "[EXECUTION-SUCCESS] Order committed. Context: {}",
                 completionContext
         );
+    }
+
+    /**
+     * Проверяет согласованность полного identity:
+     *
+     * persisted Order
+     *      ↕
+     * ExecutionContext
+     *
+     * Проверяем:
+     *
+     *     signalId
+     *     orderId
+     *     executionId
+     *
+     * Этот guard намеренно выполняется до state transition,
+     * поэтому чужой context никогда не сможет дойти
+     * до OrderStateTransitionPolicy.
+     */
+    private void validateContextIdentity(
+            Order order,
+            ExecutionContext context
+    ) {
+
+        if (order == null) {
+
+            throw new ExecutionOwnershipException(
+                    "Order must be provided"
+            );
+        }
+
+        if (context == null) {
+
+            throw new ExecutionOwnershipException(
+                    "ExecutionContext must be provided"
+            );
+        }
+
+        UUID contextSignalId =
+                Objects.requireNonNull(
+                        context.signalId(),
+                        "Context signalId cannot be null"
+                );
+
+        UUID contextExecutionId =
+                Objects.requireNonNull(
+                        context.attempt().executionId(),
+                        "Context executionId cannot be null"
+                );
+
+        String contextOrderIdValue =
+                context.business().orderId();
+
+        UUID contextOrderId;
+
+        try {
+
+            contextOrderId =
+                    UUID.fromString(
+                            contextOrderIdValue
+                    );
+
+        } catch (IllegalArgumentException e) {
+
+            throw new ExecutionOwnershipException(
+                    "Identity mismatch for order " +
+                            order.getId() +
+                            ": context.business.orderId is not a valid UUID: " +
+                            contextOrderIdValue
+            );
+        }
+
+        if (!order.getSignalId().equals(
+                contextSignalId
+        )) {
+
+            throw new ExecutionOwnershipException(
+                    "Identity mismatch for order " +
+                            order.getId() +
+                            ": signalId mismatch, " +
+                            "order.signalId=" +
+                            order.getSignalId() +
+                            ", context.signalId=" +
+                            contextSignalId
+            );
+        }
+
+        if (!order.getId().equals(
+                contextOrderId
+        )) {
+
+            throw new ExecutionOwnershipException(
+                    "Identity mismatch for order " +
+                            order.getId() +
+                            ": orderId mismatch, " +
+                            "order.id=" +
+                            order.getId() +
+                            ", context.orderId=" +
+                            contextOrderId
+            );
+        }
+
+        if (!order.getExecutionId().equals(
+                contextExecutionId
+        )) {
+
+            throw new ExecutionOwnershipException(
+                    "Identity mismatch for order " +
+                            order.getId() +
+                            ": executionId mismatch, " +
+                            "order.executionId=" +
+                            order.getExecutionId() +
+                            ", context.executionId=" +
+                            contextExecutionId
+            );
+        }
     }
 
     private void publishCompletionEvent(

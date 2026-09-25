@@ -29,7 +29,15 @@ import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -44,7 +52,7 @@ import static org.mockito.Mockito.when;
         }
 )
 @ActiveProfiles("test")
-class PartialFillThenCancelRiskStateIntegrationTest
+class ConcurrentUnknownRecoverySettlementIntegrationTest
         extends BaseIntegrationTest {
 
     @Autowired
@@ -118,7 +126,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
         riskState.setHalted(false);
 
         riskState.setActiveReservations(
-                new java.util.HashMap<>()
+                new HashMap<>()
         );
 
         riskState.setUpdatedAt(
@@ -156,6 +164,9 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 FeasibilityResult.success()
         );
 
+        /*
+         * Initial placement is deliberately ambiguous.
+         */
         when(
                 executionPort.placeOrder(
                         any(Order.class)
@@ -168,21 +179,15 @@ class PartialFillThenCancelRiskStateIntegrationTest
                             Order.class
                     );
 
-            return ExecutionResult.partiallyFilled(
-                    order.getId(),
-                    "TEST-EXCHANGE-ORDER-" + order.getId(),
-                    "TEST-EXCHANGE-TRADE-" + order.getId(),
-                    order.getSymbol(),
-                    order.getSide(),
-                    new BigDecimal("0.3"),
-                    new BigDecimal("100"),
-                    order.getClientOrderId()
+            return ExecutionResult.exchangeStateUnknown(
+                    order.getId()
             );
         });
     }
 
     @Test
-    void shouldReleaseOnlyRemainingReservationAfterPartialFillAndCancel() {
+    void concurrentUnknownRecoveryMustSettleExactlyOnce()
+            throws Exception {
 
         UUID signalId =
                 UUID.randomUUID();
@@ -197,7 +202,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
                         BigDecimal.ZERO,
                         BigDecimal.ZERO,
                         Instant.now(),
-                        "PARTIAL-FILL-CANCEL-TEST"
+                        "CONCURRENT-UNKNOWN-RECOVERY-TEST"
                 );
 
         signalExecutionFacade.execute(signal);
@@ -207,11 +212,6 @@ class PartialFillThenCancelRiskStateIntegrationTest
 
         UUID orderId =
                 createdOrder.getId();
-
-        assertNotNull(
-                orderId,
-                "Order должен быть создан"
-        );
 
         RiskStateEntity afterReservation =
                 getRiskState();
@@ -236,246 +236,227 @@ class PartialFillThenCancelRiskStateIntegrationTest
 
         drainOutbox();
 
-        OrderEntity partialOrder =
+        OrderEntity unknownOrder =
                 waitForStatus(
                         signalId,
-                        OrderStatus.PARTIALLY_FILLED
+                        OrderStatus.UNKNOWN
                 );
 
-        assertEquals(
-                orderId,
-                partialOrder.getId()
-        );
-
-        assertEquals(
-                OrderStatus.PARTIALLY_FILLED,
-                partialOrder.getStatus()
-        );
-
-        assertBigDecimal(
-                "0.3",
-                partialOrder.getExecutedQuantity(),
-                "executedQuantity после partial fill"
-        );
-
-        BigDecimal remainingQuantity =
-                partialOrder
-                        .getQuantity()
-                        .subtract(
-                                partialOrder.getExecutedQuantity()
-                        );
-
-        assertBigDecimal(
-                "0.7",
-                remainingQuantity,
-                "remainingQuantity после partial fill"
-        );
-
-        RiskStateEntity afterPartialFill =
-                getRiskState();
-
-        assertBigDecimal(
-                "10000",
-                afterPartialFill.getTotalEquity(),
-                "totalEquity после partial fill"
-        );
-
-        assertBigDecimal(
-                "9900",
-                afterPartialFill.getAvailableBalance(),
-                "availableBalance после partial fill"
-        );
-
-        assertBigDecimal(
-                "70",
-                afterPartialFill.getReservedMargin(),
-                "reservedMargin после partial fill"
-        );
-
-        Order partialDomainOrder =
-                orderRepositoryPort
-                        .findById(orderId)
-                        .orElseThrow(
-                                () -> new AssertionError(
-                                        "Domain Order не найден после partial fill"
-                                )
-                        );
-
         UUID executionId =
-                partialDomainOrder.getExecutionId();
+                unknownOrder.getExecutionId();
 
         assertNotNull(
                 executionId,
                 "executionId должен существовать"
         );
 
-        ExecutionContext context =
-                ExecutionContext.of(
-                        partialDomainOrder
-                );
-
-        when(
-                exchangeQueryService.getOrderStatus(
-                        partialDomainOrder.getSymbol(),
-                        partialDomainOrder.getClientOrderId()
-                )
-        ).thenReturn(
-                ExecutionResult.canceled(
-                        orderId
-                )
+        assertBigDecimal(
+                "0",
+                unknownOrder.getExecutedQuantity(),
+                "executedQuantity в UNKNOWN"
         );
 
-        reconciliationService.reconcile(
-                context
-        );
-
-        Order canceledOrder =
+        Order unknownDomainOrder =
                 orderRepositoryPort
                         .findById(orderId)
                         .orElseThrow(
                                 () -> new AssertionError(
-                                        "Domain Order не найден после CANCEL"
+                                        "Domain Order не найден в UNKNOWN"
                                 )
                         );
 
-        assertEquals(
-                OrderStatus.CANCELED,
-                canceledOrder.getStatus(),
-                "Order должен перейти PARTIALLY_FILLED -> CANCELED"
-        );
-
-        assertBigDecimal(
-                "0.3",
-                canceledOrder.getExecutedQuantity(),
-                "executedQuantity не должен измениться после CANCEL"
-        );
-
-        assertEquals(
-                executionId,
-                canceledOrder.getExecutionId(),
-                "executionId не должен измениться после CANCEL"
-        );
-
-        RiskStateEntity afterCancel =
-                getRiskState();
-
-        assertBigDecimal(
-                "10000",
-                afterCancel.getTotalEquity(),
-                "totalEquity после CANCEL"
-        );
-
-        assertBigDecimal(
-                "9970",
-                afterCancel.getAvailableBalance(),
-                "availableBalance после CANCEL"
-        );
-
-        assertBigDecimal(
-                "0",
-                afterCancel.getReservedMargin(),
-                "reservedMargin после CANCEL"
-        );
-
-        /*
-         * ============================================================
-         * 5. REPEATED CANCELED RECOVERY
-         *
-         * Exchange повторно сообщает тот же terminal state:
-         *
-         *     CANCELED
-         *
-         * Order уже terminal.
-         *
-         * Повторная reconciliation НЕ должна:
-         *
-         * - повторно release reservation;
-         * - изменить availableBalance;
-         * - изменить totalEquity;
-         * - изменить executedQuantity;
-         * - изменить executionId;
-         * - создать новый lifecycle transition.
-         * ============================================================
-         */
-
-        ExecutionContext canceledContext =
+        ExecutionContext context =
                 ExecutionContext.of(
-                        canceledOrder
+                        unknownDomainOrder
                 );
+
+        AtomicInteger exchangeQueryCount =
+                new AtomicInteger();
+
+        CountDownLatch exchangeQueryStarted =
+                new CountDownLatch(1);
+
+        CountDownLatch releaseExchangeQuery =
+                new CountDownLatch(1);
 
         when(
                 exchangeQueryService.getOrderStatus(
-                        canceledOrder.getSymbol(),
-                        canceledOrder.getClientOrderId()
+                        unknownDomainOrder.getSymbol(),
+                        unknownDomainOrder.getClientOrderId()
                 )
-        ).thenReturn(
-                ExecutionResult.canceled(
-                        orderId
-                )
-        );
+        ).thenAnswer(invocation -> {
 
-        reconciliationService.reconcile(
-                canceledContext
-        );
+            int invocationNumber =
+                    exchangeQueryCount.incrementAndGet();
 
-        OrderEntity afterRepeatedCancel =
+            exchangeQueryStarted.countDown();
+
+            /*
+             * Первый worker удерживает exchange I/O,
+             * чтобы второй worker успел столкнуться с ownership claim.
+             */
+            if (invocationNumber == 1) {
+
+                try {
+
+                    if (!releaseExchangeQuery.await(
+                            10,
+                            TimeUnit.SECONDS
+                    )) {
+
+                        throw new AssertionError(
+                                "Timed out waiting for exchange-query release"
+                        );
+                    }
+
+                } catch (InterruptedException e) {
+
+                    Thread.currentThread().interrupt();
+
+                    throw new AssertionError(
+                            "Exchange query worker interrupted",
+                            e
+                    );
+                }
+            }
+
+            return ExecutionResult.partiallyFilled(
+                    orderId,
+                    "EXCHANGE-CONCURRENT",
+                    "TRADE-CONCURRENT",
+                    unknownDomainOrder.getSymbol(),
+                    unknownDomainOrder.getSide(),
+                    new BigDecimal("0.3"),
+                    new BigDecimal("100"),
+                    unknownDomainOrder.getClientOrderId()
+            );
+        });
+
+        ExecutorService executor =
+                Executors.newFixedThreadPool(2);
+
+        Future<?> worker1 = null;
+        Future<?> worker2 = null;
+
+        try {
+
+            worker1 =
+                    executor.submit(
+                            () ->
+                                    reconciliationService.reconcile(
+                                            context
+                                    )
+                    );
+
+            worker2 =
+                    executor.submit(
+                            () ->
+                                    reconciliationService.reconcile(
+                                            context
+                                    )
+                    );
+
+            assertEquals(
+                    true,
+                    exchangeQueryStarted.await(
+                            10,
+                            TimeUnit.SECONDS
+                    ),
+                    "Первый reconciliation worker должен дойти до exchange query"
+            );
+
+            /*
+             * Пока первый worker находится на exchange I/O,
+             * второй должен уже увидеть RECOVERING ownership
+             * и не выполнять второй exchange query.
+             */
+            releaseExchangeQuery.countDown();
+
+            awaitFuture(
+                    worker1
+            );
+
+            awaitFuture(
+                    worker2
+            );
+
+        } finally {
+
+            releaseExchangeQuery.countDown();
+
+            executor.shutdownNow();
+
+            if (!executor.awaitTermination(
+                    10,
+                    TimeUnit.SECONDS
+            )) {
+
+                fail(
+                        "Concurrent reconciliation executor не завершился"
+                );
+            }
+        }
+
+        OrderEntity finalOrder =
                 orderRepository
                         .findById(orderId)
                         .orElseThrow(
                                 () -> new AssertionError(
-                                        "Order не найден после repeated CANCEL recovery"
+                                        "Order не найден после concurrent recovery"
                                 )
                         );
 
-        /*
-         * Terminal state остаётся неизменным.
-         */
         assertEquals(
-                OrderStatus.CANCELED,
-                afterRepeatedCancel.getStatus(),
-                "Повторный CANCEL не должен менять terminal status"
+                OrderStatus.PARTIALLY_FILLED,
+                finalOrder.getStatus(),
+                "Order должен быть PARTIALLY_FILLED"
         );
 
-        /*
-         * Уже исполненная часть не должна измениться.
-         */
         assertBigDecimal(
                 "0.3",
-                afterRepeatedCancel.getExecutedQuantity(),
-                "executedQuantity не должен измениться после repeated CANCEL"
+                finalOrder.getExecutedQuantity(),
+                "executedQuantity после concurrent recovery"
         );
 
-        /*
-         * Identity lifecycle остаётся тем же.
-         */
         assertEquals(
                 executionId,
-                afterRepeatedCancel.getExecutionId(),
-                "executionId не должен измениться после repeated CANCEL"
+                finalOrder.getExecutionId(),
+                "executionId не должен измениться"
+        );
+
+        RiskStateEntity finalRiskState =
+                getRiskState();
+
+        /*
+         * Only one cumulative delta 0 -> 0.3 @ 100
+         * may be settled.
+         */
+        assertBigDecimal(
+                "10000",
+                finalRiskState.getTotalEquity(),
+                "totalEquity после concurrent recovery"
+        );
+
+        assertBigDecimal(
+                "9900",
+                finalRiskState.getAvailableBalance(),
+                "availableBalance после concurrent recovery"
+        );
+
+        assertBigDecimal(
+                "70",
+                finalRiskState.getReservedMargin(),
+                "reservation должна уменьшиться ровно на 30"
         );
 
         /*
-         * RiskState должен остаться абсолютно тем же.
+         * The exchange must be queried by exactly one
+         * reconciliation worker.
          */
-        RiskStateEntity afterRepeatedCancelRisk =
-                getRiskState();
-
-        assertBigDecimal(
-                "10000",
-                afterRepeatedCancelRisk.getTotalEquity(),
-                "totalEquity не должен измениться после repeated CANCEL"
-        );
-
-        assertBigDecimal(
-                "9970",
-                afterRepeatedCancelRisk.getAvailableBalance(),
-                "availableBalance не должен измениться после repeated CANCEL"
-        );
-
-        assertBigDecimal(
-                "0",
-                afterRepeatedCancelRisk.getReservedMargin(),
-                "reservedMargin не должен измениться после repeated CANCEL"
+        assertEquals(
+                1,
+                exchangeQueryCount.get(),
+                "Только один reconciliation worker должен выполнить exchange query"
         );
     }
 
@@ -599,6 +580,34 @@ class PartialFillThenCancelRiskStateIntegrationTest
         );
     }
 
+    private void awaitFuture(
+            Future<?> future
+    ) throws Exception {
+
+        try {
+
+            future.get(
+                    15,
+                    TimeUnit.SECONDS
+            );
+
+        } catch (ExecutionException e) {
+
+            Throwable cause =
+                    e.getCause();
+
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+
+            if (cause instanceof Error error) {
+                throw error;
+            }
+
+            throw e;
+        }
+    }
+
     private void assertBigDecimal(
             String expected,
             BigDecimal actual,
@@ -623,7 +632,9 @@ class PartialFillThenCancelRiskStateIntegrationTest
         );
     }
 
-    private void sleep(long millis) {
+    private void sleep(
+            long millis
+    ) {
 
         try {
 
