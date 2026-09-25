@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -356,6 +357,7 @@ public class OrderExecutionCommitService {
 
         String eventType =
                 resolveCompletionEventType(
+                        completionContext,
                         order,
                         result
                 );
@@ -372,6 +374,81 @@ public class OrderExecutionCommitService {
                 eventType,
                 payload
         );
+    }
+
+    private String resolveCompletionEventType(
+            ExecutionContext context,
+            Order order,
+            ExecutionResult result
+    ) {
+
+        if (result.getStatus()
+                == ExecutionResult.Status.FILLED
+                || result.getStatus()
+                == ExecutionResult.Status.PARTIALLY_FILLED) {
+
+            BigDecimal quantity =
+                    order.getExecutedQuantity();
+
+            BigDecimal price =
+                    order.getAveragePrice();
+
+            if (quantity == null
+                    || quantity.signum() <= 0
+                    || price == null
+                    || price.signum() <= 0) {
+
+                throw new IllegalStateException(
+                        "Execution completion event requires valid cumulative " +
+                                "quantity and price. orderId=" +
+                                order.getId()
+                );
+            }
+
+            String checkpointKey =
+                    result.getStatus().name()
+                            + ":"
+                            + normalize(
+                            quantity
+                    )
+                            + "@"
+                            + normalize(
+                            price
+                    );
+
+            return IdentityFactory.deriveCheckpointEventType(
+                    context.attempt().executionId(),
+                    "ORDER_EXECUTED",
+                    checkpointKey
+            );
+        }
+
+        return switch (result.getStatus()) {
+
+            case ACCEPTED ->
+                    "ORDER_ACCEPTED";
+
+            case REJECTED ->
+                    "ORDER_REJECTED";
+
+            case EXCHANGE_STATE_UNKNOWN ->
+                    "ORDER_TIMEOUT";
+
+            case CANCELED ->
+                    "ORDER_CANCELED";
+
+            default ->
+                    "ORDER_COMPLETED";
+        };
+    }
+
+    private String normalize(
+            BigDecimal value
+    ) {
+
+        return value
+                .stripTrailingZeros()
+                .toPlainString();
     }
 
     private String resolveCompletionEventType(

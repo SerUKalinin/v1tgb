@@ -3,6 +3,7 @@ package com.tradingbot.infrastructure.outbox.handler;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradingbot.application.service.execution.PositionService;
 import com.tradingbot.domain.event.TradeCreatedEvent;
+import com.tradingbot.domain.event.TradeUpdatedEvent;
 import com.tradingbot.domain.model.OutboxEvent;
 import com.tradingbot.infrastructure.outbox.OutboxConsumer;
 import lombok.RequiredArgsConstructor;
@@ -16,16 +17,23 @@ import java.util.UUID;
 @Component
 @Order(1)
 @RequiredArgsConstructor
-public class PositionProjectionHandler implements OutboxConsumer {
+public class PositionProjectionHandler
+        implements OutboxConsumer {
 
     private final PositionService positionService;
-
     private final ObjectMapper objectMapper;
 
     @Override
-    public boolean supports(String eventType) {
+    public boolean supports(
+            String eventType
+    ) {
 
-        return "TRADE_CREATED".equals(eventType);
+        return "TRADE_CREATED".equals(
+                eventType
+        )
+                || TradeUpdatedEvent.isEventType(
+                eventType
+        );
     }
 
     @Override
@@ -37,29 +45,64 @@ public class PositionProjectionHandler implements OutboxConsumer {
                 event.eventId();
 
         if (eventId == null) {
-
             throw new IllegalStateException(
-                    "TRADE_CREATED outbox event has no eventId"
+                    "TRADE projection event has no eventId"
             );
         }
 
-        TradeCreatedEvent tradeEvent =
+        if ("TRADE_CREATED".equals(
+                event.eventType()
+        )) {
+
+            TradeCreatedEvent tradeEvent =
+                    objectMapper.readValue(
+                            event.payload(),
+                            TradeCreatedEvent.class
+                    );
+
+            positionService.updatePosition(
+                    eventId,
+                    tradeEvent
+            );
+
+            return;
+        }
+
+        TradeUpdatedEvent updateEvent =
                 objectMapper.readValue(
                         event.payload(),
-                        TradeCreatedEvent.class
+                        TradeUpdatedEvent.class
+                );
+
+        TradeCreatedEvent deltaProjection =
+                new TradeCreatedEvent(
+                        updateEvent.getIdentity(),
+                        updateEvent.getAttempt(),
+                        updateEvent.getBusiness(),
+                        updateEvent.getTradeId(),
+                        updateEvent.getOrderId(),
+                        updateEvent.getSymbol(),
+                        updateEvent.getStrategyId(),
+                        updateEvent.getDeltaQuantity(),
+                        updateEvent.getIncrementalPrice(),
+                        updateEvent.getSide(),
+                        null,
+                        null
                 );
 
         log.info(
-                "[POSITION-HANDLER] Consuming TRADE_CREATED. " +
-                        "eventId={}, aggregateId={}, tradeId={}",
+                "[POSITION-HANDLER] Applying cumulative trade delta. " +
+                        "eventId={}, tradeId={}, deltaQty={}, cumulativeQty={}, incrementalPrice={}",
                 eventId,
-                event.aggregateId(),
-                tradeEvent.getTradeId()
+                updateEvent.getTradeId(),
+                updateEvent.getDeltaQuantity(),
+                updateEvent.getCumulativeQuantity(),
+                updateEvent.getIncrementalPrice()
         );
 
         positionService.updatePosition(
                 eventId,
-                tradeEvent
+                deltaProjection
         );
     }
 }

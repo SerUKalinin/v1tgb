@@ -4,6 +4,7 @@ import com.tradingbot.application.risk.RiskEngine;
 import com.tradingbot.domain.event.OrderExecutedEvent;
 import com.tradingbot.domain.event.OrderFilledEvent;
 import com.tradingbot.domain.event.TradeCreatedEvent;
+import com.tradingbot.domain.event.TradeUpdatedEvent;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderPort;
 import com.tradingbot.domain.model.Trade;
@@ -18,21 +19,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.List;
 
-/**
- * Application service обработки торговых сделок.
- *
- * <p>
- * Persistence детали полностью скрыты за domain/application ports.
- *
- * <p>
- * Архитектурные контракты:
- * SYSTEM_CONTRACT.md
- * STATE_MACHINE_CONTRACT.md
- * EXECUTION_ENGINE_CONTRACT.md
- */
 @Service
 @Slf4j
 @RequiredArgsConstructor
@@ -43,15 +33,15 @@ public class TradeService {
     private final OutboxService outboxService;
     private final RiskEngine riskEngine;
 
-    /**
-     * Обрабатывает факт исполнения ордера и создаёт Trade.
-     *
-     * @param event событие исполнения
-     */
     @Transactional
-    public void onOrderFilled(OrderFilledEvent event) {
+    public void onOrderFilled(
+            OrderFilledEvent event
+    ) {
+
         if (event == null) {
-            throw new IllegalArgumentException("event cannot be null");
+            throw new IllegalArgumentException(
+                    "event cannot be null"
+            );
         }
 
         log.info(
@@ -59,16 +49,13 @@ public class TradeService {
                 event.getOrderId()
         );
 
-        ExecutionContext context = ExecutionContext.of(
-                event.getIdentity(),
-                event.getAttempt(),
-                event.getBusiness()
-        );
+        ExecutionContext context =
+                ExecutionContext.of(
+                        event.getIdentity(),
+                        event.getAttempt(),
+                        event.getBusiness()
+                );
 
-        /*
-         * ORDER_FILLED публикуется до проверки duplicate trade
-         * в соответствии с текущим поведением системы.
-         */
         outboxService.publishEvent(
                 context,
                 "ORDER",
@@ -79,66 +66,99 @@ public class TradeService {
         if (tradePort.existsByExchangeTradeId(
                 event.getExternalExecutionId()
         )) {
+
             log.warn(
                     "[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.",
                     event.getExternalExecutionId()
             );
+
             return;
         }
 
-        Order order = orderPort
-                .findById(event.getOrderId())
-                .orElseThrow(() ->
-                        new IllegalStateException(
-                                "Order not found: " + event.getOrderId()
+        Order order =
+                orderPort
+                        .findById(
+                                event.getOrderId()
                         )
+                        .orElseThrow(
+                                () -> new IllegalStateException(
+                                        "Order not found: "
+                                                + event.getOrderId()
+                                )
+                        );
+
+        Trade trade =
+                buildTrade(
+                        event.getExternalExecutionId(),
+                        event.getQuantity(),
+                        event.getPrice(),
+                        order,
+                        context
                 );
 
-        Trade trade = buildTrade(
-                event.getExternalExecutionId(),
-                event.getQuantity(),
-                event.getPrice(),
+        Trade saved =
+                tradePort.save(
+                        trade
+                );
+
+        publishTradeCreated(
+                saved,
                 order,
                 context
         );
 
-        Trade saved = tradePort.save(trade);
-
-        publishTradeCreated(saved, order, context);
-
-        publishRiskEvent(saved);
+        publishRiskEvent(
+                saved
+        );
     }
 
-    /**
-     * Получает историю сделок по символу и стратегии.
-     */
     public List<Trade> getTradeHistory(
             String symbol,
             String strategyId
     ) {
-        return tradePort.findBySymbolAndStrategyId(
-                symbol,
-                strategyId
-        );
+
+        return tradePort
+                .findBySymbolAndStrategyId(
+                        symbol,
+                        strategyId
+                );
     }
 
-    /**
-     * Возвращает всю торговую историю.
-     */
     public List<Trade> getAllTrades() {
         return tradePort.findAll();
     }
 
     /**
-     * Обрабатывает ORDER_EXECUTED.
+     * ORDER_EXECUTED is cumulative.
+     *
+     * One Order / executionId owns one Trade row.
+     *
+     * First checkpoint:
+     *
+     * 0.3
+     *   -> Trade CREATE
+     *
+     * Later checkpoint:
+     *
+     * 0.6
+     *   -> same Trade row updated
+     *   -> downstream receives delta 0.3
+     *
+     * Duplicate checkpoint:
+     *
+     * 0.6
+     *   -> no-op
      */
     @Transactional
     public void onOrderExecuted(
             OrderExecutedEvent event,
             ExecutionContext context
     ) {
+
         if (event == null) {
-            throw new IllegalArgumentException("event cannot be null");
+            throw new IllegalArgumentException(
+                    "event cannot be null"
+            );
         }
 
         if (context == null) {
@@ -148,50 +168,254 @@ public class TradeService {
         }
 
         log.info(
-                "[TRADE-SERVICE] Creating trade from ORDER_EXECUTED " +
-                        "for order: {} exchangeTradeId: {}",
+                "[TRADE-SERVICE] Processing ORDER_EXECUTED " +
+                        "orderId={} exchangeTradeId={} qty={} price={}",
                 event.getOrderId(),
-                event.getExchangeTradeId()
+                event.getExchangeTradeId(),
+                event.getQuantity(),
+                event.getPrice()
         );
 
-        if (tradePort.existsByExchangeTradeId(
-                event.getExchangeTradeId()
-        )) {
-            log.warn(
-                    "[TRADE-SERVICE] Duplicate trade detected: {}. Skipping.",
-                    event.getExchangeTradeId()
+        if (event.getQuantity() == null
+                || event.getQuantity().signum() <= 0) {
+
+            throw new IllegalArgumentException(
+                    "ORDER_EXECUTED quantity must be positive"
             );
+        }
+
+        if (event.getPrice() == null
+                || event.getPrice().signum() <= 0) {
+
+            throw new IllegalArgumentException(
+                    "ORDER_EXECUTED price must be positive"
+            );
+        }
+
+        Order order =
+                orderPort
+                        .findById(
+                                event.getOrderId()
+                        )
+                        .orElseThrow(
+                                () -> new IllegalStateException(
+                                        "Order not found: "
+                                                + event.getOrderId()
+                                )
+                        );
+
+        Trade existingTrade =
+                tradePort
+                        .findByOrderId(
+                                event.getOrderId()
+                        )
+                        .orElse(null);
+
+        /*
+         * FIRST cumulative checkpoint.
+         */
+        if (existingTrade == null) {
+
+            Trade trade =
+                    buildTrade(
+                            event.getExchangeTradeId(),
+                            event.getQuantity(),
+                            event.getPrice(),
+                            order,
+                            context
+                    );
+
+            Trade saved =
+                    tradePort.save(
+                            trade
+                    );
+
+            TradeCreatedEvent createdEvent =
+                    publishTradeCreated(
+                            saved,
+                            order,
+                            context
+                    );
+
+            publishRiskEvent(
+                    createdEvent.getEventId(),
+                    saved.getSymbol(),
+                    saved.getQuantity(),
+                    saved.getPrice(),
+                    saved.getRealizedPnl(),
+                    saved.getExecutedAt()
+            );
+
+            log.info(
+                    "[TRADE-SERVICE] Trade created successfully. " +
+                            "tradeId={}, orderId={}, quantity={}",
+                    saved.getId(),
+                    saved.getOrderId(),
+                    saved.getQuantity()
+            );
+
             return;
         }
 
-        Order order = orderPort
-                .findById(event.getOrderId())
-                .orElseThrow(() ->
-                        new IllegalStateException(
-                                "Order not found: " + event.getOrderId()
-                        )
+        BigDecimal previousQuantity =
+                valueOrZero(
+                        existingTrade.getQuantity()
                 );
 
-        Trade trade = buildTrade(
-                event.getExchangeTradeId(),
-                event.getQuantity(),
-                event.getPrice(),
-                order,
-                context
+        BigDecimal incomingQuantity =
+                event.getQuantity();
+
+        /*
+         * Same or older cumulative state is a no-op.
+         */
+        if (incomingQuantity.compareTo(
+                previousQuantity
+        ) <= 0) {
+
+            log.info(
+                    "[TRADE-SERVICE] Cumulative checkpoint already applied. " +
+                            "orderId={}, existingQty={}, incomingQty={}",
+                    event.getOrderId(),
+                    previousQuantity,
+                    incomingQuantity
+            );
+
+            return;
+        }
+
+        BigDecimal previousPrice =
+                existingTrade.getPrice();
+
+        if (previousPrice == null
+                || previousPrice.signum() <= 0) {
+
+            throw new IllegalStateException(
+                    "Existing Trade has invalid price: "
+                            + existingTrade.getId()
+            );
+        }
+
+        /*
+         * Cumulative notional:
+         *
+         * previous = q1 * p1
+         * current  = q2 * p2
+         *
+         * deltaNotional = current - previous
+         */
+        BigDecimal previousNotional =
+                previousQuantity
+                        .multiply(
+                                previousPrice
+                        );
+
+        BigDecimal currentNotional =
+                incomingQuantity
+                        .multiply(
+                                event.getPrice()
+                        );
+
+        BigDecimal deltaNotional =
+                currentNotional
+                        .subtract(
+                                previousNotional
+                        );
+
+        if (deltaNotional.signum() <= 0) {
+
+            throw new IllegalStateException(
+                    "Cumulative execution notional must increase. " +
+                            "orderId=" + event.getOrderId() +
+                            ", previous=" + previousNotional +
+                            ", current=" + currentNotional
+            );
+        }
+
+        BigDecimal deltaQuantity =
+                incomingQuantity
+                        .subtract(
+                                previousQuantity
+                        );
+
+        BigDecimal incrementalPrice =
+                deltaNotional.divide(
+                        deltaQuantity,
+                        8,
+                        RoundingMode.HALF_UP
+                );
+
+        /*
+         * One lifecycle -> one Trade.
+         *
+         * Trade stores authoritative cumulative quantity/price.
+         */
+        Trade updatedTrade =
+                Trade.builder()
+                        .id(existingTrade.getId())
+                        .orderId(existingTrade.getOrderId())
+                        .clientOrderId(
+                                existingTrade.getClientOrderId()
+                        )
+                        .exchangeTradeId(
+                                event.getExchangeTradeId()
+                        )
+                        .symbol(existingTrade.getSymbol())
+                        .strategyId(existingTrade.getStrategyId())
+                        .side(existingTrade.getSide())
+                        .quantity(incomingQuantity)
+                        .price(event.getPrice())
+                        .feeAmount(
+                                existingTrade.getFeeAmount()
+                        )
+                        .feeAsset(
+                                existingTrade.getFeeAsset()
+                        )
+                        .realizedPnl(
+                                existingTrade.getRealizedPnl()
+                        )
+                        .executedAt(
+                                existingTrade.getExecutedAt()
+                        )
+                        .build();
+
+        Trade saved =
+                tradePort.save(
+                        updatedTrade
+                );
+
+        TradeUpdatedEvent updatedEvent =
+                publishTradeUpdated(
+                        saved,
+                        order,
+                        context,
+                        deltaQuantity,
+                        incomingQuantity,
+                        event.getPrice(),
+                        incrementalPrice,
+                        event.getExchangeTradeId()
+                );
+
+        /*
+         * Risk получает только incremental execution.
+         *
+         * Не cumulative quantity.
+         */
+        publishRiskEvent(
+                updatedEvent.getEventId(),
+                saved.getSymbol(),
+                deltaQuantity,
+                incrementalPrice,
+                BigDecimal.ZERO,
+                saved.getExecutedAt()
         );
 
-        Trade saved = tradePort.save(trade);
-
-        publishTradeCreated(saved, order, context);
-
-        publishRiskEvent(saved);
-
         log.info(
-                "[TRADE-SERVICE] Trade created successfully. " +
-                        "tradeId={}, orderId={}, exchangeTradeId={}",
+                "[TRADE-SERVICE] Trade cumulative state updated. " +
+                        "tradeId={}, previousQty={}, incomingQty={}, deltaQty={}",
                 saved.getId(),
-                saved.getOrderId(),
-                saved.getExchangeTradeId()
+                previousQuantity,
+                incomingQuantity,
+                deltaQuantity
         );
     }
 
@@ -202,21 +426,28 @@ public class TradeService {
             Order order,
             ExecutionContext context
     ) {
-        if (exchangeTradeId == null) {
+
+        if (exchangeTradeId == null
+                || exchangeTradeId.isBlank()) {
+
             throw new IllegalArgumentException(
-                    "exchangeTradeId cannot be null"
+                    "exchangeTradeId cannot be null or blank"
             );
         }
 
-        if (quantity == null) {
+        if (quantity == null
+                || quantity.signum() <= 0) {
+
             throw new IllegalArgumentException(
-                    "quantity cannot be null"
+                    "quantity must be positive"
             );
         }
 
-        if (price == null) {
+        if (price == null
+                || price.signum() <= 0) {
+
             throw new IllegalArgumentException(
-                    "price cannot be null"
+                    "price must be positive"
             );
         }
 
@@ -227,35 +458,60 @@ public class TradeService {
                                 "trade"
                         )
                 )
-                .orderId(order.getId())
-                .clientOrderId(order.getClientOrderId())
-                .exchangeTradeId(exchangeTradeId)
-                .symbol(order.getSymbol())
-                .strategyId(order.getStrategyId())
-                .side(order.getSide())
-                .quantity(quantity)
-                .price(price)
-                .feeAmount(BigDecimal.ZERO)
-                .feeAsset(null)
-                .realizedPnl(BigDecimal.ZERO)
-                .executedAt(Instant.now())
+                .orderId(
+                        order.getId()
+                )
+                .clientOrderId(
+                        order.getClientOrderId()
+                )
+                .exchangeTradeId(
+                        exchangeTradeId
+                )
+                .symbol(
+                        order.getSymbol()
+                )
+                .strategyId(
+                        order.getStrategyId()
+                )
+                .side(
+                        order.getSide()
+                )
+                .quantity(
+                        quantity
+                )
+                .price(
+                        price
+                )
+                .feeAmount(
+                        BigDecimal.ZERO
+                )
+                .feeAsset(
+                        null
+                )
+                .realizedPnl(
+                        BigDecimal.ZERO
+                )
+                .executedAt(
+                        Instant.now()
+                )
                 .build();
     }
 
-    private void publishTradeCreated(
+    private TradeCreatedEvent publishTradeCreated(
             Trade trade,
             Order order,
             ExecutionContext context
     ) {
+
         ExecutionContext tradeContext =
                 context.withNextStep(
                         IdentityFactory.deriveEventId(
                                 context.attempt().executionId(),
-                                "trade-publish"
+                                "TRADE_CREATED"
                         )
                 );
 
-        TradeCreatedEvent tradeCreatedEvent =
+        TradeCreatedEvent event =
                 new TradeCreatedEvent(
                         tradeContext.identity(),
                         tradeContext.attempt(),
@@ -274,21 +530,127 @@ public class TradeService {
         outboxService.publishEvent(
                 tradeContext,
                 "TRADE",
-                "TRADE_CREATED",
-                tradeCreatedEvent
+                event.getEventType(),
+                event
+        );
+
+        return event;
+    }
+
+    private TradeUpdatedEvent publishTradeUpdated(
+            Trade trade,
+            Order order,
+            ExecutionContext context,
+            BigDecimal deltaQuantity,
+            BigDecimal cumulativeQuantity,
+            BigDecimal cumulativePrice,
+            BigDecimal incrementalPrice,
+            String exchangeTradeId
+    ) {
+
+        String eventType =
+                TradeUpdatedEvent.eventTypeFor(
+                        context.attempt().executionId(),
+                        cumulativeQuantity,
+                        cumulativePrice
+                );
+
+        ExecutionContext tradeContext =
+                context.withNextStep(
+                        IdentityFactory.deriveEventId(
+                                context.attempt().executionId(),
+                                eventType
+                        )
+                );
+
+        TradeUpdatedEvent event =
+                new TradeUpdatedEvent(
+                        tradeContext.identity(),
+                        tradeContext.attempt(),
+                        tradeContext.business(),
+                        eventType,
+                        trade.getId(),
+                        trade.getOrderId(),
+                        trade.getSymbol(),
+                        trade.getStrategyId(),
+                        deltaQuantity,
+                        cumulativeQuantity,
+                        cumulativePrice,
+                        incrementalPrice,
+                        trade.getSide(),
+                        exchangeTradeId
+                );
+
+        outboxService.publishEvent(
+                tradeContext,
+                "TRADE",
+                event.getEventType(),
+                event
+        );
+
+        return event;
+    }
+
+    private void publishRiskEvent(
+            Trade trade
+    ) {
+
+        publishRiskEvent(
+                trade.getExchangeTradeId(),
+                trade.getSymbol(),
+                trade.getQuantity(),
+                trade.getPrice(),
+                trade.getRealizedPnl(),
+                trade.getExecutedAt()
         );
     }
 
-    private void publishRiskEvent(Trade trade) {
+    private void publishRiskEvent(
+            java.util.UUID eventId,
+            String symbol,
+            BigDecimal quantity,
+            BigDecimal price,
+            BigDecimal realizedPnl,
+            Instant executedAt
+    ) {
+
+        publishRiskEvent(
+                eventId.toString(),
+                symbol,
+                quantity,
+                price,
+                realizedPnl,
+                executedAt
+        );
+    }
+
+    private void publishRiskEvent(
+            String eventId,
+            String symbol,
+            BigDecimal quantity,
+            BigDecimal price,
+            BigDecimal realizedPnl,
+            Instant executedAt
+    ) {
+
         riskEngine.publish(
                 new RiskEvent.TradeExecuted(
-                        trade.getExchangeTradeId(),
-                        trade.getSymbol(),
-                        trade.getQuantity(),
-                        trade.getPrice(),
-                        trade.getRealizedPnl(),
-                        trade.getExecutedAt()
+                        eventId,
+                        symbol,
+                        quantity,
+                        price,
+                        realizedPnl,
+                        executedAt
                 )
         );
+    }
+
+    private BigDecimal valueOrZero(
+            BigDecimal value
+    ) {
+
+        return value == null
+                ? BigDecimal.ZERO
+                : value;
     }
 }
