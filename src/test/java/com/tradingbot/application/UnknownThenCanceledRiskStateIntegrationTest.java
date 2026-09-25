@@ -44,7 +44,7 @@ import static org.mockito.Mockito.when;
         }
 )
 @ActiveProfiles("test")
-class PartialFillThenCancelRiskStateIntegrationTest
+class UnknownThenCanceledRiskStateIntegrationTest
         extends BaseIntegrationTest {
 
     @Autowired
@@ -156,6 +156,15 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 FeasibilityResult.success()
         );
 
+        /*
+         * Initial exchange submission is ambiguous:
+         *
+         * PENDING_EXECUTION
+         *      ->
+         * EXECUTING
+         *      ->
+         * UNKNOWN
+         */
         when(
                 executionPort.placeOrder(
                         any(Order.class)
@@ -168,21 +177,14 @@ class PartialFillThenCancelRiskStateIntegrationTest
                             Order.class
                     );
 
-            return ExecutionResult.partiallyFilled(
-                    order.getId(),
-                    "TEST-EXCHANGE-ORDER-" + order.getId(),
-                    "TEST-EXCHANGE-TRADE-" + order.getId(),
-                    order.getSymbol(),
-                    order.getSide(),
-                    new BigDecimal("0.3"),
-                    new BigDecimal("100"),
-                    order.getClientOrderId()
+            return ExecutionResult.exchangeStateUnknown(
+                    order.getId()
             );
         });
     }
 
     @Test
-    void shouldReleaseOnlyRemainingReservationAfterPartialFillAndCancel() {
+    void shouldRecoverUnknownIntoCanceledAndReleaseReservation() {
 
         UUID signalId =
                 UUID.randomUUID();
@@ -197,7 +199,7 @@ class PartialFillThenCancelRiskStateIntegrationTest
                         BigDecimal.ZERO,
                         BigDecimal.ZERO,
                         Instant.now(),
-                        "PARTIAL-FILL-CANCEL-TEST"
+                        "UNKNOWN-CANCELED-RECOVERY-TEST"
                 );
 
         signalExecutionFacade.execute(signal);
@@ -236,88 +238,70 @@ class PartialFillThenCancelRiskStateIntegrationTest
 
         drainOutbox();
 
-        OrderEntity partialOrder =
+        OrderEntity unknownOrder =
                 waitForStatus(
                         signalId,
-                        OrderStatus.PARTIALLY_FILLED
+                        OrderStatus.UNKNOWN
                 );
 
         assertEquals(
                 orderId,
-                partialOrder.getId()
+                unknownOrder.getId()
         );
 
-        assertEquals(
-                OrderStatus.PARTIALLY_FILLED,
-                partialOrder.getStatus()
+        UUID executionId =
+                unknownOrder.getExecutionId();
+
+        assertNotNull(
+                executionId,
+                "executionId должен существовать в UNKNOWN"
         );
 
         assertBigDecimal(
-                "0.3",
-                partialOrder.getExecutedQuantity(),
-                "executedQuantity после partial fill"
+                "0",
+                unknownOrder.getExecutedQuantity(),
+                "executedQuantity в UNKNOWN"
         );
 
-        BigDecimal remainingQuantity =
-                partialOrder
-                        .getQuantity()
-                        .subtract(
-                                partialOrder.getExecutedQuantity()
-                        );
-
-        assertBigDecimal(
-                "0.7",
-                remainingQuantity,
-                "remainingQuantity после partial fill"
-        );
-
-        RiskStateEntity afterPartialFill =
+        RiskStateEntity afterUnknown =
                 getRiskState();
 
         assertBigDecimal(
                 "10000",
-                afterPartialFill.getTotalEquity(),
-                "totalEquity после partial fill"
+                afterUnknown.getTotalEquity(),
+                "totalEquity после UNKNOWN"
         );
 
         assertBigDecimal(
                 "9900",
-                afterPartialFill.getAvailableBalance(),
-                "availableBalance после partial fill"
+                afterUnknown.getAvailableBalance(),
+                "availableBalance после UNKNOWN"
         );
 
         assertBigDecimal(
-                "70",
-                afterPartialFill.getReservedMargin(),
-                "reservedMargin после partial fill"
+                "100",
+                afterUnknown.getReservedMargin(),
+                "reservation должна сохраняться в UNKNOWN"
         );
 
-        Order partialDomainOrder =
+        Order unknownDomainOrder =
                 orderRepositoryPort
                         .findById(orderId)
                         .orElseThrow(
                                 () -> new AssertionError(
-                                        "Domain Order не найден после partial fill"
+                                        "Domain Order не найден в UNKNOWN"
                                 )
                         );
 
-        UUID executionId =
-                partialDomainOrder.getExecutionId();
-
-        assertNotNull(
-                executionId,
-                "executionId должен существовать"
-        );
-
         ExecutionContext context =
                 ExecutionContext.of(
-                        partialDomainOrder
+                        unknownDomainOrder
                 );
 
         when(
                 exchangeQueryService.getOrderStatus(
-                        partialDomainOrder.getSymbol(),
-                        partialDomainOrder.getClientOrderId()
+                        unknownDomainOrder.getSymbol(),
+                        unknownDomainOrder.getClientOrderId()
                 )
         ).thenReturn(
                 ExecutionResult.canceled(
@@ -325,6 +309,13 @@ class PartialFillThenCancelRiskStateIntegrationTest
                 )
         );
 
+        /*
+         * UNKNOWN -> RECOVERING -> CANCELED
+         *
+         * No additional fill occurred.
+         * executedQuantity must remain zero.
+         * The complete reservation must be released.
+         */
         reconciliationService.reconcile(
                 context
         );
@@ -334,148 +325,105 @@ class PartialFillThenCancelRiskStateIntegrationTest
                         .findById(orderId)
                         .orElseThrow(
                                 () -> new AssertionError(
-                                        "Domain Order не найден после CANCEL"
+                                        "Domain Order не найден после CANCELED recovery"
                                 )
                         );
 
         assertEquals(
                 OrderStatus.CANCELED,
                 canceledOrder.getStatus(),
-                "Order должен перейти PARTIALLY_FILLED -> CANCELED"
+                "UNKNOWN должен перейти в CANCELED"
         );
 
         assertBigDecimal(
-                "0.3",
+                "0",
                 canceledOrder.getExecutedQuantity(),
-                "executedQuantity не должен измениться после CANCEL"
+                "executedQuantity после CANCELED должен остаться 0"
         );
 
         assertEquals(
                 executionId,
                 canceledOrder.getExecutionId(),
-                "executionId не должен измениться после CANCEL"
+                "executionId не должен измениться при CANCELED recovery"
         );
 
-        RiskStateEntity afterCancel =
+        RiskStateEntity afterCanceled =
                 getRiskState();
 
         assertBigDecimal(
                 "10000",
-                afterCancel.getTotalEquity(),
-                "totalEquity после CANCEL"
+                afterCanceled.getTotalEquity(),
+                "totalEquity после CANCELED"
         );
 
         assertBigDecimal(
-                "9970",
-                afterCancel.getAvailableBalance(),
-                "availableBalance после CANCEL"
+                "10000",
+                afterCanceled.getAvailableBalance(),
+                "availableBalance после CANCELED"
         );
 
         assertBigDecimal(
                 "0",
-                afterCancel.getReservedMargin(),
-                "reservedMargin после CANCEL"
+                afterCanceled.getReservedMargin(),
+                "reservedMargin должен быть полностью освобождён"
         );
 
         /*
-         * ============================================================
-         * 5. REPEATED CANCELED RECOVERY
+         * Repeat the same terminal recovery.
          *
-         * Exchange повторно сообщает тот же terminal state:
-         *
-         *     CANCELED
-         *
-         * Order уже terminal.
-         *
-         * Повторная reconciliation НЕ должна:
-         *
-         * - повторно release reservation;
-         * - изменить availableBalance;
-         * - изменить totalEquity;
-         * - изменить executedQuantity;
-         * - изменить executionId;
-         * - создать новый lifecycle transition.
-         * ============================================================
+         * CANCELED is terminal.
+         * The second reconciliation must be a no-op.
          */
-
-        ExecutionContext canceledContext =
-                ExecutionContext.of(
-                        canceledOrder
-                );
-
-        when(
-                exchangeQueryService.getOrderStatus(
-                        canceledOrder.getSymbol(),
-                        canceledOrder.getClientOrderId()
-                )
-        ).thenReturn(
-                ExecutionResult.canceled(
-                        orderId
-                )
-        );
-
         reconciliationService.reconcile(
-                canceledContext
+                context
         );
 
-        OrderEntity afterRepeatedCancel =
-                orderRepository
+        Order repeatedCanceledOrder =
+                orderRepositoryPort
                         .findById(orderId)
                         .orElseThrow(
                                 () -> new AssertionError(
-                                        "Order не найден после repeated CANCEL recovery"
+                                        "Domain Order не найден после repeated CANCELED recovery"
                                 )
                         );
 
-        /*
-         * Terminal state остаётся неизменным.
-         */
         assertEquals(
                 OrderStatus.CANCELED,
-                afterRepeatedCancel.getStatus(),
-                "Повторный CANCEL не должен менять terminal status"
-        );
-
-        /*
-         * Уже исполненная часть не должна измениться.
-         */
-        assertBigDecimal(
-                "0.3",
-                afterRepeatedCancel.getExecutedQuantity(),
-                "executedQuantity не должен измениться после repeated CANCEL"
-        );
-
-        /*
-         * Identity lifecycle остаётся тем же.
-         */
-        assertEquals(
-                executionId,
-                afterRepeatedCancel.getExecutionId(),
-                "executionId не должен измениться после repeated CANCEL"
-        );
-
-        /*
-         * RiskState должен остаться абсолютно тем же.
-         */
-        RiskStateEntity afterRepeatedCancelRisk =
-                getRiskState();
-
-        assertBigDecimal(
-                "10000",
-                afterRepeatedCancelRisk.getTotalEquity(),
-                "totalEquity не должен измениться после repeated CANCEL"
-        );
-
-        assertBigDecimal(
-                "9970",
-                afterRepeatedCancelRisk.getAvailableBalance(),
-                "availableBalance не должен измениться после repeated CANCEL"
+                repeatedCanceledOrder.getStatus(),
+                "Повторный CANCELED должен оставить CANCELED"
         );
 
         assertBigDecimal(
                 "0",
-                afterRepeatedCancelRisk.getReservedMargin(),
-                "reservedMargin не должен измениться после repeated CANCEL"
+                repeatedCanceledOrder.getExecutedQuantity(),
+                "executedQuantity не должен измениться повторно"
+        );
+
+        assertEquals(
+                executionId,
+                repeatedCanceledOrder.getExecutionId(),
+                "executionId не должен измениться после repeated CANCELED"
+        );
+
+        RiskStateEntity afterRepeatedCanceled =
+                getRiskState();
+
+        assertBigDecimal(
+                "10000",
+                afterRepeatedCanceled.getTotalEquity(),
+                "totalEquity после repeated CANCELED"
+        );
+
+        assertBigDecimal(
+                "10000",
+                afterRepeatedCanceled.getAvailableBalance(),
+                "availableBalance не должен измениться после repeated CANCELED"
+        );
+
+        assertBigDecimal(
+                "0",
+                afterRepeatedCanceled.getReservedMargin(),
+                "reservedMargin не должен измениться после repeated CANCELED"
         );
     }
 

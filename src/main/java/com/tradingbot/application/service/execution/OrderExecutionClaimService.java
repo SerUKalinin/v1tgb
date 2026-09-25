@@ -23,6 +23,18 @@ import java.util.UUID;
  * Гарантирует, что execution claim и переход Order
  * PENDING_EXECUTION -> EXECUTING выполняются
  * в одной транзакции.
+ *
+ * Identity SSOT:
+ *
+ * signalId
+ *     ↓
+ * orderId
+ *     ↓
+ * executionId
+ *
+ * Все три identity должны быть согласованы
+ * между ExecutionContext и ORDER_CREATED payload
+ * до любого repository/execution claim.
  */
 @Slf4j
 @Service
@@ -36,7 +48,7 @@ public class OrderExecutionClaimService {
 
     /**
      * Атомарно захватывает execution и переводит Order
-     * в EXECUTING.
+     * PENDING_EXECUTION -> EXECUTING.
      */
     @Transactional(
             propagation = Propagation.REQUIRES_NEW,
@@ -94,6 +106,71 @@ public class OrderExecutionClaimService {
 
             throw new IllegalStateException(
                     "Invariant violation: executionId is null in OrderCreatedEvent"
+            );
+        }
+
+        /*
+         * ============================================================
+         * CANONICAL EXECUTION IDENTITY CONSISTENCY
+         * ============================================================
+         *
+         * ORDER_CREATED обязано содержать тот же полный identity,
+         * который находится в ExecutionContext.
+         *
+         * Проверяем ВСЕ три связи до любого repository/execution claim:
+         *
+         *     signalId
+         *         ↓
+         *     orderId
+         *         ↓
+         *     executionId
+         *
+         * Нельзя пропустить несовпадение только потому, что
+         * executionId совпал.
+         */
+
+        UUID contextSignalId =
+                context.signalId();
+
+        if (!signalId.equals(contextSignalId)) {
+
+            throw new IllegalStateException(
+                    "Identity mismatch in ORDER_CREATED: " +
+                            "payload.signalId=" + signalId +
+                            ", context.signalId=" + contextSignalId +
+                            ", orderId=" + orderId
+            );
+        }
+
+        String contextOrderIdValue =
+                context.business().orderId();
+
+        UUID contextOrderId;
+
+        try {
+
+            contextOrderId =
+                    UUID.fromString(
+                            contextOrderIdValue
+                    );
+
+        } catch (IllegalArgumentException e) {
+
+            throw new IllegalStateException(
+                    "Identity mismatch in ORDER_CREATED: " +
+                            "context.business.orderId is not a valid UUID: " +
+                            contextOrderIdValue,
+                    e
+            );
+        }
+
+        if (!orderId.equals(contextOrderId)) {
+
+            throw new IllegalStateException(
+                    "Identity mismatch in ORDER_CREATED: " +
+                            "payload.orderId=" + orderId +
+                            ", context.business.orderId=" + contextOrderId +
+                            ", signalId=" + signalId
             );
         }
 

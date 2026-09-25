@@ -565,6 +565,502 @@ class RecoveryCumulativeSettlementIntegrationTest
         );
     }
 
+    @Test
+    void shouldRejectRecoveryWhenCumulativeExecutedNotionalDecreases() {
+
+        UUID signalId =
+                UUID.randomUUID();
+
+        SignalEvent signal =
+                new SignalEvent(
+                        signalId,
+                        "BTCUSDT",
+                        SignalType.BUY,
+                        new BigDecimal("100"),
+                        BigDecimal.ONE,
+                        BigDecimal.ZERO,
+                        BigDecimal.ZERO,
+                        Instant.now(),
+                        "RECOVERY-CUMULATIVE-DECREASE-TEST"
+                );
+
+        /*
+         * ============================================================
+         * 1. Создаём Order и первоначальный reservation = 100
+         * ============================================================
+         */
+        signalExecutionFacade.execute(signal);
+
+        OrderEntity createdOrder =
+                waitForOrder(signalId);
+
+        UUID orderId =
+                createdOrder.getId();
+
+        assertNotNull(
+                orderId,
+                "Order должен быть создан"
+        );
+
+        RiskStateEntity afterReservation =
+                getRiskState();
+
+        assertBigDecimal(
+                "100",
+                afterReservation.getReservedMargin(),
+                "reservedMargin после reservation"
+        );
+
+        /*
+         * ============================================================
+         * 2. Initial partial fill:
+         *
+         *     0.3 @ 100
+         *
+         * consumed:
+         *
+         *     0.3 × 100 = 30
+         *
+         * reservation:
+         *
+         *     100 - 30 = 70
+         * ============================================================
+         */
+        drainOutbox();
+
+        OrderEntity partialOrder =
+                waitForStatus(
+                        signalId,
+                        OrderStatus.PARTIALLY_FILLED
+                );
+
+        assertBigDecimal(
+                "0.3",
+                partialOrder.getExecutedQuantity(),
+                "executedQuantity после initial partial fill"
+        );
+
+        RiskStateEntity afterInitialPartial =
+                getRiskState();
+
+        assertBigDecimal(
+                "70",
+                afterInitialPartial.getReservedMargin(),
+                "reservedMargin после 0.3 @ 100"
+        );
+
+        /*
+         * ============================================================
+         * 3. Recovery:
+         *
+         *     cumulative = 0.6 @ 105
+         *
+         * previous notional:
+         *
+         *     0.3 × 100 = 30
+         *
+         * current notional:
+         *
+         *     0.6 × 105 = 63
+         *
+         * incremental settlement:
+         *
+         *     63 - 30 = 33
+         *
+         * reservation:
+         *
+         *     70 - 33 = 37
+         * ============================================================
+         */
+        Order domainOrder =
+                orderRepositoryPort
+                        .findById(orderId)
+                        .orElseThrow(
+                                () -> new AssertionError(
+                                        "Domain Order не найден"
+                                )
+                        );
+
+        ExecutionContext context =
+                ExecutionContext.of(domainOrder);
+
+        when(
+                exchangeQueryService.getOrderStatus(
+                        domainOrder.getSymbol(),
+                        domainOrder.getClientOrderId()
+                )
+        ).thenReturn(
+                ExecutionResult.partiallyFilled(
+                        orderId,
+                        "TEST-EXCHANGE-ORDER-" + orderId,
+                        "TEST-EXCHANGE-TRADE-0.6-105-" + orderId,
+                        "BTCUSDT",
+                        domainOrder.getSide(),
+                        new BigDecimal("0.6"),
+                        new BigDecimal("105"),
+                        domainOrder.getClientOrderId()
+                )
+        );
+
+        reconciliationService.reconcile(
+                context
+        );
+
+        OrderEntity afterValidRecovery =
+                orderRepository
+                        .findById(orderId)
+                        .orElseThrow(
+                                () -> new AssertionError(
+                                        "Order не найден после valid recovery"
+                                )
+                        );
+
+        assertEquals(
+                OrderStatus.PARTIALLY_FILLED,
+                afterValidRecovery.getStatus()
+        );
+
+        assertBigDecimal(
+                "0.6",
+                afterValidRecovery.getExecutedQuantity(),
+                "executedQuantity после recovery 0.6 @ 105"
+        );
+
+        RiskStateEntity afterValidRecoveryRisk =
+                getRiskState();
+
+        assertBigDecimal(
+                "37",
+                afterValidRecoveryRisk.getReservedMargin(),
+                "reservedMargin после recovery 0.6 @ 105"
+        );
+
+        /*
+         * ============================================================
+         * 4. BAD RECOVERY
+         *
+         * Биржа неожиданно сообщает:
+         *
+         *     cumulative = 0.5 @ 105
+         *
+         * Previous cumulative notional:
+         *
+         *     0.6 × 105 = 63
+         *
+         * Current cumulative notional:
+         *
+         *     0.5 × 105 = 52.5
+         *
+         * Поэтому:
+         *
+         *     52.5 < 63
+         *
+         * Это запрещённое состояние.
+         *
+         * ReconciliationService должен отклонить snapshot
+         * и НЕ изменять локальное состояние.
+         * ============================================================
+         */
+        Order beforeInvalidRecovery =
+                orderRepositoryPort
+                        .findById(orderId)
+                        .orElseThrow(
+                                () -> new AssertionError(
+                                        "Order не найден перед invalid recovery"
+                                )
+                        );
+
+        ExecutionContext invalidContext =
+                ExecutionContext.of(
+                        beforeInvalidRecovery
+                );
+
+        when(
+                exchangeQueryService.getOrderStatus(
+                        beforeInvalidRecovery.getSymbol(),
+                        beforeInvalidRecovery.getClientOrderId()
+                )
+        ).thenReturn(
+                ExecutionResult.partiallyFilled(
+                        orderId,
+                        "TEST-EXCHANGE-ORDER-" + orderId,
+                        "TEST-EXCHANGE-TRADE-0.5-105-" + orderId,
+                        "BTCUSDT",
+                        beforeInvalidRecovery.getSide(),
+                        new BigDecimal("0.5"),
+                        new BigDecimal("105"),
+                        beforeInvalidRecovery.getClientOrderId()
+                )
+        );
+
+        reconciliationService.reconcile(
+                invalidContext
+        );
+
+        /*
+         * ============================================================
+         * 5. Проверяем, что локальное состояние НЕ изменилось
+         * ============================================================
+         */
+        OrderEntity afterInvalidRecovery =
+                orderRepository
+                        .findById(orderId)
+                        .orElseThrow(
+                                () -> new AssertionError(
+                                        "Order не найден после invalid recovery"
+                                )
+                        );
+
+        /*
+         * Ключевой invariant:
+         *
+         * 0.6 не может превратиться в 0.5.
+         */
+        assertBigDecimal(
+                "0.6",
+                afterInvalidRecovery.getExecutedQuantity(),
+                "executedQuantity не должна уменьшиться после invalid recovery"
+        );
+
+        assertEquals(
+                OrderStatus.PARTIALLY_FILLED,
+                afterInvalidRecovery.getStatus(),
+                "Order status не должен измениться после invalid recovery"
+        );
+
+        /*
+         * executionId также не должен измениться.
+         */
+        assertEquals(
+                beforeInvalidRecovery.getExecutionId(),
+                afterInvalidRecovery.getExecutionId(),
+                "executionId не должен измениться после invalid recovery"
+        );
+
+        /*
+         * Reservation также должен остаться 37.
+         *
+         * Никакого дополнительного settlement/release
+         * из-за некорректного cumulative snapshot быть не должно.
+         */
+        RiskStateEntity afterInvalidRecoveryRisk =
+                getRiskState();
+
+        assertBigDecimal(
+                "37",
+                afterInvalidRecoveryRisk.getReservedMargin(),
+                "reservedMargin не должен измениться после invalid recovery"
+        );
+
+        assertBigDecimal(
+                "9900",
+                afterInvalidRecoveryRisk.getAvailableBalance(),
+                "availableBalance не должен измениться после invalid recovery"
+        );
+    }
+
+    @Test
+    void shouldSettleIncrementalCumulativeNotionalWhenRecoveryPriceChanges() {
+
+        UUID signalId =
+                UUID.randomUUID();
+
+        SignalEvent signal =
+                new SignalEvent(
+                        signalId,
+                        "BTCUSDT",
+                        SignalType.BUY,
+                        new BigDecimal("100"),
+                        BigDecimal.ONE,
+                        BigDecimal.ZERO,
+                        BigDecimal.ZERO,
+                        Instant.now(),
+                        "RECOVERY-CUMULATIVE-PRICE-CHANGE-TEST"
+                );
+
+        /*
+         * ============================================================
+         * 1. Initial reservation = 100
+         * ============================================================
+         */
+        signalExecutionFacade.execute(signal);
+
+        OrderEntity createdOrder =
+                waitForOrder(signalId);
+
+        UUID orderId =
+                createdOrder.getId();
+
+        assertNotNull(orderId);
+
+        RiskStateEntity afterReservation =
+                getRiskState();
+
+        assertBigDecimal(
+                "100",
+                afterReservation.getReservedMargin(),
+                "reservedMargin после reservation"
+        );
+
+        /*
+         * ============================================================
+         * 2. Initial partial fill: 0.3 @ 100
+         * ============================================================
+         */
+        drainOutbox();
+
+        OrderEntity partialOrder =
+                waitForStatus(
+                        signalId,
+                        OrderStatus.PARTIALLY_FILLED
+                );
+
+        assertBigDecimal(
+                "0.3",
+                partialOrder.getExecutedQuantity(),
+                "executedQuantity после initial partial fill"
+        );
+
+        RiskStateEntity afterInitialPartial =
+                getRiskState();
+
+        assertBigDecimal(
+                "70",
+                afterInitialPartial.getReservedMargin(),
+                "reservedMargin после 0.3 @ 100"
+        );
+
+        /*
+         * ============================================================
+         * 3. Recovery: cumulative 0.6 @ 105
+         *
+         * Previous cumulative notional:
+         *
+         *     0.3 × 100 = 30
+         *
+         * Current cumulative notional:
+         *
+         *     0.6 × 105 = 63
+         *
+         * Incremental settlement:
+         *
+         *     63 - 30 = 33
+         *
+         * Therefore:
+         *
+         *     70 - 33 = 37
+         *
+         * Это принципиально проверяет cumulative-notional,
+         * а не deltaQty × currentPrice.
+         * ============================================================
+         */
+        Order domainOrder =
+                orderRepositoryPort
+                        .findById(orderId)
+                        .orElseThrow();
+
+        ExecutionContext context =
+                ExecutionContext.of(domainOrder);
+
+        when(
+                exchangeQueryService.getOrderStatus(
+                        domainOrder.getSymbol(),
+                        domainOrder.getClientOrderId()
+                )
+        ).thenReturn(
+                ExecutionResult.partiallyFilled(
+                        orderId,
+                        "TEST-EXCHANGE-ORDER-" + orderId,
+                        "TEST-EXCHANGE-TRADE-0.6-105-" + orderId,
+                        "BTCUSDT",
+                        domainOrder.getSide(),
+                        new BigDecimal("0.6"),
+                        new BigDecimal("105"),
+                        domainOrder.getClientOrderId()
+                )
+        );
+
+        reconciliationService.reconcile(
+                context
+        );
+
+        OrderEntity afterRecovery =
+                orderRepository
+                        .findById(orderId)
+                        .orElseThrow();
+
+        assertEquals(
+                OrderStatus.PARTIALLY_FILLED,
+                afterRecovery.getStatus()
+        );
+
+        assertBigDecimal(
+                "0.6",
+                afterRecovery.getExecutedQuantity(),
+                "executedQuantity после recovery 0.6 @ 105"
+        );
+
+        RiskStateEntity afterPriceChange =
+                getRiskState();
+
+        assertBigDecimal(
+                "37",
+                afterPriceChange.getReservedMargin(),
+                "reservedMargin после incremental settlement 0.6 @ 105"
+        );
+
+        /*
+         * ============================================================
+         * 4. Повторный recovery того же cumulative checkpoint
+         *
+         * 0.6 × 105 = 63
+         * 63 - 63 = 0
+         *
+         * Reservation должен остаться 37.
+         * ============================================================
+         */
+        Order repeatedDomainOrder =
+                orderRepositoryPort
+                        .findById(orderId)
+                        .orElseThrow();
+
+        ExecutionContext repeatedContext =
+                ExecutionContext.of(
+                        repeatedDomainOrder
+                );
+
+        when(
+                exchangeQueryService.getOrderStatus(
+                        repeatedDomainOrder.getSymbol(),
+                        repeatedDomainOrder.getClientOrderId()
+                )
+        ).thenReturn(
+                ExecutionResult.partiallyFilled(
+                        orderId,
+                        "TEST-EXCHANGE-ORDER-" + orderId,
+                        "TEST-EXCHANGE-TRADE-0.6-105-" + orderId,
+                        "BTCUSDT",
+                        repeatedDomainOrder.getSide(),
+                        new BigDecimal("0.6"),
+                        new BigDecimal("105"),
+                        repeatedDomainOrder.getClientOrderId()
+                )
+        );
+
+        reconciliationService.reconcile(
+                repeatedContext
+        );
+
+        RiskStateEntity afterRepeatedRecovery =
+                getRiskState();
+
+        assertBigDecimal(
+                "37",
+                afterRepeatedRecovery.getReservedMargin(),
+                "reservedMargin после повторного recovery 0.6 @ 105"
+        );
+    }
+
     private RiskStateEntity getRiskState() {
 
         return riskStateRepository
