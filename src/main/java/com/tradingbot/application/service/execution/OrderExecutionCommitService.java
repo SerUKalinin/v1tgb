@@ -54,6 +54,24 @@ import java.util.UUID;
  * commitRecoveredExecution()
  *
  * Recovery НИКОГДА не вызывает placeOrder().
+ *
+ * ExecutionLock semantics:
+ *
+ * CLAIMED
+ *      ↓
+ * EXECUTING
+ *      ↓
+ * terminal lifecycle
+ *      ↓
+ * EXECUTED
+ *
+ * Для нетерминальных результатов:
+ *
+ * PARTIALLY_FILLED
+ * SENT_TO_EXCHANGE
+ * UNKNOWN
+ *
+ * lock остаётся EXECUTING, потому что lifecycle ещё не завершён.
  */
 @Slf4j
 @Service
@@ -73,7 +91,7 @@ public class OrderExecutionCommitService {
      * - Risk mutation
      * - Order persistence
      * - completion outbox
-     * - execution lock EXECUTED
+     * - execution lock completion только для terminal lifecycle
      */
     @Transactional(
             propagation = Propagation.REQUIRES_NEW,
@@ -209,21 +227,10 @@ public class OrderExecutionCommitService {
                 result
         );
 
-        boolean markedExecuted =
-                lockService.markExecuted(
-                        lockKey
-                );
-
-        if (!markedExecuted) {
-
-            throw new IllegalStateException(
-                    "Failed to transition execution lock to EXECUTED. " +
-                            "lockKey=" + lockKey +
-                            ", orderId=" + order.getId() +
-                            ", executionId=" +
-                            context.attempt().executionId()
-            );
-        }
+        markLockExecutedIfTerminal(
+                order,
+                lockKey
+        );
 
         log.info(
                 "[EXECUTION-SUCCESS] Order committed. Context: {}",
@@ -234,12 +241,11 @@ public class OrderExecutionCommitService {
     /**
      * Recovery commit после authoritative exchange query.
      *
-     * ВАЖНО:
-     *
      * - никакого placeOrder();
      * - executionId остаётся тем же;
      * - reconciliation только предоставляет authoritative result;
-     * - Order/Risk/Outbox/lock фиксируются одной transaction.
+     * - Order/Risk/Outbox/lock фиксируются одной transaction;
+     * - lock завершается только если lifecycle terminal.
      */
     @Transactional(
             propagation = Propagation.REQUIRES_NEW,
@@ -426,14 +432,6 @@ public class OrderExecutionCommitService {
                 order
         );
 
-        /*
-         * Для recovery completion должен использоваться
-         * canonical ORDER_EXECUTED event type.
-         *
-         * Не используем deriveCheckpointEventType():
-         * downstream OrderExecutedEventHandler.supports()
-         * принимает только exact "ORDER_EXECUTED".
-         */
         UUID completionEventId =
                 IdentityFactory.deriveEventId(
                         executionId,
@@ -451,21 +449,10 @@ public class OrderExecutionCommitService {
                 result
         );
 
-        boolean markedExecuted =
-                lockService.markExecuted(
-                        lockKey
-                );
-
-        if (!markedExecuted) {
-
-            throw new IllegalStateException(
-                    "Failed to transition execution lock to EXECUTED " +
-                            "during recovery. " +
-                            "lockKey=" + lockKey +
-                            ", orderId=" + order.getId() +
-                            ", executionId=" + executionId
-            );
-        }
+        markLockExecutedIfTerminal(
+                order,
+                lockKey
+        );
 
         log.info(
                 "[RECON-COMMIT-SUCCESS] " +
@@ -475,6 +462,56 @@ public class OrderExecutionCommitService {
                 executionId,
                 order.getStatus()
         );
+    }
+
+    /**
+     * Завершает execution lock только после terminal state.
+     *
+     * Нетерминальные состояния:
+     *
+     * - SENT_TO_EXCHANGE
+     * - PARTIALLY_FILLED
+     * - UNKNOWN
+     *
+     * не должны переводить lock в EXECUTED, поскольку recovery
+     * всё ещё принадлежит тому же execution lifecycle.
+     */
+    private void markLockExecutedIfTerminal(
+            Order order,
+            String lockKey
+    ) {
+
+        if (!isTerminal(
+                order.getStatus()
+        )) {
+
+            log.debug(
+                    "[EXECUTION-LOCK-KEEP] " +
+                            "Execution lifecycle remains active. " +
+                            "orderId={}, status={}, lockKey={}",
+                    order.getId(),
+                    order.getStatus(),
+                    lockKey
+            );
+
+            return;
+        }
+
+        boolean markedExecuted =
+                lockService.markExecuted(
+                        lockKey
+                );
+
+        if (!markedExecuted) {
+
+            throw new IllegalStateException(
+                    "Failed to transition execution lock to EXECUTED. " +
+                            "lockKey=" + lockKey +
+                            ", orderId=" + order.getId() +
+                            ", executionId=" +
+                            order.getExecutionId()
+            );
+        }
     }
 
     private void settleIncrementalIfNeeded(

@@ -3,6 +3,7 @@ spring:
     allow-bean-definition-overriding: true
   profiles:
     active: backtest
+
   datasource:
     url: "jdbc:h2:mem:${random.uuid};DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH"
     password:
@@ -25,6 +26,10 @@ binance:
   api-key: test-api-key
   secret-key: test-secret-key
   base-url: https://api.binance.com
+
+exchange:
+  metadata:
+    startup-refresh-enabled: false
 
 trading:
   update-rate-ms: 60000
