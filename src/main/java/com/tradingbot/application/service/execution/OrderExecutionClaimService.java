@@ -7,6 +7,7 @@ import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.domain.model.OutboxEvent;
 import com.tradingbot.domain.policy.TransitionValidator;
+import com.tradingbot.infrastructure.execution.ExecutionLockService;
 import com.tradingbot.tracing.ExecutionContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,21 +21,39 @@ import java.util.UUID;
 /**
  * Транзакционный сервис захвата execution.
  *
- * Гарантирует, что execution claim и переход Order
- * PENDING_EXECUTION -> EXECUTING выполняются
- * в одной транзакции.
+ * <p>
+ * Гарантирует атомарность:
+ *
+ * <pre>
+ * Order:
+ * PENDING_EXECUTION -> EXECUTING
+ *
+ * +
+ *
+ * execution claim
+ *
+ * +
+ *
+ * execution lock:
+ * CLAIMED -> EXECUTING
+ *
+ * COMMIT
+ * </pre>
+ *
+ * <p>
+ * Внешний exchange I/O выполняется только после завершения
+ * этой transaction.
+ * </p>
  *
  * Identity SSOT:
  *
+ * <pre>
  * signalId
  *     ↓
  * orderId
  *     ↓
  * executionId
- *
- * Все три identity должны быть согласованы
- * между ExecutionContext и ORDER_CREATED payload
- * до любого repository/execution claim.
+ * </pre>
  */
 @Slf4j
 @Service
@@ -42,13 +61,36 @@ import java.util.UUID;
 public class OrderExecutionClaimService {
 
     private final SystemStateManager stateManager;
+
     private final ExecutionClaimPort executionClaimPort;
+
     private final OrderRepositoryPort orderRepository;
+
     private final TransitionValidator transitionValidator;
 
     /**
-     * Атомарно захватывает execution и переводит Order
-     * PENDING_EXECUTION -> EXECUTING.
+     * Технический execution lock.
+     */
+    private final ExecutionLockService executionLockService;
+
+    /**
+     * Атомарно захватывает execution lifecycle.
+     *
+     * <p>
+     * Все DB операции claim находятся в одной REQUIRES_NEW
+     * transaction:
+     *
+     * <pre>
+     * PENDING_EXECUTION
+     *       ↓
+     * Order -> EXECUTING
+     *       +
+     * execution claim
+     *       +
+     * execution lock -> EXECUTING
+     *       ↓
+     * COMMIT
+     * </pre>
      */
     @Transactional(
             propagation = Propagation.REQUIRES_NEW,
@@ -114,10 +156,7 @@ public class OrderExecutionClaimService {
          * CANONICAL EXECUTION IDENTITY CONSISTENCY
          * ============================================================
          *
-         * ORDER_CREATED обязано содержать тот же полный identity,
-         * который находится в ExecutionContext.
-         *
-         * Проверяем ВСЕ три связи до любого repository/execution claim:
+         * Проверяем:
          *
          *     signalId
          *         ↓
@@ -125,14 +164,15 @@ public class OrderExecutionClaimService {
          *         ↓
          *     executionId
          *
-         * Нельзя пропустить несовпадение только потому, что
-         * executionId совпал.
+         * до любых execution side effects.
          */
 
         UUID contextSignalId =
                 context.signalId();
 
-        if (!signalId.equals(contextSignalId)) {
+        if (!signalId.equals(
+                contextSignalId
+        )) {
 
             throw new IllegalStateException(
                     "Identity mismatch in ORDER_CREATED: " +
@@ -164,17 +204,22 @@ public class OrderExecutionClaimService {
             );
         }
 
-        if (!orderId.equals(contextOrderId)) {
+        if (!orderId.equals(
+                contextOrderId
+        )) {
 
             throw new IllegalStateException(
                     "Identity mismatch in ORDER_CREATED: " +
                             "payload.orderId=" + orderId +
-                            ", context.business.orderId=" + contextOrderId +
+                            ", context.business.orderId=" +
+                            contextOrderId +
                             ", signalId=" + signalId
             );
         }
 
-        if (!executionId.equals(payloadExecutionId)) {
+        if (!executionId.equals(
+                payloadExecutionId
+        )) {
 
             throw new IllegalStateException(
                     "Identity mismatch in ORDER_CREATED: " +
@@ -193,8 +238,11 @@ public class OrderExecutionClaimService {
         );
 
         /*
-         * Сначала блокируем сам Order через SELECT ... FOR UPDATE
-         * и атомарно переводим PENDING_EXECUTION -> EXECUTING.
+         * ============================================================
+         * ORDER CLAIM
+         * ============================================================
+         *
+         * PENDING_EXECUTION -> EXECUTING.
          */
         Optional<Order> orderOpt =
                 orderRepository.claimForExecution(
@@ -204,22 +252,81 @@ public class OrderExecutionClaimService {
 
         if (orderOpt.isEmpty()) {
 
-            handleAlreadyProcessed(event);
+            handleAlreadyProcessed(
+                    event
+            );
 
             return Optional.empty();
         }
 
+        Order order =
+                orderOpt.get();
+
         /*
-         * Order уже успешно захвачен и находится EXECUTING.
+         * ============================================================
+         * EXECUTION CLAIM
+         * ============================================================
          *
-         * Execution claim создаётся в той же REQUIRES_NEW transaction.
+         * Создаётся в той же outer transaction.
          */
         executionClaimPort.claimExecution(
                 executionId,
                 signalId
         );
 
-        return orderOpt;
+        /*
+         * ============================================================
+         * EXECUTION LOCK
+         * ============================================================
+         *
+         * Ключ должен совпадать с тем,
+         * который OrderExecutionHandler передаёт
+         * OrderExecutionCommitService:
+         *
+         *     EXEC_ORDER_<orderId>
+         *
+         * claimForExecution() выполняется в той же transaction,
+         * поэтому:
+         *
+         * Order EXECUTING
+         * execution claim
+         * execution lock EXECUTING
+         *
+         * либо COMMIT вместе,
+         * либо ROLLBACK вместе.
+         */
+        String lockKey =
+                "EXEC_ORDER_" + orderId;
+
+        boolean lockClaimed =
+                executionLockService.claimForExecution(
+                        lockKey
+                );
+
+        if (!lockClaimed) {
+
+            throw new IllegalStateException(
+                    "Execution lock could not be claimed for " +
+                            "execution lifecycle. " +
+                            "orderId=" + orderId +
+                            ", executionId=" + executionId +
+                            ", lockKey=" + lockKey
+            );
+        }
+
+        log.info(
+                "[EXECUTION-CLAIM-SUCCESS] Execution claimed. " +
+                        "executionId={}, orderId={}, lockKey={}, " +
+                        "orderStatus={}",
+                executionId,
+                orderId,
+                lockKey,
+                order.getStatus()
+        );
+
+        return Optional.of(
+                order
+        );
     }
 
     private void handleAlreadyProcessed(
@@ -227,20 +334,24 @@ public class OrderExecutionClaimService {
     ) {
 
         orderRepository
-                .findById(event.signalId())
-                .ifPresent(order -> {
+                .findById(
+                        event.signalId()
+                )
+                .ifPresent(
+                        order -> {
 
-                    if (transitionValidator.isProcessed(
-                            order.getStatus()
-                    )) {
+                            if (transitionValidator.isProcessed(
+                                    order.getStatus()
+                            )) {
 
-                        log.debug(
-                                "[EXECUTION-ALREADY-PROCESSED] " +
-                                        "Order {} already in processed state {}",
-                                order.getId(),
-                                order.getStatus()
-                        );
-                    }
-                });
+                                log.debug(
+                                        "[EXECUTION-ALREADY-PROCESSED] " +
+                                                "Order {} already in processed state {}",
+                                        order.getId(),
+                                        order.getStatus()
+                                );
+                            }
+                        }
+                );
     }
 }

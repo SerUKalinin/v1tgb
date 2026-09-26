@@ -24,28 +24,36 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Транзакционный boundary для фиксации результата execution.
+ * Transactional boundary для фиксации результата execution.
  *
- * В одной транзакции выполняются:
- * - проверка полного execution identity;
- * - проверка ownership executionId;
- * - изменение Order;
- * - сохранение Order;
- * - публикация completion event в transactional outbox;
- * - фиксация execution lock.
+ * Контракты:
+ * - SYSTEM_CONTRACT.md
+ * - STATE_MACHINE_CONTRACT.md
+ * - EXECUTION_ENGINE_CONTRACT.md
  *
- * Внешний exchange I/O сюда не входит.
+ * Exchange I/O здесь отсутствует.
  *
- * Identity SSOT:
+ * Нормальный execution:
  *
- * signalId
- *     ↓
- * orderId
- *     ↓
- * executionId
+ * ORDER_CREATED
+ *      ↓
+ * claim
+ *      ↓
+ * EXECUTING
+ *      ↓
+ * exchange I/O
+ *      ↓
+ * commit()
  *
- * ExecutionContext должен относиться именно к тому
- * persisted Order, который передан в commit().
+ * Recovery execution:
+ *
+ * EXECUTING / UNKNOWN / RECOVERING
+ *      ↓
+ * exchange reconciliation
+ *      ↓
+ * commitRecoveredExecution()
+ *
+ * Recovery НИКОГДА не вызывает placeOrder().
  */
 @Slf4j
 @Service
@@ -58,8 +66,14 @@ public class OrderExecutionCommitService {
     private final ExecutionLockService lockService;
 
     /**
-     * Фиксирует результат исполнения
-     * в отдельной новой DB transaction.
+     * Обычный execution commit.
+     *
+     * В одной transaction:
+     * - Order mutation
+     * - Risk mutation
+     * - Order persistence
+     * - completion outbox
+     * - execution lock EXECUTED
      */
     @Transactional(
             propagation = Propagation.REQUIRES_NEW,
@@ -73,52 +87,27 @@ public class OrderExecutionCommitService {
             String lockKey
     ) {
 
-        /*
-         * ============================================================
-         * CANONICAL IDENTITY GUARD
-         * ============================================================
-         *
-         * Проверяем полный identity ДО:
-         *
-         * - state-machine transition;
-         * - изменения Order;
-         * - persistence;
-         * - outbox publication;
-         * - execution lock.
-         *
-         * Это исключает ситуацию, когда одинаковый executionId
-         * используется вместе с чужим signalId/orderId.
-         */
         validateContextIdentity(
                 order,
                 context
         );
 
-        /*
-         * Проверка execution ownership остаётся отдельным
-         * domain/application invariant:
-         *
-         * Order.executionId == Context.executionId
-         */
         ExecutionOwnershipValidator.validateExecutionOwnership(
                 order,
                 context.attempt().executionId()
         );
 
         /*
-         * Terminal/idempotent result.
-         *
-         * Identity уже проверен выше.
-         * Поэтому корректный повтор того же lifecycle
-         * остаётся безопасным no-op.
+         * Корректный повтор уже завершённого lifecycle —
+         * idempotent no-op.
          */
-        if (order.getStatus() == OrderStatus.FILLED
-                || order.getStatus() == OrderStatus.PARTIALLY_FILLED
-                || order.getStatus() == OrderStatus.REJECTED
-                || order.getStatus() == OrderStatus.CANCELED) {
+        if (isTerminal(
+                order.getStatus()
+        )) {
 
             log.info(
-                    "[EXECUTION-IDEMPOTENT-SKIP] Order {} already in terminal state {}. " +
+                    "[EXECUTION-IDEMPOTENT-SKIP] " +
+                            "Order {} already in terminal state {}. " +
                             "Skipping commit.",
                     order.getId(),
                     order.getStatus()
@@ -134,7 +123,9 @@ public class OrderExecutionCommitService {
                 );
 
         ExecutionContext completionContext =
-                context.withNextStep(completionEventId);
+                context.withNextStep(
+                        completionEventId
+                );
 
         switch (result.getStatus()) {
 
@@ -208,11 +199,6 @@ public class OrderExecutionCommitService {
             }
         }
 
-        /*
-         * REQUIRED transaction boundary:
-         * OrderRepositoryAdapter.save() участвует
-         * в этой transaction.
-         */
         orderRepository.save(
                 order
         );
@@ -223,9 +209,21 @@ public class OrderExecutionCommitService {
                 result
         );
 
-        lockService.markExecuted(
-                lockKey
-        );
+        boolean markedExecuted =
+                lockService.markExecuted(
+                        lockKey
+                );
+
+        if (!markedExecuted) {
+
+            throw new IllegalStateException(
+                    "Failed to transition execution lock to EXECUTED. " +
+                            "lockKey=" + lockKey +
+                            ", orderId=" + order.getId() +
+                            ", executionId=" +
+                            context.attempt().executionId()
+            );
+        }
 
         log.info(
                 "[EXECUTION-SUCCESS] Order committed. Context: {}",
@@ -234,22 +232,352 @@ public class OrderExecutionCommitService {
     }
 
     /**
-     * Проверяет согласованность полного identity:
+     * Recovery commit после authoritative exchange query.
      *
-     * persisted Order
-     *      ↕
-     * ExecutionContext
+     * ВАЖНО:
      *
-     * Проверяем:
-     *
-     *     signalId
-     *     orderId
-     *     executionId
-     *
-     * Этот guard намеренно выполняется до state transition,
-     * поэтому чужой context никогда не сможет дойти
-     * до OrderStateTransitionPolicy.
+     * - никакого placeOrder();
+     * - executionId остаётся тем же;
+     * - reconciliation только предоставляет authoritative result;
+     * - Order/Risk/Outbox/lock фиксируются одной transaction.
      */
+    @Transactional(
+            propagation = Propagation.REQUIRES_NEW,
+            rollbackFor = Exception.class
+    )
+    public void commitRecoveredExecution(
+            ExecutionContext context,
+            Order order,
+            ExecutionResult result,
+            String settlementKey,
+            BigDecimal incrementalNotional,
+            String lockKey
+    ) {
+
+        validateContextIdentity(
+                order,
+                context
+        );
+
+        UUID executionId =
+                context.attempt().executionId();
+
+        if (order.getExecutionId() == null) {
+
+            throw new ExecutionOwnershipException(
+                    "Recovery requires persisted executionId. " +
+                            "orderId=" + order.getId()
+            );
+        }
+
+        if (!order.getExecutionId().equals(
+                executionId
+        )) {
+
+            throw new ExecutionOwnershipException(
+                    "Recovery execution identity mismatch. " +
+                            "orderId=" + order.getId() +
+                            ", order.executionId=" +
+                            order.getExecutionId() +
+                            ", context.executionId=" +
+                            executionId
+            );
+        }
+
+        if (result == null) {
+
+            throw new IllegalArgumentException(
+                    "Recovery execution result cannot be null"
+            );
+        }
+
+        if (lockKey == null
+                || lockKey.isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Recovery execution lock key cannot be blank"
+            );
+        }
+
+        if (incrementalNotional == null) {
+
+            throw new IllegalArgumentException(
+                    "Recovery incrementalNotional cannot be null"
+            );
+        }
+
+        if (incrementalNotional.signum() < 0) {
+
+            throw new IllegalArgumentException(
+                    "Recovery incrementalNotional cannot be negative"
+            );
+        }
+
+        /*
+         * Terminal lifecycle is already committed.
+         *
+         * Не создаём второй completion event.
+         * Не повторяем settlement.
+         */
+        if (isTerminal(
+                order.getStatus()
+        )) {
+
+            log.info(
+                    "[RECON-COMMIT-IDEMPOTENT-SKIP] " +
+                            "Order already terminal. " +
+                            "orderId={}, status={}, executionId={}",
+                    order.getId(),
+                    order.getStatus(),
+                    executionId
+            );
+
+            return;
+        }
+
+        log.info(
+                "[RECON-COMMIT-START] " +
+                        "orderId={}, executionId={}, exchangeStatus={}, " +
+                        "settlementKey={}, incrementalNotional={}",
+                order.getId(),
+                executionId,
+                result.getStatus(),
+                settlementKey,
+                incrementalNotional
+        );
+
+        switch (result.getStatus()) {
+
+            case FILLED -> {
+
+                order.forceFill(
+                        context,
+                        result.getExchangeOrderId(),
+                        result.getExecutedQty(),
+                        result.getExecutedPrice()
+                );
+
+                settleIncrementalIfNeeded(
+                        order,
+                        incrementalNotional,
+                        settlementKey,
+                        "Recovery full fill"
+                );
+            }
+
+            case PARTIALLY_FILLED -> {
+
+                order.applyPartialFill(
+                        context,
+                        result.getExecutedQty(),
+                        result.getExecutedPrice()
+                );
+
+                settleIncrementalIfNeeded(
+                        order,
+                        incrementalNotional,
+                        settlementKey,
+                        "Recovery partial fill"
+                );
+            }
+
+            case ACCEPTED -> {
+
+                order.markAccepted(
+                        context,
+                        result.getExchangeOrderId()
+                );
+            }
+
+            case REJECTED -> {
+
+                order.markAsRejected(
+                        context,
+                        result.getErrorMessage()
+                );
+
+                orderCompensationService.releasePartial(
+                        order,
+                        order.getExecutedQuantity()
+                );
+            }
+
+            case CANCELED -> {
+
+                order.markCancelled(
+                        context
+                );
+
+                orderCompensationService.releasePartial(
+                        order,
+                        order.getExecutedQuantity()
+                );
+            }
+
+            case EXCHANGE_STATE_UNKNOWN -> {
+
+                order.markAsUnknown(
+                        context
+                );
+            }
+        }
+
+        orderRepository.save(
+                order
+        );
+
+        /*
+         * Для recovery completion должен использоваться
+         * canonical ORDER_EXECUTED event type.
+         *
+         * Не используем deriveCheckpointEventType():
+         * downstream OrderExecutedEventHandler.supports()
+         * принимает только exact "ORDER_EXECUTED".
+         */
+        UUID completionEventId =
+                IdentityFactory.deriveEventId(
+                        executionId,
+                        "execution-completion"
+                );
+
+        ExecutionContext completionContext =
+                context.withNextStep(
+                        completionEventId
+                );
+
+        publishCompletionEvent(
+                completionContext,
+                order,
+                result
+        );
+
+        boolean markedExecuted =
+                lockService.markExecuted(
+                        lockKey
+                );
+
+        if (!markedExecuted) {
+
+            throw new IllegalStateException(
+                    "Failed to transition execution lock to EXECUTED " +
+                            "during recovery. " +
+                            "lockKey=" + lockKey +
+                            ", orderId=" + order.getId() +
+                            ", executionId=" + executionId
+            );
+        }
+
+        log.info(
+                "[RECON-COMMIT-SUCCESS] " +
+                        "Recovered execution committed. " +
+                        "orderId={}, executionId={}, finalStatus={}",
+                order.getId(),
+                executionId,
+                order.getStatus()
+        );
+    }
+
+    private void settleIncrementalIfNeeded(
+            Order order,
+            BigDecimal incrementalNotional,
+            String settlementKey,
+            String reason
+    ) {
+
+        if (incrementalNotional.signum() == 0) {
+
+            log.info(
+                    "[RECON-RISK-SKIP] " +
+                            "No incremental settlement required. " +
+                            "orderId={}, settlementKey={}",
+                    order.getId(),
+                    settlementKey
+            );
+
+            return;
+        }
+
+        if (settlementKey == null
+                || settlementKey.isBlank()) {
+
+            throw new IllegalStateException(
+                    "Settlement key is required for positive recovery settlement. " +
+                            "orderId=" + order.getId() +
+                            ", incrementalNotional=" +
+                            incrementalNotional
+            );
+        }
+
+        orderCompensationService.settleIncrementalExecution(
+                order,
+                incrementalNotional,
+                settlementKey,
+                reason
+        );
+    }
+
+    private void publishCompletionEvent(
+            ExecutionContext completionContext,
+            Order order,
+            ExecutionResult result
+    ) {
+
+        String eventType =
+                resolveCompletionEventType(
+                        order,
+                        result
+                );
+
+        Object payload =
+                OrderExecutedEvent.from(
+                        order,
+                        result.getExchangeTradeId()
+                );
+
+        outboxService.publishEvent(
+                completionContext,
+                "ORDER",
+                eventType,
+                payload
+        );
+    }
+
+    /**
+     * Canonical downstream event mapping.
+     *
+     * Именно ORDER_EXECUTED обрабатывается
+     * OrderExecutedEventHandler.
+     */
+    private String resolveCompletionEventType(
+            Order order,
+            ExecutionResult result
+    ) {
+
+        return switch (result.getStatus()) {
+
+            case FILLED ->
+                    "ORDER_EXECUTED";
+
+            case PARTIALLY_FILLED ->
+                    "ORDER_EXECUTED";
+
+            case ACCEPTED ->
+                    "ORDER_ACCEPTED";
+
+            case REJECTED ->
+                    "ORDER_REJECTED";
+
+            case EXCHANGE_STATE_UNKNOWN ->
+                    "ORDER_TIMEOUT";
+
+            case CANCELED ->
+                    "ORDER_CANCELED";
+
+            default ->
+                    "ORDER_COMPLETED";
+        };
+    }
+
     private void validateContextIdentity(
             Order order,
             ExecutionContext context
@@ -303,7 +631,8 @@ public class OrderExecutionCommitService {
             );
         }
 
-        if (!order.getSignalId().equals(
+        if (!Objects.equals(
+                order.getSignalId(),
                 contextSignalId
         )) {
 
@@ -318,7 +647,8 @@ public class OrderExecutionCommitService {
             );
         }
 
-        if (!order.getId().equals(
+        if (!Objects.equals(
+                order.getId(),
                 contextOrderId
         )) {
 
@@ -333,7 +663,16 @@ public class OrderExecutionCommitService {
             );
         }
 
-        if (!order.getExecutionId().equals(
+        if (order.getExecutionId() == null) {
+
+            throw new ExecutionOwnershipException(
+                    "Order has no executionId. orderId=" +
+                            order.getId()
+            );
+        }
+
+        if (!Objects.equals(
+                order.getExecutionId(),
                 contextExecutionId
         )) {
 
@@ -349,153 +688,13 @@ public class OrderExecutionCommitService {
         }
     }
 
-    private void publishCompletionEvent(
-            ExecutionContext completionContext,
-            Order order,
-            ExecutionResult result
+    private boolean isTerminal(
+            OrderStatus status
     ) {
 
-        String eventType =
-                resolveCompletionEventType(
-                        completionContext,
-                        order,
-                        result
-                );
-
-        Object payload =
-                OrderExecutedEvent.from(
-                        order,
-                        result.getExchangeTradeId()
-                );
-
-        outboxService.publishEvent(
-                completionContext,
-                "ORDER",
-                eventType,
-                payload
-        );
-    }
-
-    private String resolveCompletionEventType(
-            ExecutionContext context,
-            Order order,
-            ExecutionResult result
-    ) {
-
-        if (result.getStatus()
-                == ExecutionResult.Status.FILLED
-                || result.getStatus()
-                == ExecutionResult.Status.PARTIALLY_FILLED) {
-
-            BigDecimal quantity =
-                    order.getExecutedQuantity();
-
-            BigDecimal price =
-                    order.getAveragePrice();
-
-            if (quantity == null
-                    || quantity.signum() <= 0
-                    || price == null
-                    || price.signum() <= 0) {
-
-                throw new IllegalStateException(
-                        "Execution completion event requires valid cumulative " +
-                                "quantity and price. orderId=" +
-                                order.getId()
-                );
-            }
-
-            String checkpointKey =
-                    result.getStatus().name()
-                            + ":"
-                            + normalize(
-                            quantity
-                    )
-                            + "@"
-                            + normalize(
-                            price
-                    );
-
-            return IdentityFactory.deriveCheckpointEventType(
-                    context.attempt().executionId(),
-                    "ORDER_EXECUTED",
-                    checkpointKey
-            );
-        }
-
-        return switch (result.getStatus()) {
-
-            case ACCEPTED ->
-                    "ORDER_ACCEPTED";
-
-            case REJECTED ->
-                    "ORDER_REJECTED";
-
-            case EXCHANGE_STATE_UNKNOWN ->
-                    "ORDER_TIMEOUT";
-
-            case CANCELED ->
-                    "ORDER_CANCELED";
-
-            default ->
-                    "ORDER_COMPLETED";
-        };
-    }
-
-    private String normalize(
-            BigDecimal value
-    ) {
-
-        return value
-                .stripTrailingZeros()
-                .toPlainString();
-    }
-
-    private String resolveCompletionEventType(
-            Order order,
-            ExecutionResult result
-    ) {
-
-        if (result.getStatus() == ExecutionResult.Status.FILLED) {
-
-            boolean hasRealExecution =
-                    order.getExecutedQuantity() != null
-                            && order.getAveragePrice() != null;
-
-            if (!hasRealExecution) {
-
-                log.error(
-                        "[INVARIANT-VIOLATION] FILLED result but no execution data. " +
-                                "orderId={}, status={}",
-                        order.getId(),
-                        order.getStatus()
-                );
-            }
-
-            return hasRealExecution
-                    ? "ORDER_EXECUTED"
-                    : "ORDER_COMPLETED";
-        }
-
-        return switch (result.getStatus()) {
-
-            case PARTIALLY_FILLED ->
-                    "ORDER_EXECUTED";
-
-            case ACCEPTED ->
-                    "ORDER_ACCEPTED";
-
-            case REJECTED ->
-                    "ORDER_REJECTED";
-
-            case EXCHANGE_STATE_UNKNOWN ->
-                    "ORDER_TIMEOUT";
-
-            case CANCELED ->
-                    "ORDER_CANCELED";
-
-            default ->
-                    "ORDER_COMPLETED";
-        };
+        return status == OrderStatus.FILLED
+                || status == OrderStatus.CANCELED
+                || status == OrderStatus.REJECTED
+                || status == OrderStatus.ERROR;
     }
 }

@@ -5,13 +5,13 @@ import com.tradingbot.application.service.order.OrderCreatedEvent;
 import com.tradingbot.domain.execution.ExecutionClaimPort;
 import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
+import com.tradingbot.infrastructure.execution.ExecutionLockService;
 import com.tradingbot.tracing.BusinessContext;
 import com.tradingbot.tracing.ExecutionAttemptContext;
 import com.tradingbot.tracing.ExecutionContext;
 import com.tradingbot.tracing.IdentityContext;
 import org.junit.jupiter.api.Test;
 
-import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -38,15 +38,20 @@ class ExecutionContextIdentityConsistencyTest {
         TransitionValidator transitionValidator =
                 mock(TransitionValidator.class);
 
-        when(stateManager.isReady())
-                .thenReturn(true);
+        ExecutionLockService executionLockService =
+                mock(ExecutionLockService.class);
+
+        when(
+                stateManager.isReady()
+        ).thenReturn(true);
 
         OrderExecutionClaimService service =
                 new OrderExecutionClaimService(
                         stateManager,
                         executionClaimPort,
                         orderRepository,
-                        transitionValidator
+                        transitionValidator,
+                        executionLockService
                 );
 
         UUID canonicalSignalId =
@@ -89,7 +94,9 @@ class ExecutionContextIdentityConsistencyTest {
                                 payload
                         )
         )
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(
+                        IllegalStateException.class
+                )
                 .hasMessageContaining(
                         "signalId"
                 );
@@ -109,6 +116,13 @@ class ExecutionContextIdentityConsistencyTest {
                 any(),
                 any()
         );
+
+        verify(
+                executionLockService,
+                never()
+        ).claimForExecution(
+                any()
+        );
     }
 
     @Test
@@ -126,15 +140,20 @@ class ExecutionContextIdentityConsistencyTest {
         TransitionValidator transitionValidator =
                 mock(TransitionValidator.class);
 
-        when(stateManager.isReady())
-                .thenReturn(true);
+        ExecutionLockService executionLockService =
+                mock(ExecutionLockService.class);
+
+        when(
+                stateManager.isReady()
+        ).thenReturn(true);
 
         OrderExecutionClaimService service =
                 new OrderExecutionClaimService(
                         stateManager,
                         executionClaimPort,
                         orderRepository,
-                        transitionValidator
+                        transitionValidator,
+                        executionLockService
                 );
 
         UUID signalId =
@@ -177,7 +196,9 @@ class ExecutionContextIdentityConsistencyTest {
                                 payload
                         )
         )
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(
+                        IllegalStateException.class
+                )
                 .hasMessageContaining(
                         "orderId"
                 );
@@ -195,6 +216,13 @@ class ExecutionContextIdentityConsistencyTest {
                 never()
         ).claimExecution(
                 any(),
+                any()
+        );
+
+        verify(
+                executionLockService,
+                never()
+        ).claimForExecution(
                 any()
         );
     }
