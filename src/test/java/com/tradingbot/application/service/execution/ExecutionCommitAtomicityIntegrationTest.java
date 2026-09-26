@@ -487,14 +487,27 @@ class ExecutionCommitAtomicityIntegrationTest
         );
 
         // ============================================================
-        // THEN — OUTBOX ROLLBACK
-        // ============================================================
+// THEN — OUTBOX ROLLBACK
+// ============================================================
+
+        boolean completionEventExists =
+                outboxEventRepository.findAll()
+                        .stream()
+                        .anyMatch(event ->
+                                executionId.equals(
+                                        event.getExecutionId()
+                                )
+                                        && !"ORDER_CREATED".equals(
+                                        event.getEventType()
+                                )
+                        );
 
         assertFalse(
-                outboxEventRepository
-                        .findById(completionEventId)
-                        .isPresent(),
-                "ORDER_EXECUTED completion event MUST rollback"
+                completionEventExists,
+                "Completion Outbox event MUST rollback. " +
+                        "No completion event for executionId=" +
+                        executionId +
+                        " must remain after failed execution commit"
         );
 
         // ============================================================
