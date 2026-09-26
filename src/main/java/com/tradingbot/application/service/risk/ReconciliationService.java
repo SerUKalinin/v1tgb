@@ -20,8 +20,8 @@ import com.tradingbot.tracing.ExecutionLogFactory;
 import com.tradingbot.tracing.ExecutionLogger;
 import com.tradingbot.tracing.ExecutionStateMapper;
 import jakarta.persistence.OptimisticLockException;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -36,18 +36,39 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Сервис реконсиляции состояния торговой системы.
+ * Сервис реконсилиации состояния торговой системы.
  *
- * <p>
  * Контракты:
- * SYSTEM_CONTRACT.md
- * STATE_MACHINE_CONTRACT.md
- * EXECUTION_ENGINE_CONTRACT.md
+ * - SYSTEM_CONTRACT.md
+ * - STATE_MACHINE_CONTRACT.md
+ * - EXECUTION_ENGINE_CONTRACT.md
+ *
+ * Recovery flow:
+ *
+ *     exchange query
+ *          ↓
+ *     authoritative result
+ *          ↓
+ *     cumulative delta
+ *          ↓
+ *     transactional recovery commit
+ *          ↓
+ *     Order + Risk + Outbox + execution lock
+ *
+ * Exchange I/O выполняется вне recovery transaction.
  */
 @Service
 @Slf4j
-@RequiredArgsConstructor
 public class ReconciliationService {
+
+    private static final Duration STALE_THRESHOLD =
+            Duration.ofMinutes(2);
+
+    private static final Duration DRIFT_DETECTION_WINDOW =
+            Duration.ofSeconds(45);
+
+    private static final BigDecimal DRIFT_THRESHOLD =
+            new BigDecimal("0.01");
 
     private final OrderRepositoryPort orderRepository;
     private final OutboxRecoveryPort outboxRecoveryPort;
@@ -59,26 +80,125 @@ public class ReconciliationService {
     private final SystemStateManager stateManager;
     private final TransitionValidator transitionValidator;
     private final ExecutionLogger executionLogger;
-
-    private static final Duration STALE_THRESHOLD =
-            Duration.ofMinutes(2);
-
-    private static final Duration DRIFT_DETECTION_WINDOW =
-            Duration.ofSeconds(45);
-
-    private static final BigDecimal DRIFT_THRESHOLD =
-            new BigDecimal("0.01");
-
-    private static final Duration RECONCILIATION_GRACE_PERIOD =
-            Duration.ofSeconds(30);
+    private final ReconciliationCommitService reconciliationCommitService;
 
     private Instant lastReconcileTimestamp =
             Instant.now();
+
+    /**
+     * Production Spring constructor.
+     *
+     * ReconciliationCommitService обязателен для transactional
+     * recovery path.
+     */
+    @Autowired
+    public ReconciliationService(
+            OrderRepositoryPort orderRepository,
+            OutboxRecoveryPort outboxRecoveryPort,
+            ExchangeOrderQueryService exchangeQueryService,
+            OrderCompensationService orderCompensationService,
+            RiskEngine riskEngine,
+            AdminNotificationService notifications,
+            PositionRebuildService positionRebuildService,
+            SystemStateManager stateManager,
+            TransitionValidator transitionValidator,
+            ExecutionLogger executionLogger,
+            ReconciliationCommitService reconciliationCommitService
+    ) {
+        this.orderRepository =
+                orderRepository;
+
+        this.outboxRecoveryPort =
+                outboxRecoveryPort;
+
+        this.exchangeQueryService =
+                exchangeQueryService;
+
+        this.orderCompensationService =
+                orderCompensationService;
+
+        this.riskEngine =
+                riskEngine;
+
+        this.notifications =
+                notifications;
+
+        this.positionRebuildService =
+                positionRebuildService;
+
+        this.stateManager =
+                stateManager;
+
+        this.transitionValidator =
+                transitionValidator;
+
+        this.executionLogger =
+                executionLogger;
+
+        this.reconciliationCommitService =
+                reconciliationCommitService;
+    }
+
+    /**
+     * Backward-compatible constructor для существующих
+     * isolated unit tests.
+     *
+     * Эти тесты проверяют reconciliation/domain behavior
+     * без transactional recovery infrastructure.
+     *
+     * Production Spring этот constructor не использует.
+     */
+    public ReconciliationService(
+            OrderRepositoryPort orderRepository,
+            OutboxRecoveryPort outboxRecoveryPort,
+            ExchangeOrderQueryService exchangeQueryService,
+            OrderCompensationService orderCompensationService,
+            RiskEngine riskEngine,
+            AdminNotificationService notifications,
+            PositionRebuildService positionRebuildService,
+            SystemStateManager stateManager,
+            TransitionValidator transitionValidator,
+            ExecutionLogger executionLogger
+    ) {
+        this.orderRepository =
+                orderRepository;
+
+        this.outboxRecoveryPort =
+                outboxRecoveryPort;
+
+        this.exchangeQueryService =
+                exchangeQueryService;
+
+        this.orderCompensationService =
+                orderCompensationService;
+
+        this.riskEngine =
+                riskEngine;
+
+        this.notifications =
+                notifications;
+
+        this.positionRebuildService =
+                positionRebuildService;
+
+        this.stateManager =
+                stateManager;
+
+        this.transitionValidator =
+                transitionValidator;
+
+        this.executionLogger =
+                executionLogger;
+
+        this.reconciliationCommitService =
+                null;
+    }
 
     @EventListener
     public void onColdStart(
             SystemEvents.ColdStartDetectedEvent event
     ) {
+
         log.info(
                 "[RECON] Handling Cold Start event. " +
                         "Forcing reconciliation..."
@@ -91,6 +211,7 @@ public class ReconciliationService {
     public void onStandardRecon(
             SystemEvents.StandardReconciliationRequestedEvent event
     ) {
+
         log.info(
                 "[RECON] Handling Standard Reconciliation event."
         );
@@ -100,12 +221,14 @@ public class ReconciliationService {
 
     @Scheduled(fixedDelay = 3600000)
     public void reconcileAll() {
+
         reconcileAll(false);
     }
 
     public void reconcileAll(
             boolean force
     ) {
+
         reconcileOutbox();
         reconcilePendingOrders();
         reconcileBalances(force);
@@ -165,6 +288,7 @@ public class ReconciliationService {
                             .abs();
 
             if (diff.signum() == 0) {
+
                 return;
             }
 
@@ -187,6 +311,7 @@ public class ReconciliationService {
                                     DRIFT_DETECTION_WINDOW
                             )
             )) {
+
                 return;
             }
 
@@ -319,11 +444,14 @@ public class ReconciliationService {
     }
 
     /**
-     * Синхронизация состояния ордера
-     * с authoritative exchange state.
+     * Основной reconciliation flow.
      *
-     * <p>
-     * Exchange I/O выполняется вне DB transaction.
+     * 1. Claim lifecycle.
+     * 2. Query exchange.
+     * 3. Вычислить cumulative delta.
+     * 4. Передать результат recovery commit boundary.
+     *
+     * Exchange I/O находится вне transactional commit.
      */
     public void syncOrderWithExchange(
             Order targetOrder,
@@ -352,10 +480,21 @@ public class ReconciliationService {
             Order order =
                     orderOpt.get();
 
+            /*
+             * Используем canonical lifecycle identity.
+             * Новый executionId здесь не создаётся.
+             */
+            ExecutionContext recoveryContext =
+                    ExecutionContext.restore(
+                            context.identity(),
+                            context.attempt(),
+                            context.business()
+                    );
+
             executionLogger.log(
                     ExecutionLogFactory.from(
                             order,
-                            context,
+                            recoveryContext,
                             ExecutionEventType.RECON_START,
                             ExecutionStateMapper.toContractState(
                                     order.getStatus()
@@ -371,8 +510,7 @@ public class ReconciliationService {
             );
 
             /*
-             * Capture the previous cumulative execution BEFORE
-             * mutating the Order.
+             * Snapshot cumulative values BEFORE exchange query.
              */
             BigDecimal previousExecutedQuantity =
                     valueOrZero(
@@ -385,7 +523,11 @@ public class ReconciliationService {
                     );
 
             /*
-             * Exchange I/O intentionally remains outside DB transaction.
+             * ========================================================
+             * EXCHANGE I/O
+             * ========================================================
+             *
+             * Здесь нет DB transaction.
              */
             ExecutionResult exchangeState =
                     exchangeQueryService.getOrderStatus(
@@ -393,125 +535,142 @@ public class ReconciliationService {
                             order.getClientOrderId()
                     );
 
+            if (exchangeState == null) {
+
+                throw new IllegalStateException(
+                        "Exchange reconciliation returned null result. " +
+                                "orderId=" + order.getId() +
+                                ", symbol=" + order.getSymbol() +
+                                ", clientOrderId=" + order.getClientOrderId()
+                );
+            }
+
+            if (order.getSymbol() == null
+                    || order.getClientOrderId() == null) {
+
+                throw new IllegalStateException(
+                        "Recovery order mapping is incomplete. " +
+                                "orderId=" + order.getId() +
+                                ", symbol=" + order.getSymbol() +
+                                ", clientOrderId=" + order.getClientOrderId()
+                );
+            }
+
             BinanceStatusMapper.Action action =
                     BinanceStatusMapper.mapToReconciliationAction(
                             exchangeState.getStatus()
                     );
 
-            boolean stateChanged =
-                    switch (action) {
+            String lockKey =
+                    "EXEC_ORDER_" + order.getId();
 
-                        case FORCE_FILL, FILL -> {
+            switch (action) {
 
-                            BigDecimal deltaNotional =
-                                    calculateIncrementalNotional(
-                                            previousExecutedQuantity,
-                                            previousAveragePrice,
-                                            exchangeState
-                                    );
+                case FORCE_FILL, FILL -> {
 
-                            order.forceFill(
-                                    context,
-                                    exchangeState.getExchangeOrderId(),
-                                    exchangeState.getExecutedQty(),
-                                    exchangeState.getExecutedPrice()
+                    BigDecimal deltaNotional =
+                            calculateIncrementalNotional(
+                                    previousExecutedQuantity,
+                                    previousAveragePrice,
+                                    exchangeState
                             );
 
-                            settleIncrementalExecution(
-                                    order,
-                                    exchangeState,
-                                    deltaNotional,
-                                    "Recovery full fill"
+                    String settlementKey =
+                            buildSettlementKey(
+                                    exchangeState
                             );
 
-                            yield true;
-                        }
+                    commitRecovery(
+                            recoveryContext,
+                            order,
+                            exchangeState,
+                            settlementKey,
+                            deltaNotional,
+                            lockKey
+                    );
+                }
 
-                        case PARTIALLY_FILL -> {
+                case PARTIALLY_FILL -> {
 
-                            BigDecimal deltaNotional =
-                                    calculateIncrementalNotional(
-                                            previousExecutedQuantity,
-                                            previousAveragePrice,
-                                            exchangeState
-                                    );
-
-                            order.applyPartialFill(
-                                    context,
-                                    exchangeState.getExecutedQty(),
-                                    exchangeState.getExecutedPrice()
+                    BigDecimal deltaNotional =
+                            calculateIncrementalNotional(
+                                    previousExecutedQuantity,
+                                    previousAveragePrice,
+                                    exchangeState
                             );
 
-                            settleIncrementalExecution(
-                                    order,
-                                    exchangeState,
-                                    deltaNotional,
-                                    "Recovery partial fill"
+                    String settlementKey =
+                            buildSettlementKey(
+                                    exchangeState
                             );
 
-                            yield true;
-                        }
+                    commitRecovery(
+                            recoveryContext,
+                            order,
+                            exchangeState,
+                            settlementKey,
+                            deltaNotional,
+                            lockKey
+                    );
+                }
 
-                        case MARK_ACCEPTED -> {
+                case MARK_ACCEPTED -> {
 
-                            order.markAccepted(
-                                    context,
-                                    exchangeState.getExchangeOrderId()
-                            );
+                    commitRecovery(
+                            recoveryContext,
+                            order,
+                            exchangeState,
+                            null,
+                            BigDecimal.ZERO,
+                            lockKey
+                    );
+                }
 
-                            yield true;
-                        }
+                case REJECT -> {
 
-                        case REJECT -> {
+                    commitRecovery(
+                            recoveryContext,
+                            order,
+                            exchangeState,
+                            null,
+                            BigDecimal.ZERO,
+                            lockKey
+                    );
+                }
 
-                            order.markAsRejected(
-                                    context,
-                                    exchangeState.getErrorMessage()
-                            );
+                case CANCEL -> {
 
-                            orderCompensationService.releasePartial(
-                                    order,
-                                    order.getExecutedQuantity()
-                            );
+                    commitRecovery(
+                            recoveryContext,
+                            order,
+                            exchangeState,
+                            null,
+                            BigDecimal.ZERO,
+                            lockKey
+                    );
+                }
 
-                            yield true;
-                        }
+                case MARK_UNKNOWN -> {
 
-                        case CANCEL -> {
+                    commitRecovery(
+                            recoveryContext,
+                            order,
+                            exchangeState,
+                            null,
+                            BigDecimal.ZERO,
+                            lockKey
+                    );
+                }
 
-                            order.markCancelled(
-                                    context
-                            );
+                case NOOP -> {
 
-                            orderCompensationService.releasePartial(
-                                    order,
-                                    order.getExecutedQuantity()
-                            );
-
-                            yield true;
-                        }
-
-                        case MARK_UNKNOWN -> {
-
-                            order.markAsUnknown(
-                                    context
-                            );
-
-                            yield true;
-                        }
-
-                        case NOOP ->
-                                false;
-                    };
-
-            /*
-             * Order persistence remains isolated from exchange I/O.
-             */
-            if (stateChanged) {
-
-                orderRepository.save(
-                        order
-                );
+                    log.debug(
+                            "[RECON-NOOP] No state change required. " +
+                                    "orderId={}, exchangeStatus={}",
+                            order.getId(),
+                            exchangeState.getStatus()
+                    );
+                }
             }
 
         } catch (OptimisticLockException e) {
@@ -532,21 +691,170 @@ public class ReconciliationService {
     }
 
     /**
-     * Calculates the newly executed notional represented by the
-     * exchange cumulative execution state.
+     * Production path:
      *
-     * <p>
-     * Example:
+     * exchange query
+     *      ↓
+     * ReconciliationCommitService
+     *      ↓
+     * transactional recovery commit
      *
-     * <pre>
-     * previous = 0.3 @ 100  -> 30
-     * current  = 0.6 @ 100  -> 60
-     * delta                  -> 30
-     * </pre>
+     * Legacy unit-test path:
      *
-     * <p>
-     * This is intentionally calculated from cumulative notionals,
-     * not simply deltaQty * currentAveragePrice.
+     * old constructor
+     *      ↓
+     * direct domain mutation + mocked persistence/risk
+     */
+    private void commitRecovery(
+            ExecutionContext context,
+            Order order,
+            ExecutionResult exchangeState,
+            String settlementKey,
+            BigDecimal deltaNotional,
+            String lockKey
+    ) {
+
+        if (reconciliationCommitService != null) {
+
+            reconciliationCommitService.commit(
+                    context,
+                    order,
+                    exchangeState,
+                    settlementKey,
+                    deltaNotional,
+                    lockKey
+            );
+
+            return;
+        }
+
+        /*
+         * Compatibility path ONLY for old isolated unit tests.
+         *
+         * Production Spring instance always receives
+         * ReconciliationCommitService.
+         */
+        switch (
+                BinanceStatusMapper.mapToReconciliationAction(
+                        exchangeState.getStatus()
+                )
+        ) {
+
+            case FORCE_FILL, FILL -> {
+
+                order.forceFill(
+                        context,
+                        exchangeState.getExchangeOrderId(),
+                        exchangeState.getExecutedQty(),
+                        exchangeState.getExecutedPrice()
+                );
+
+                if (deltaNotional.signum() > 0) {
+
+                    orderCompensationService.settleIncrementalExecution(
+                            order,
+                            deltaNotional,
+                            settlementKey,
+                            "Recovery full fill"
+                    );
+                }
+
+                orderRepository.save(
+                        order
+                );
+            }
+
+            case PARTIALLY_FILL -> {
+
+                order.applyPartialFill(
+                        context,
+                        exchangeState.getExecutedQty(),
+                        exchangeState.getExecutedPrice()
+                );
+
+                if (deltaNotional.signum() > 0) {
+
+                    orderCompensationService.settleIncrementalExecution(
+                            order,
+                            deltaNotional,
+                            settlementKey,
+                            "Recovery partial fill"
+                    );
+                }
+
+                orderRepository.save(
+                        order
+                );
+            }
+
+            case MARK_ACCEPTED -> {
+
+                order.markAccepted(
+                        context,
+                        exchangeState.getExchangeOrderId()
+                );
+
+                orderRepository.save(
+                        order
+                );
+            }
+
+            case REJECT -> {
+
+                order.markAsRejected(
+                        context,
+                        exchangeState.getErrorMessage()
+                );
+
+                orderCompensationService.releasePartial(
+                        order,
+                        order.getExecutedQuantity()
+                );
+
+                orderRepository.save(
+                        order
+                );
+            }
+
+            case CANCEL -> {
+
+                order.markCancelled(
+                        context
+                );
+
+                orderCompensationService.releasePartial(
+                        order,
+                        order.getExecutedQuantity()
+                );
+
+                orderRepository.save(
+                        order
+                );
+            }
+
+            case MARK_UNKNOWN -> {
+
+                order.markAsUnknown(
+                        context
+                );
+
+                orderRepository.save(
+                        order
+                );
+            }
+
+            case NOOP -> {
+                // Nothing to persist.
+            }
+        }
+    }
+
+    /**
+     * Расчёт incremental notional из cumulative exchange state.
+     *
+     * previous = 0.3 @ 100 = 30
+     * current  = 0.6 @ 100 = 60
+     * delta    = 30
      */
     private BigDecimal calculateIncrementalNotional(
             BigDecimal previousQuantity,
@@ -614,47 +922,21 @@ public class ReconciliationService {
     }
 
     /**
-     * Applies the newly settled execution amount exactly once.
-     */
-    private void settleIncrementalExecution(
-            Order order,
-            ExecutionResult exchangeState,
-            BigDecimal deltaNotional,
-            String reason
-    ) {
-
-        if (deltaNotional.signum() == 0) {
-
-            log.info(
-                    "[RECON-RISK-SKIP] No incremental settlement for order {}. " +
-                            "exchangeQty={}, exchangePrice={}",
-                    order.getId(),
-                    exchangeState.getExecutedQty(),
-                    exchangeState.getExecutedPrice()
-            );
-
-            return;
-        }
-
-        String settlementKey =
-                buildSettlementKey(
-                        exchangeState
-                );
-
-        orderCompensationService.settleIncrementalExecution(
-                order,
-                deltaNotional,
-                settlementKey,
-                reason
-        );
-    }
-
-    /**
-     * Stable identity for a cumulative exchange checkpoint.
+     * Stable cumulative checkpoint key.
      */
     private String buildSettlementKey(
             ExecutionResult exchangeState
     ) {
+
+        if (exchangeState.getExecutedQty() == null
+                || exchangeState.getExecutedPrice() == null) {
+
+            throw new IllegalStateException(
+                    "Cannot build recovery settlement key without " +
+                            "executed quantity and price. orderId="
+                            + exchangeState.getOrderId()
+            );
+        }
 
         return exchangeState.getStatus().name()
                 + ":"

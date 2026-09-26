@@ -2,10 +2,14 @@ package com.tradingbot.application.service.execution;
 
 import com.tradingbot.application.bootstrap.SystemStateManager;
 import com.tradingbot.application.service.order.OrderCreatedEvent;
+import com.tradingbot.common.enums.OrderSide;
+import com.tradingbot.common.enums.OrderStatus;
+import com.tradingbot.common.enums.OrderType;
 import com.tradingbot.domain.execution.ExecutionClaimPort;
 import com.tradingbot.domain.model.Order;
 import com.tradingbot.domain.model.OrderRepositoryPort;
 import com.tradingbot.domain.policy.TransitionValidator;
+import com.tradingbot.infrastructure.execution.ExecutionLockService;
 import com.tradingbot.tracing.BusinessContext;
 import com.tradingbot.tracing.ExecutionAttemptContext;
 import com.tradingbot.tracing.ExecutionContext;
@@ -17,7 +21,11 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class ExecutionIdentityMismatchTest {
 
@@ -35,8 +43,8 @@ class ExecutionIdentityMismatchTest {
                         orderId,
                         "IDENTITY-MISMATCH-" + orderId,
                         "BTCUSDT",
-                        com.tradingbot.common.enums.OrderSide.BUY,
-                        com.tradingbot.common.enums.OrderType.MARKET,
+                        OrderSide.BUY,
+                        OrderType.MARKET,
                         BigDecimal.ONE,
                         new BigDecimal("100"),
                         "identity-mismatch-test",
@@ -88,6 +96,9 @@ class ExecutionIdentityMismatchTest {
         TransitionValidator transitionValidator =
                 mock(TransitionValidator.class);
 
+        ExecutionLockService executionLockService =
+                mock(ExecutionLockService.class);
+
         when(
                 stateManager.isReady()
         ).thenReturn(true);
@@ -97,7 +108,8 @@ class ExecutionIdentityMismatchTest {
                         stateManager,
                         executionClaimPort,
                         orderRepository,
-                        transitionValidator
+                        transitionValidator,
+                        executionLockService
                 );
 
         IllegalStateException exception =
@@ -114,7 +126,9 @@ class ExecutionIdentityMismatchTest {
         assertEquals(
                 true,
                 exception.getMessage()
-                        .contains("Identity mismatch")
+                        .contains(
+                                "Identity mismatch"
+                        )
         );
 
         /*
@@ -143,6 +157,13 @@ class ExecutionIdentityMismatchTest {
                 any(),
                 any()
         );
+
+        verify(
+                executionLockService,
+                never()
+        ).claimForExecution(
+                any()
+        );
     }
 
     @Test
@@ -159,8 +180,8 @@ class ExecutionIdentityMismatchTest {
                         orderId,
                         "DOMAIN-IDENTITY-MISMATCH-" + orderId,
                         "BTCUSDT",
-                        com.tradingbot.common.enums.OrderSide.BUY,
-                        com.tradingbot.common.enums.OrderType.MARKET,
+                        OrderSide.BUY,
+                        OrderType.MARKET,
                         BigDecimal.ONE,
                         new BigDecimal("100"),
                         "identity-mismatch-test",
@@ -175,7 +196,9 @@ class ExecutionIdentityMismatchTest {
 
         ExecutionContext foreignContext =
                 new ExecutionContext(
-                        IdentityContext.of(signalId),
+                        IdentityContext.of(
+                                signalId
+                        ),
                         ExecutionAttemptContext.recover(
                                 UUID.randomUUID(),
                                 foreignExecutionId,
@@ -198,14 +221,16 @@ class ExecutionIdentityMismatchTest {
         assertEquals(
                 true,
                 exception.getMessage()
-                        .contains("Execution identity mismatch")
+                        .contains(
+                                "Execution identity mismatch"
+                        )
         );
 
         /*
          * No lifecycle mutation is allowed.
          */
         assertEquals(
-                com.tradingbot.common.enums.OrderStatus.PENDING_EXECUTION,
+                OrderStatus.PENDING_EXECUTION,
                 order.getStatus()
         );
 

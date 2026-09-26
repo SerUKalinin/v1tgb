@@ -18,6 +18,14 @@ import java.util.UUID;
 /**
  * Обработчик downstream-события ORDER_EXECUTED.
  *
+ * Поддерживает:
+ *
+ * ORDER_EXECUTED
+ *
+ * и checkpoint-specific:
+ *
+ * ORDER_EXECUTED:<checkpoint-id>
+ *
  * Order здесь повторно не изменяется.
  *
  * Execution owner уже завершил lifecycle Order
@@ -28,6 +36,12 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class OrderExecutedEventHandler implements OutboxConsumer {
 
+    private static final String BASE_EVENT_TYPE =
+            "ORDER_EXECUTED";
+
+    private static final String CONSUMER_NAME =
+            "OrderExecutedEventHandler";
+
     private final IdempotencyService idempotencyService;
 
     private final ObjectMapper objectMapper;
@@ -35,19 +49,44 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
     private final TradeService tradeService;
 
     @Override
-    public boolean supports(String eventType) {
+    public boolean supports(
+            String eventType
+    ) {
 
-        return "ORDER_EXECUTED".equals(eventType);
+        /*
+         * F4.3:
+         *
+         * обычный:
+         * ORDER_EXECUTED
+         *
+         * cumulative checkpoint:
+         * ORDER_EXECUTED:<checkpoint-id>
+         */
+        return BASE_EVENT_TYPE.equals(eventType)
+                || (
+                eventType != null
+                        && eventType.startsWith(
+                        BASE_EVENT_TYPE + ":"
+                )
+        );
     }
 
     /**
-     * Обрабатывает ORDER_EXECUTED.
+     * Обрабатывает ORDER_EXECUTED
+     * и checkpoint-specific ORDER_EXECUTED:<checkpoint>.
      */
     @Override
     @Transactional
     public void consume(
             OutboxEvent event
     ) throws Exception {
+
+        if (event == null) {
+
+            throw new IllegalArgumentException(
+                    "OutboxEvent cannot be null"
+            );
+        }
 
         UUID eventId =
                 event.eventId();
@@ -56,6 +95,19 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
 
             throw new IllegalStateException(
                     "ORDER_EXECUTED outbox event has no eventId"
+            );
+        }
+
+        String eventType =
+                event.eventType();
+
+        if (!supports(eventType)) {
+
+            throw new IllegalArgumentException(
+                    "Unsupported event type for " +
+                            CONSUMER_NAME +
+                            ": " +
+                            eventType
             );
         }
 
@@ -78,29 +130,35 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
         )) {
 
             log.info(
-                    "[ORDER-EXECUTED-HANDLER] Outbox event {} " +
-                            "for executionId {} and order {} " +
-                            "already processed, skipping",
+                    "[ORDER-EXECUTED-HANDLER] Event {} already processed. " +
+                            "eventType={}, orderId={}, executionId={}. Skipping.",
                     eventId,
-                    executionId,
-                    orderId
+                    eventType,
+                    orderId,
+                    executionId
             );
 
             return;
         }
 
         log.info(
-                "[ORDER-EXECUTED-HANDLER] Processing execution for order {}. " +
-                        "Status: {}, Qty: {}, Price: {}, " +
-                        "exchangeTradeId: {}",
+                "[ORDER-EXECUTED-HANDLER] Processing event. " +
+                        "eventId={}, eventType={}, orderId={}, " +
+                        "executionId={}, status={}, qty={}, price={}, " +
+                        "exchangeTradeId={}",
+                eventId,
+                eventType,
                 orderId,
+                executionId,
                 payload.getStatus(),
                 payload.getQuantity(),
                 payload.getPrice(),
                 payload.getExchangeTradeId()
         );
 
-        if (isTradeCreationRequired(payload)) {
+        if (isTradeCreationRequired(
+                payload
+        )) {
 
             ExecutionContext context =
                     ExecutionContext.of(
@@ -115,9 +173,17 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
             );
         }
 
+        /*
+         * Marker ставится только после успешной
+         * обработки TradeService.
+         *
+         * Если downstream упадёт,
+         * transaction откатится и event останется
+         * доступным для retry.
+         */
         idempotencyService.markAsProcessed(
                 eventId,
-                "OrderExecutedEventHandler"
+                CONSUMER_NAME
         );
     }
 
@@ -138,8 +204,13 @@ public class OrderExecutedEventHandler implements OutboxConsumer {
                 payload.getPrice();
 
         return quantity != null
-                && quantity.compareTo(BigDecimal.ZERO) > 0
+                && quantity.compareTo(
+                BigDecimal.ZERO
+        ) > 0
                 && price != null
+                && price.compareTo(
+                BigDecimal.ZERO
+        ) > 0
                 && payload.getExchangeTradeId() != null
                 && !payload.getExchangeTradeId().isBlank();
     }

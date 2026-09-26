@@ -21,6 +21,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class ExecutionCommitHappyPathTest {
 
@@ -43,15 +44,6 @@ class ExecutionCommitHappyPathTest {
         ExecutionContext context =
                 ExecutionContext.of(order);
 
-        /*
-         * Реальный execution lifecycle:
-         *
-         * PENDING_EXECUTION
-         *        ↓
-         *    EXECUTING
-         *        ↓
-         *      FILLED
-         */
         order.markExecuting(
                 context
         );
@@ -78,6 +70,12 @@ class ExecutionCommitHappyPathTest {
 
         ExecutionLockService lockService =
                 mock(ExecutionLockService.class);
+
+        when(
+                lockService.markExecuted(
+                        "lock-key"
+                )
+        ).thenReturn(true);
 
         OrderExecutionCommitService service =
                 new OrderExecutionCommitService(

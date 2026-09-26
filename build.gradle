@@ -34,13 +34,11 @@ dependencies {
 	runtimeOnly 'org.postgresql:postgresql'
 	implementation 'org.flywaydb:flyway-database-postgresql'
 
-	testImplementation("com.h2database:h2")
-	// Flyway (ВАЖНО: без версии!)
+	testImplementation 'com.h2database:h2'
+
 	implementation 'org.flywaydb:flyway-core:11.0.0'
 
 	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0'
-
-
 
 	// Observability
 	implementation 'org.springframework.boot:spring-boot-starter-actuator'
@@ -59,6 +57,7 @@ dependencies {
 	implementation 'jakarta.xml.bind:jakarta.xml.bind-api:4.0.0'
 	implementation 'org.glassfish.jaxb:jaxb-runtime:4.0.0'
 	implementation 'javax.xml.bind:jaxb-api:2.3.1'
+
 	// Testing
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testImplementation 'com.tngtech.archunit:archunit-junit5:1.3.0'
@@ -66,6 +65,51 @@ dependencies {
 	testImplementation "org.testcontainers:postgresql:${testcontainersVersion}"
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
-tasks.named('test') {
+
+/**
+ * Integration-test stability.
+ *
+ * Контракты:
+ * - SYSTEM_CONTRACT.md
+ * - STATE_MACHINE_CONTRACT.md
+ * - EXECUTION_ENGINE_CONTRACT.md
+ *
+ * Test suite содержит много @SpringBootTest контекстов
+ * с разными @MockBean/@SpyBean/@DirtiesContext.
+ *
+ * Поэтому:
+ *
+ * 1. один test worker;
+ * 2. отдельный heap для test JVM;
+ * 3. периодический fork нового test JVM;
+ * 4. ограниченный Spring TestContext cache.
+ */
+tasks.named('test', Test) {
+
 	useJUnitPlatform()
+
+	// Не запускаем несколько тяжёлых Spring contexts параллельно.
+	maxParallelForks = 1
+
+	// Отдельный heap именно для Gradle Test Executor.
+	maxHeapSize = '2048m'
+
+	// Новый JVM после 50 test classes.
+	//
+	// Это гарантирует освобождение:
+	// Spring ApplicationContext
+	// Hibernate/JPA metadata
+	// Mockito state
+	// classloader/resource graph
+	// H2/Hikari-associated JVM objects
+	//
+	// Внутри одного fork-а остаётся normal Spring context caching.
+	forkEvery = 50
+
+	// Ограничиваем количество одновременно живых
+	// Spring TestContext.
+	systemProperty(
+			'spring.test.context.cache.maxSize',
+			'8'
+	)
 }

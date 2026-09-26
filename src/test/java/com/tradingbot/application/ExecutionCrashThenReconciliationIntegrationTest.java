@@ -2,9 +2,9 @@ package com.tradingbot.application;
 
 import com.tradingbot.BaseIntegrationTest;
 import com.tradingbot.application.bootstrap.SystemStateManager;
+import com.tradingbot.application.service.execution.OrderExecutionCommitService;
 import com.tradingbot.application.service.execution.SignalExecutionFacade;
 import com.tradingbot.application.service.risk.ReconciliationService;
-import com.tradingbot.application.service.execution.OrderExecutionCommitService;
 import com.tradingbot.common.enums.OrderStatus;
 import com.tradingbot.common.enums.SignalType;
 import com.tradingbot.domain.event.SignalEvent;
@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
@@ -89,7 +90,7 @@ class ExecutionCrashThenReconciliationIntegrationTest
     @MockBean
     private ExchangeOrderQueryService exchangeQueryService;
 
-    @MockBean
+    @SpyBean
     private OrderExecutionCommitService orderExecutionCommitService;
 
     @BeforeEach
@@ -171,7 +172,8 @@ class ExecutionCrashThenReconciliationIntegrationTest
         /*
          * Exchange submission успешно сообщает FILLED.
          *
-         * Но commit искусственно падает.
+         * Commit искусственно падает только на первом
+         * обычном execution commit.
          */
         when(
                 executionPort.placeOrder(
@@ -235,11 +237,6 @@ class ExecutionCrashThenReconciliationIntegrationTest
                         "EXECUTION-CRASH-RECOVERY-E3"
                 );
 
-        /*
-         * ============================================================
-         * 1. Создаём Order + reservation = 100
-         * ============================================================
-         */
         signalExecutionFacade.execute(
                 signal
         );
@@ -278,9 +275,9 @@ class ExecutionCrashThenReconciliationIntegrationTest
         );
 
         /*
-         * ============================================================
-         * 2. ORDER_CREATED -> claim -> exchange FILLED -> commit crash
-         * ============================================================
+         * ORDER_CREATED -> real claim -> real exchange submit.
+         *
+         * Spy throws only from ordinary commit().
          */
         drainOutbox();
 
@@ -311,10 +308,6 @@ class ExecutionCrashThenReconciliationIntegrationTest
         RiskStateEntity afterCrashRisk =
                 getRiskState();
 
-        /*
-         * Commit crashed before settlement.
-         * Reservation must therefore remain fully reserved.
-         */
         assertBigDecimal(
                 "100",
                 afterCrashRisk.getReservedMargin(),
@@ -322,12 +315,7 @@ class ExecutionCrashThenReconciliationIntegrationTest
         );
 
         /*
-         * ============================================================
-         * 3. Делаем EXECUTING stale.
-         *
-         * В реальной системе watchdog дождётся stale threshold.
-         * Здесь ускоряем детерминированно.
-         * ============================================================
+         * Make EXECUTING stale deterministically.
          */
         OrderEntity staleEntity =
                 orderRepository
@@ -348,11 +336,6 @@ class ExecutionCrashThenReconciliationIntegrationTest
                 staleEntity
         );
 
-        /*
-         * Exchange теперь authoritative:
-         *
-         * FILLED 1.0 @ 100
-         */
         when(
                 exchangeQueryService.getOrderStatus(
                         "BTCUSDT",
@@ -373,11 +356,6 @@ class ExecutionCrashThenReconciliationIntegrationTest
                 )
         );
 
-        /*
-         * ============================================================
-         * 4. Recovery
-         * ============================================================
-         */
         OrderEntity recoverySource =
                 orderRepository
                         .findById(orderId)
@@ -444,20 +422,6 @@ class ExecutionCrashThenReconciliationIntegrationTest
                 "averagePrice after recovery"
         );
 
-        /*
-         * ============================================================
-         * 5. Risk settlement exactly once
-         * ============================================================
-         *
-         * Initial reservation = 100.
-         * Recovery FILLED = 1.0 * 100 = 100.
-         *
-         * Поэтому:
-         *
-         * reservedMargin = 0
-         * availableBalance = 9900
-         * totalEquity = 10000
-         */
         RiskStateEntity afterRecovery =
                 getRiskState();
 
@@ -480,15 +444,7 @@ class ExecutionCrashThenReconciliationIntegrationTest
         );
 
         /*
-         * ============================================================
-         * 6. Повторный recovery того же FILLED
-         * ============================================================
-         *
-         * Terminal lifecycle:
-         *
-         * FILLED -> claimForReconciliation = empty.
-         *
-         * Следовательно exchange не должен быть опрошен повторно.
+         * Terminal order is no longer reconcilable.
          */
         OrderEntity finalCurrent =
                 orderRepository
@@ -535,9 +491,6 @@ class ExecutionCrashThenReconciliationIntegrationTest
                 staleEntity.getClientOrderId()
         );
 
-        /*
-         * Final risk state remains unchanged.
-         */
         RiskStateEntity finalRisk =
                 getRiskState();
 
@@ -559,12 +512,6 @@ class ExecutionCrashThenReconciliationIntegrationTest
                 "totalEquity after repeated recovery"
         );
 
-        /*
-         * Commit itself happened exactly once — and it was the
-         * intentionally crashed call.
-         *
-         * Reconciliation did the authoritative completion.
-         */
         verify(
                 orderExecutionCommitService,
                 times(1)
@@ -576,6 +523,11 @@ class ExecutionCrashThenReconciliationIntegrationTest
                 any()
         );
 
+        /*
+         * Recovery uses commitRecoveredExecution() on the real spy.
+         *
+         * No second exchange submission is allowed.
+         */
         verify(
                 executionPort,
                 times(1)

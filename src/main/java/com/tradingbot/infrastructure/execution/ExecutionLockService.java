@@ -8,12 +8,16 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Сервис управления lifecycle idempotency-lock'ов исполнения.
  *
- * <p>Обеспечивает согласованное переключение состояний выполнения операции:
- * CLAIMED → EXECUTING → EXECUTED.</p>
+ * <p>Lifecycle:</p>
  *
- * <p>Используется для защиты execution pipeline от повторного запуска
- * одной и той же бизнес-операции при ретраях, конкуренции потоков
- * или повторной доставки событий.</p>
+ * <pre>
+ * CLAIMED -> EXECUTING -> EXECUTED
+ * </pre>
+ *
+ * <p>
+ * Execution lock является техническим idempotency/ownership
+ * механизмом execution lifecycle и не заменяет OrderStatus.EXECUTING.
+ * </p>
  */
 @Service
 @RequiredArgsConstructor
@@ -22,53 +26,138 @@ public class ExecutionLockService {
     private final ExecutionLockRepository repository;
 
     /**
-     * Попытка захвата lock (CLAIMED).
+     * Попытка захвата lock в состоянии CLAIMED.
      *
-     * <p>Операция атомарна: если ключ уже существует — захват не произойдёт.</p>
+     * <p>
+     * Если ключ уже существует, новый lock не создаётся.
+     * </p>
      *
-     * @param idempotencyKey уникальный ключ операции
-     * @return true если lock успешно создан, иначе false
+     * @param idempotencyKey уникальный ключ execution lifecycle
+     * @return true если lock был создан
      */
     @Transactional
-    public boolean tryClaim(String idempotencyKey) {
-        return repository.insertLock(idempotencyKey) > 0;
+    public boolean tryClaim(
+            String idempotencyKey
+    ) {
+
+        return repository.insertLock(
+                idempotencyKey
+        ) > 0;
     }
 
     /**
-     * Переход в состояние EXECUTING.
+     * Атомарно создаёт execution lock и переводит его
+     * в EXECUTING.
      *
-     * <p>Выполняется в отдельной транзакции для минимизации конкуренции
-     * и предотвращения блокировок основного потока исполнения.</p>
+     * <p>
+     * Метод должен вызываться только внутри уже существующей
+     * transaction execution claim.
      *
-     * @param idempotencyKey ключ операции
-     * @return true если переход выполнен успешно
+     * Поэтому REQUIRED присоединяется к внешней transaction.
+     * Никакого отдельного commit здесь быть не должно.
+     * </p>
+     *
+     * <pre>
+     * outer transaction:
+     *
+     * Order PENDING_EXECUTION -> EXECUTING
+     * execution claim
+     * execution_lock отсутствует
+     *         ↓
+     * execution_lock CLAIMED
+     *         ↓
+     * execution_lock EXECUTING
+     *
+     * COMMIT
+     * </pre>
+     *
+     * @param idempotencyKey уникальный ключ execution lifecycle
+     * @return true если lock успешно создан и переведён EXECUTING
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public boolean tryEnterExecuting(String idempotencyKey) {
-        return repository.updateToExecuting(idempotencyKey) > 0;
+    @Transactional(
+            propagation = Propagation.REQUIRED
+    )
+    public boolean claimForExecution(
+            String idempotencyKey
+    ) {
+
+        int inserted =
+                repository.insertLock(
+                        idempotencyKey
+                );
+
+        if (inserted == 0) {
+            return false;
+        }
+
+        int transitioned =
+                repository.updateToExecuting(
+                        idempotencyKey
+                );
+
+        return transitioned > 0;
     }
 
     /**
-     * Завершение выполнения операции (EXECUTED).
+     * Переход уже существующего CLAIMED lock -> EXECUTING.
      *
-     * @param idempotencyKey ключ операции
-     * @return true если статус успешно обновлён
+     * <p>
+     * Оставлен для существующих технических сценариев,
+     * которым нужен отдельный transition.
+     * </p>
+     */
+    @Transactional(
+            propagation = Propagation.REQUIRES_NEW
+    )
+    public boolean tryEnterExecuting(
+            String idempotencyKey
+    ) {
+
+        return repository.updateToExecuting(
+                idempotencyKey
+        ) > 0;
+    }
+
+    /**
+     * Завершение execution lifecycle:
+     *
+     * EXECUTING -> EXECUTED.
+     *
+     * <p>
+     * Вызов из OrderExecutionCommitService находится
+     * внутри commit transaction.
+     * </p>
+     *
+     * @param idempotencyKey execution lock key
+     * @return true если состояние действительно изменено
      */
     @Transactional
-    public boolean markExecuted(String idempotencyKey) {
-        return repository.updateToExecuted(idempotencyKey) > 0;
+    public boolean markExecuted(
+            String idempotencyKey
+    ) {
+
+        return repository.updateToExecuted(
+                idempotencyKey
+        ) > 0;
     }
 
     /**
-     * Получение текущего состояния lock.
+     * Возвращает текущее состояние execution lock.
      *
-     * @param idempotencyKey ключ операции
-     * @return текущее состояние или null, если lock отсутствует
+     * @param idempotencyKey execution lock key
+     * @return состояние или null если lock отсутствует
      */
     @Transactional(readOnly = true)
-    public String getLockState(String idempotencyKey) {
-        return repository.findById(idempotencyKey)
-                .map(ExecutionLockEntity::getState)
+    public String getLockState(
+            String idempotencyKey
+    ) {
+
+        return repository.findById(
+                        idempotencyKey
+                )
+                .map(
+                        ExecutionLockEntity::getState
+                )
                 .orElse(null);
     }
 }
